@@ -6,12 +6,13 @@ import pandas as pd
 import xarray as xr
 
 from definitions import (
+    DATADIR,
     REGIONS,
     DATERANGEPL,
 )
 
 def hotspells_mask(
-    filename: str = "hotspells.csv",
+    filename: str = f"{DATADIR}/hotspells.csv",
     daysbefore: int = 21,
     daysafter: int = 5,
     timerange: NDArray | pd.DatetimeIndex | xr.DataArray = None,
@@ -57,7 +58,7 @@ def hotspells_mask(
 
 
 def get_hostpells_v2(
-    filename: str = "hotspells_v2.csv", lag_behind: int = 10, regions: list = None
+    filename: str = f"{DATADIR}/hotspells_v2.csv", lag_behind: int = 10, regions: list = None
 ) -> list:
     if regions is None:
         regions = REGIONS
