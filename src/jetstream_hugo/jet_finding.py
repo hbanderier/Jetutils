@@ -1,4 +1,5 @@
 import warnings
+from pathlib import Path
 from functools import partial
 from typing import Tuple
 from nptyping import NDArray
@@ -219,7 +220,13 @@ def props_to_ds(all_props: list, time: NDArray | xr.DataArray = None, maxnjet: i
     return ds
 
 
-def better_is_polar(all_jets:list, props_as_ds: xr.Dataset, da_low: xr.DataArray) -> xr.Dataset:
+def better_is_polar(all_jets:list, props_as_ds: xr.Dataset, exp_low_path: Path) -> xr.Dataset:
+    this_path = exp_low_path.joinpath('better_is_polar.nc')
+    if this_path.is_file():
+        props_as_ds['is_polar'] = xr.open_dataarray(this_path)
+        return props_as_ds
+    print('computing int low')
+    da_low = xr.open_dataarray(exp_low_path.joinpath('da.nc'))
     props_as_ds['int_low'] = props_as_ds['mean_lon'].copy()
     for it, (jets, mean_lats) in tqdm(enumerate(zip(all_jets, props_as_ds['mean_lat'])), total=len(all_jets)):
         for j, (jet, mean_lat) in enumerate(zip(jets, mean_lats.values)):
@@ -415,7 +422,7 @@ def add_persistence_to_props(ds_props: xr.Dataset, flags: NDArray):
     return ds_props
 
 
-def conpute_prop_anomalies(ds_props: xr.Dataset) -> xr.Dataset:
+def compute_prop_anomalies(ds_props: xr.Dataset) -> xr.Dataset:
     prop_anomalies = ds_props.copy()
 
     for varname in ds_props.data_vars:
