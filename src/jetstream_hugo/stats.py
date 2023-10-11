@@ -14,7 +14,7 @@ from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression
 
-from definitions import N_WORKERS, infer_sym
+from jetstream_hugo.definitions import N_WORKERS, infer_sym
 
 def autocorrelation(path: Path, time_steps: int = 50) -> Path:
     ds = xr.open_dataset(path)

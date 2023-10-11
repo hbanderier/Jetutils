@@ -14,7 +14,7 @@ from libpysal.weights import DistanceBand
 from tqdm import tqdm
 from numba import njit, jit
 
-from definitions import DATERANGEPL_SUMMER, DATERANGEPL_EXT_SUMMER, N_WORKERS, labels_to_mask
+from jetstream_hugo.definitions import DATERANGEPL_SUMMER, DATERANGEPL_EXT_SUMMER, N_WORKERS, labels_to_mask
 
 
 def jet_overlap(jet1: NDArray, jet2: NDArray) -> bool:

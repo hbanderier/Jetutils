@@ -34,14 +34,14 @@ import seaborn as sns
 import cartopy.crs as ccrs
 import cartopy.feature as feat
 
-from definitions import (
+from jetstream_hugo.definitions import (
     DATADIR,
     REGIONS,
     PRETTIER_VARNAME,
     LATBINS,
     infer_sym,
 )
-from stats import field_significance, field_significance_v2
+from jetstream_hugo.stats import field_significance, field_significance_v2
 
 COLORS5 = [
     "#167e1b",

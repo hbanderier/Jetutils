@@ -20,12 +20,9 @@ import scipy.linalg as linalg
 from scipy.optimize import minimize
 from simpsom import SOMNet
 
-from definitions import (
+from jetstream_hugo.definitions import (
     save_pickle,
     load_pickle,
-)
-
-from definitions import (
     DATADIR,
     DATERANGEPL_EXT,
     DATERANGEPL_EXT_SUMMER,
@@ -37,9 +34,10 @@ from definitions import (
     case_insensitive_equal,
     labels_to_mask,
 )
-from stats import compute_autocorrs
-from data import data_path, open_da, unpack_levels
-from jet_finding import (
+
+from jetstream_hugo.stats import compute_autocorrs
+from jetstream_hugo.data import data_path, open_da, unpack_levels
+from jetstream_hugo.jet_finding import (
     find_all_jets, all_jets_to_one_array, props_to_ds, compute_all_jet_props, track_jets, add_persistence_to_props, categorize_ds_jets
 )
 

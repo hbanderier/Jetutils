@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from definitions import (
+from jetstream_hugo.definitions import (
     DATADIR,
     REGIONS,
     DATERANGEPL,

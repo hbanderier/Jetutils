@@ -8,7 +8,7 @@ import xarray as xr
 import xrft
 from tqdm import tqdm
 from dask.diagnostics import ProgressBar, ResourceProfiler
-from definitions import (
+from jetstream_hugo.definitions import (
     DEFAULT_VARNAME,
     DATADIR,
     CLIMSTOR,
