@@ -150,7 +150,7 @@ def infer_sym(to_plot: Any) -> bool:
     max = np.amax(to_plot)
     min = np.amin(to_plot)
     sym = (np.sign(max) == -np.sign(min)) and (
-        np.abs(np.log10(np.abs(max)) - np.log10(np.abs(min))) <= 1
+        np.abs(np.log10(np.abs(max)) - np.log10(np.abs(min))) <= 2
     )
     try:
         return sym.item()

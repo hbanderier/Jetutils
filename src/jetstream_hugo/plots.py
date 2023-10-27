@@ -483,7 +483,7 @@ class Clusterplot:
         nlevels: int = None,
         sym: bool = None,
         start: float = None,
-        cmap: str | Colormap = None,
+        cmap: str | Colormap = 'twilight_shifted',
         transparify: bool | float | int = False,
         contours: bool = False,
         clabels: Union[bool, list] = None,
@@ -493,10 +493,6 @@ class Clusterplot:
     ) -> Tuple[Mapping, Mapping, ScalarMappable, NDArray]:
         levelsc, levelscf, extend, sym = create_levels(to_plot, nlevels, sym, start)
 
-        if cmap is None and sym:
-            cmap = "seismic"
-        elif cmap is None:
-            cmap = MYPURPLES  # Just think it's neat
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
         if transparify:
@@ -545,7 +541,7 @@ class Clusterplot:
         nlevels: int = None,
         sym: bool = None,
         start: float = None,
-        cmap: str | Colormap = None,
+        cmap: str | Colormap = 'twilight_shifted',
         transparify: bool | float | int = False,
         contours: bool = False,
         clabels: Union[bool, list] = None,

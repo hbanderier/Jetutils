@@ -207,7 +207,6 @@ class Experiment(object):
             resolution,
             period,
             season,
-            "time",
             minlon,
             maxlon,
             minlat,
@@ -259,7 +258,6 @@ class Experiment(object):
                 self.da = xr.open_dataarray(da_path).load()
         else:
             self.da = open_da(*self.open_da_args)
-            print(self.da.__class__)
             with ProgressBar():
                 self.da = self.da.load()
             self.da.to_netcdf(da_path, format='NETCDF4')

@@ -296,7 +296,6 @@ def open_da(
     resolution: str,
     period: list | tuple | Literal["all"] | int | str = "all",
     season: list | str = None,
-    chunk_type: str = 'time',
     minlon: Optional[int | float] = None,
     maxlon: Optional[int | float] = None,
     minlat: Optional[int | float] = None,
@@ -335,9 +334,9 @@ def open_da(
 
     da = _open_dataarray(files_to_load, varname)
     da = da.rename(varname)
+    da = rename_coords(da)
     if np.diff(da.lat.values)[0] < 0:
         da = da.reindex(lat=da.lat[::-1])
-    da = rename_coords(da)
     if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
         da = da.sel(lon=slice(minlon, maxlon + 0.1), lat=slice(minlat, maxlat + 0.1))
 
@@ -402,7 +401,7 @@ def compute_all_smoothed_anomalies(
         clim = xr.open_dataarray(dest_clim)
     else:
         da = open_da(
-            dataset, varname, resolution, period="all", levels="all", chunk_type="time"
+            dataset, varname, resolution, period="all", levels="all"
         )
         gb = da.groupby(f"time.{coordname}")
         with ProgressBar():
