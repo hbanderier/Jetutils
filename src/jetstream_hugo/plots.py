@@ -214,9 +214,9 @@ def honeycomb_panel(
 
 
 def infer_extent(
-    to_plot: list, sym: bool, start: float = None
+    to_plot: list, sym: bool, start: float = None, q: float=0.99
 ) -> Tuple[int, float]:  # I could market this
-    max = np.nanquantile(to_plot, q=0.95)
+    max = np.nanquantile(to_plot, q=q)
     lmax = np.log10(max)
     lmax = int(np.sign(lmax) * np.round(np.abs(lmax)))
 
@@ -261,12 +261,12 @@ def infer_extent(
 
 
 def create_levels(
-    to_plot: list, nlevels: int = None, sym: bool = False, start: float = None
+    to_plot: list, nlevels: int = None, sym: bool = False, start: float = None, q: float=0.99
 ) -> Tuple[NDArray, NDArray, str]:
     if sym is None:
         sym = infer_sym(to_plot)
 
-    nlevels_cand, min_rounded, max_rounded = infer_extent(to_plot, sym, start)
+    nlevels_cand, min_rounded, max_rounded = infer_extent(to_plot, sym, start, q=q)
 
     if nlevels is None:
         nlevels = nlevels_cand
@@ -350,7 +350,7 @@ class Clusterplot:
                 / (self.maxlon - self.minlon)
                 * self.nrow
                 / (self.ncol + (0.5 if honeycomb else 0))
-                * 0.8  # for the colorbar padding
+                * (0.8 if honeycomb else 1)
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
@@ -428,13 +428,14 @@ class Clusterplot:
         titles: Iterable = None,
         colors: list | str = None,
         linestyles: list | str = None,
+        q: float=0.99,
         **kwargs,
     ) -> None:
         assert len(to_plot) <= len(self.axes)
 
         lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
 
-        levelsc, _, _, sym = create_levels(to_plot, nlevels, sym, start)
+        levelsc, levelscf, _, sym = create_levels(to_plot, nlevels, sym, start, q=q)
 
         if sym and linestyles is None:
             linestyles = ["dashed", "solid"]
@@ -456,7 +457,7 @@ class Clusterplot:
                 lat,
                 toplt,
                 transform=ccrs.PlateCarree(),
-                levels=levelsc,
+                levels=levelscf,
                 colors=colors,
                 linestyles=linestyles,
                 linewidths=2.0,
@@ -489,9 +490,10 @@ class Clusterplot:
         clabels: Union[bool, list] = None,
         cbar_label: str = None,
         cbar_kwargs: Mapping = None,
+        q: float=0.99,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, NDArray]:
-        levelsc, levelscf, extend, sym = create_levels(to_plot, nlevels, sym, start)
+        levelsc, levelscf, extend, sym = create_levels(to_plot, nlevels, sym, start, q=q)
 
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
@@ -550,6 +552,7 @@ class Clusterplot:
         cbar_label: str = None,
         titles: Iterable = None,
         cbar_kwargs: Mapping = None,
+        q: float=0.99,
         **kwargs,
     ) -> ScalarMappable:
         assert len(to_plot) <= len(self.axes)
@@ -567,6 +570,7 @@ class Clusterplot:
             clabels,
             cbar_label,
             cbar_kwargs,
+            q=q,
             **kwargs,
         )
 
