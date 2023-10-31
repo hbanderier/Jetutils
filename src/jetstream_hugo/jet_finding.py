@@ -180,17 +180,7 @@ def compute_all_jet_props(
     with Pool(processes=processes) as pool:
         all_props = list(pool.imap(func, all_jets, chunksize=chunk_size))
     return all_props
-
-
-def props_to_np(all_props: list, maxnjet: int = 2) -> NDArray:
-    props_as_np = np.zeros((len(all_props), maxnjet, len(all_props[0][0])))
-    for i, props in enumerate(all_props):
-        for j, prop in enumerate(props):
-            if j > 1:
-                continue
-            props_as_np[i, j, :] = [val for val in prop.values()]
-    return props_as_np
-
+    
 
 def props_to_ds(all_props: list, time: NDArray | xr.DataArray = None, maxnjet: int = 4) -> xr.Dataset:
     if time is None:
@@ -220,9 +210,21 @@ def props_to_ds(all_props: list, time: NDArray | xr.DataArray = None, maxnjet: i
     return ds
 
 
+def props_to_np(props_as_ds: xr.Dataset) -> NDArray:
+    props_as_ds_interpolated = props_as_ds.interpolate_na(dim='time', method='linear', fill_value="extrapolate")
+    props_as_np = np.zeros((len(props_as_ds.time), len(props_as_ds.jet) * len(props_as_ds.data_vars)))
+    i = 0
+    for varname in props_as_ds.data_vars:
+        for jet in props_as_ds.jet:
+            props_as_np[:, i] = props_as_ds_interpolated[varname].sel(jet=jet).values
+            i = i + 1
+    return props_as_np
+
+
 def better_is_polar(all_jets:list, props_as_ds: xr.Dataset, exp_low_path: Path) -> xr.Dataset:
     this_path = exp_low_path.joinpath('better_is_polar.nc')
     if this_path.is_file():
+        props_as_ds['int_low'] = xr.open_dataarray(exp_low_path.joinpath('int_low.nc'))
         props_as_ds['is_polar'] = xr.open_dataarray(this_path)
         return props_as_ds
     print('computing int low')
@@ -237,7 +239,9 @@ def better_is_polar(all_jets:list, props_as_ds: xr.Dataset, exp_low_path: Path) 
             jet_low = np.asarray([x, y, s_low]).T
             props_as_ds['int_low'][it, j] = jet_integral(jet_low).item()
             
-    props_as_ds['is_polar'] = (props_as_ds['mean_lat'] * 200 + props_as_ds['int_low']) > 9000
+    props_as_ds['is_polar'] = (props_as_ds['mean_lat'] * 200 - props_as_ds['mean_lon'] * 30 + props_as_ds['int_low']) > 9000
+    props_as_ds['int_low'].to_netcdf(exp_low_path.joinpath('int_low.nc'))
+    props_as_ds['is_polar'].to_netcdf(this_path)
     return props_as_ds
 
 

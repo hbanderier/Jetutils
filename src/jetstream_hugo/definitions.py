@@ -89,8 +89,23 @@ PRETTIER_VARNAME = {
     'tilt': 'Tilt',
     'sinuosity': 'Sinuosity',
     'int_over_europe': 'Int. speed over Europe',
-    'int_all': 'Integrated speed',
+    'int': 'Integrated speed',
     'persistence': 'Persistence',
+}
+
+DEFAULT_VALUES = {
+    'mean_lon': 0,
+    'mean_lat': 45,
+    'Lon': 0,
+    'Lat': 45,
+    'Spe': 0,
+    'lon_ext': 0,
+    'lat_ext': 0,
+    'tilt': 0,
+    'sinuosity': 0,
+    'int_over_europe': 0,
+    'int': 0,
+    'persistence': 1,
 }
 
 LATEXY_VARNAME = {
@@ -104,7 +119,7 @@ LATEXY_VARNAME = {
     'tilt': r'$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$',
     'sinuosity': r'$R^2$',
     'int_over_europe': '$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$',
-    'int_all': '$\int s \mathrm{d}\lambda$',
+    'int': '$\int s \mathrm{d}\lambda$',
     'persistence': '$\Delta t$',
 }
 

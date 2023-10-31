@@ -150,7 +150,8 @@ def labels_to_centers(
     counts = counts / float(len(labels))
     centers = [da.isel(time=(labels == i)).mean(dim="time") for i in unique_labels]
     centers = xr.concat(centers, dim=coord)
-    return centers.assign_coords({"ratios": (coord, counts)})
+    centers = centers.assign_coords({'ratio': (coord, counts), 'label': (coord, unique_labels)})
+    return centers.set_xindex('label')
 
 
 def centers_as_dataarray(
