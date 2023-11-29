@@ -1,5 +1,5 @@
 from itertools import product
-from typing import Any, Mapping, Tuple, Union, Iterable
+from typing import Any, Mapping, Sequence, Tuple, Union, Iterable
 from nptyping import NDArray, Object
 
 import numpy as np
@@ -413,7 +413,13 @@ class Clusterplot:
         for title, ax in zip(titles, self.axes):
             if isinstance(title, float):
                 title = f"{title:.2f}"
-            ax.set_title(title)
+            ax.set_title(title, fontsize=16)
+            
+    def resize_relative(self, ratios=Sequence[float]):
+        self.fig.set_size_inches(self.fig.get_size_inches() * np.asarray(ratios))
+        
+    def resize_absolute(self, size=Sequence[float]):
+        self.fig.set_size_inches(np.asarray(size))
 
     def add_contour(
         self,
@@ -608,7 +614,12 @@ class Clusterplot:
         color: str | list = "black",
         hatch: str = "..",
     ) -> None:
-        to_test = [da.isel(time=mas) for mas in mask.T]
+        to_test = []
+        for mas in mask.T:
+            if np.sum(mas) < 1:
+                to_test.append(da[:1].copy(data=np.zeros((1, *da.shape[1:]))))
+                continue
+            to_test.append(da.isel(time=mas))
 
         lon = da.lon.values
         lat = da.lat.values
@@ -617,7 +628,7 @@ class Clusterplot:
         # da = np.sort(da, axis=0)
         for i in trange(mask.shape[1]):
             significances.append(
-                field_significance(to_test[i], da, 200, q=0.02)[int(FDR)]
+                field_significance(to_test[i], da, 50, q=0.02)[int(FDR)]
             )
 
         for ax, signif in zip(self.axes, significances):
@@ -642,7 +653,13 @@ class Clusterplot:
         stippling: bool | str = False,
         **kwargs,
     ) -> ScalarMappable | None:
-        to_plot = [da.isel(time=mas).mean(dim="time") for mas in mask.T]
+        to_plot = []
+        for mas in tqdm(mask.T, total=mask.shape[1]):
+            if np.sum(mas) < 1:
+                to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
+                continue
+            to_plot.append(da.isel(time=mas).mean(dim="time"))
+            
         if type == "contourf":
             im = self.add_contourf(
                 to_plot,
