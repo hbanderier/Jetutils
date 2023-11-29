@@ -305,6 +305,29 @@ def open_da(
     clim_smoothing: Mapping = None,
     smoothing: Mapping = None,
 ) -> xr.DataArray:
+    """_summary_
+
+    Args:
+        dataset (str): _description_
+        varname (str): _description_
+        resolution (str): Time resolution like '6H' -> Change to data_type (str), '6H_p' ? To accomodate for isentrope data ?
+        period (list | tuple | Literal[&quot;all&quot;] | int | str, optional): _description_. Defaults to "all".
+        season (list | str, optional): _description_. Defaults to None.
+        minlon (Optional[int  |  float], optional): _description_. Defaults to None.
+        maxlon (Optional[int  |  float], optional): _description_. Defaults to None.
+        minlat (Optional[int  |  float], optional): _description_. Defaults to None.
+        maxlat (Optional[int  |  float], optional): _description_. Defaults to None.
+        levels (int | str | list | tuple | Literal[&quot;all&quot;], optional): _description_. Defaults to "all".
+        clim_type (str, optional): _description_. Defaults to None.
+        clim_smoothing (Mapping, optional): _description_. Defaults to None.
+        smoothing (Mapping, optional): _description_. Defaults to None.
+
+    Raises:
+        ValueError: _description_
+
+    Returns:
+        xr.DataArray: _description_
+    """
     path = data_path(
         dataset, varname, resolution, clim_type, clim_smoothing, smoothing, False
     )

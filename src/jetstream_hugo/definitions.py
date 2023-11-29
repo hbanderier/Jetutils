@@ -24,8 +24,8 @@ elif pf.find("el7") >= 0:  # find better later
     NODE = "UBELIX"
     DATADIR = "/storage/scratch/users/hb22g102"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    N_WORKERS = 8
-    MEMORY_LIMIT = "1.5GiB"
+    N_WORKERS = 16
+    MEMORY_LIMIT = "4GiB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
@@ -38,6 +38,7 @@ COMPUTE_KWARGS = {
 }
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
+FIGURES = '/storage/homefs/hb22g102/persistent-extremes-era5/Figures'
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGEPL = pd.date_range("19590101", "20211231")
@@ -48,26 +49,15 @@ DATERANGEPL_EXT = pd.date_range("19400101", "20221231")
 YEARSPL_EXT = np.unique(DATERANGEPL_EXT.year)
 DATERANGEPL_EXT_SUMMER = DATERANGEPL_EXT[np.isin(DATERANGEPL_EXT.month, [6, 7, 8])]
 
+DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq='6H')
+DATERANGEPL_EXT_6H_SUMMER = DATERANGEPL_EXT_6H[np.isin(DATERANGEPL_EXT_6H.month, [6, 7, 8])]
+
 DATERANGEML = pd.date_range("19770101", "20211231")
 
 WINDBINS = np.arange(0, 25, 0.5)
 LATBINS = np.arange(15, 75.1, 0.5)
 LONBINS = np.arange(-90, 30, 1)
 DEPBINS = np.arange(-25, 25.1, 0.5)
-
-ZOO = [
-    "Lat",
-    "Int",
-    "Shar",
-    "Lats",
-    "Latn",
-    "Tilt",
-    "Lon",
-    "Lonw",
-    "Lone",
-    "Dep",
-    "Mea",
-]
 
 REGIONS = ["S-W", "West", "S-E", "North", "East", "N-E"]
 
@@ -88,9 +78,30 @@ PRETTIER_VARNAME = {
     'lat_ext': 'Extent in lat.',
     'tilt': 'Tilt',
     'sinuosity': 'Sinuosity',
-    'int_over_europe': 'Int. speed over Europe',
+    'width': 'Width',
     'int': 'Integrated speed',
-    'persistence': 'Persistence',
+    'int_low': 'Integrated speed low level',
+    'int_over_europe': 'Integrated speed over Europe',
+    'persistence': 'Jet lifetime',
+    'exists': 'Exists',
+}
+
+UNITS = {
+    'mean_lon': r'$~^{\circ} \mathrm{E}$',
+    'mean_lat': r'$~^{\circ} \mathrm{N}$',
+    'Lon': r'$~^{\circ} \mathrm{E}$',
+    'Lat': r'$~^{\circ} \mathrm{N}$',
+    'Spe': r'$\mathrm{m} \cdot \mathrm{s}^{-1}$',
+    'lon_ext': r'$~^{\circ} \mathrm{E}$',
+    'lat_ext': r'$~^{\circ} \mathrm{N}$',
+    'tilt': r'$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$',
+    'sinuosity': r'$~$',
+    'width': r'$~^{\circ} \mathrm{N}$',
+    'int': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
+    'int_low': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
+    'int_over_europe': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
+    'persistence': r'$\mathrm{day}$',
+    'exists': r'$~$',
 }
 
 DEFAULT_VALUES = {
@@ -103,9 +114,12 @@ DEFAULT_VALUES = {
     'lat_ext': 0,
     'tilt': 0,
     'sinuosity': 0,
-    'int_over_europe': 0,
+    'width': 0,
     'int': 0,
+    'int_low': 0,
+    'int_over_europe': 0,
     'persistence': 1,
+    'exists': 0,
 }
 
 LATEXY_VARNAME = {
@@ -118,8 +132,10 @@ LATEXY_VARNAME = {
     'lat_ext': '$\Delta \phi$',
     'tilt': r'$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$',
     'sinuosity': r'$R^2$',
-    'int_over_europe': '$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$',
+    'width': '$w$',
     'int': '$\int s \mathrm{d}\lambda$',
+    'int_low': r'$\int_{700\text{ hPa}} s \mathrm{d}\lambda$',
+    'int_over_europe': '$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$',
     'persistence': '$\Delta t$',
 }
 
