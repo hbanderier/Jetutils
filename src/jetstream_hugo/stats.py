@@ -11,8 +11,10 @@ import pandas as pd
 import xarray as xr
 from scipy.stats import norm
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, f1_score, balanced_accuracy_score
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 from jetstream_hugo.definitions import N_WORKERS, infer_sym
 
@@ -202,14 +204,33 @@ def field_significance_v2(
     return nocorr, fdrcorr
 
 
-def comb_logistic_regression(y: NDArray, ds: xr.Dataset, all_combinations: list):
-    coefs = np.zeros((len(all_combinations), len(all_combinations[0])))
-    scores = np.zeros(len(all_combinations))
+def comb_random_forest(y: NDArray, ds: xr.Dataset, all_combinations: list):
+    feature_importance = np.zeros((len(all_combinations), len(all_combinations[0])))
+    scores = np.zeros((len(all_combinations), 3))
     for j, comb in enumerate(all_combinations):
         X = np.nan_to_num(np.stack([ds[varname][:, jet].values for varname, jet in comb], axis=1), nan=0)
-        log = LogisticRegression().fit(X=X, y=y)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2) 
+        forest_regressor = RandomForestClassifier(n_estimators=100, n_jobs=N_WORKERS, class_weight='balanced').fit(X_train, y_train)
+        scores[j, 0] = roc_auc_score(y_test, forest_regressor.predict_proba(X_test)[:, 1])
+        y_pred = forest_regressor.predict(X_test)
+        scores[j, 1] = f1_score(y_test, y_pred)
+        scores[j, 2] = balanced_accuracy_score(y_test, y_pred)
+        feature_importance[j, :] = forest_regressor.feature_importances_
+    return feature_importance, scores
+
+
+def comb_logistic_regression(y: NDArray, ds: xr.Dataset, all_combinations: list):
+    coefs = np.zeros((len(all_combinations), len(all_combinations[0])))
+    scores = np.zeros((len(all_combinations), 3))
+    for j, comb in enumerate(all_combinations):
+        X = np.nan_to_num(np.stack([ds[varname][:, jet].values for varname, jet in comb], axis=1), nan=0)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2) 
+        log = LogisticRegression().fit(X_train, y_train)
         coefs[j, :] = log.coef_[0]
-        scores[j] = roc_auc_score(y, log.predict_proba(X)[:, 1])
+        scores[j, 0] = roc_auc_score(y_test, log.predict_proba(X_test)[:, 1])
+        y_pred = log.predict(X_test)
+        scores[j, 1] = f1_score(y_test, y_pred)
+        scores[j, 2] = balanced_accuracy_score(y_test, y_pred)
     return coefs, scores
 
 
