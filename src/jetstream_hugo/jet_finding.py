@@ -13,7 +13,7 @@ from sklearn.cluster import AgglomerativeClustering
 from scipy.sparse.csgraph import csgraph_from_masked, shortest_path
 from libpysal.weights import DistanceBand
 from tqdm import tqdm
-from numba import njit, jit
+from numba import njit
 
 from jetstream_hugo.definitions import DATERANGEPL_SUMMER, DATERANGEPL_EXT_SUMMER, N_WORKERS, labels_to_mask
 
@@ -144,7 +144,18 @@ def jet_integral(jet: NDArray) -> float:
     return np.trapz(jet[:, 2], x=np.cumsum(path))
 
 
-def compute_jet_props(jets: list) -> list:
+def get_jet_width(x, y, s, da) -> Tuple[NDArray, NDArray]:
+    lat = da.lat.values
+    half_peak_mask = (da.loc[:, x] < s[None, :] / 2).values
+    half_peak_mask[[0, -1], :] = True # worst case i clip the width at the top of the image
+    below_mask = lat[:, None] <= y[None, :]
+    above_mask = lat[:, None] >= y[None, :]
+    below = y - lat[len(lat) - np.argmax((half_peak_mask & below_mask)[::-1], axis=0) - 1]
+    above = lat[np.argmax(half_peak_mask & above_mask, axis=0)] - y
+    return below, above
+
+
+def compute_jet_props(jets: list, da: xr.DataArray) -> list:
     props = []
     
     for jet in jets:
@@ -162,6 +173,8 @@ def compute_jet_props(jets: list) -> list:
         slope, _, r_value, _, _ = linregress(x, y)
         dic["tilt"] = slope
         dic["sinuosity"] = 1 - r_value ** 2
+        above, below = get_jet_width(x, y, s, da)
+        dic["width"] = np.mean(above + below + 1)
         try:
             dic["int_over_europe"] = jet_integral(jet[x > -10])
         except ValueError:
@@ -171,14 +184,18 @@ def compute_jet_props(jets: list) -> list:
     return props
 
 
+def unpack_compute_jet_props(args): # No such thing as starimap
+    return compute_jet_props(*args)
+
+
 def compute_all_jet_props(
     all_jets: list,
+    da: xr.DataArray,
     processes: int = N_WORKERS,
     chunk_size: int = 50,
 ) -> list:
-    func = partial(compute_jet_props)
     with Pool(processes=processes) as pool:
-        all_props = list(pool.imap(func, all_jets, chunksize=chunk_size))
+        all_props = list(tqdm(pool.imap(unpack_compute_jet_props, zip(all_jets, da), chunksize=chunk_size), total=len(all_jets)))
     return all_props
     
 
@@ -242,6 +259,7 @@ def better_is_polar(all_jets:list, props_as_ds: xr.Dataset, exp_low_path: Path) 
     props_as_ds['is_polar'] = (props_as_ds['mean_lat'] * 200 - props_as_ds['mean_lon'] * 30 + props_as_ds['int_low']) > 9000
     props_as_ds['int_low'].to_netcdf(exp_low_path.joinpath('int_low.nc'))
     props_as_ds['is_polar'].to_netcdf(this_path)
+    del props_as_ds['int_low']
     return props_as_ds
 
 
@@ -257,6 +275,41 @@ def categorize_ds_jets(props_as_ds: xr.Dataset):
         values[:, 1] = props_as_ds[varname].where(cond).mean(dim='jet').values
         ds[varname] = ((time_name, 'jet'), values)
     return ds
+
+
+def jet_overlap_values(jet1: NDArray, jet2: NDArray) -> Tuple[float, float]:
+    _, idx1 = np.unique(jet1[:, 0], return_index=True)
+    _, idx2 = np.unique(jet2[:, 0], return_index=True)
+    x1, y1, s1 = jet1[idx1, :3].T
+    x2, y2, s2 = jet2[idx2, :3].T
+    mask12 = np.isin(x1, x2)
+    mask21 = np.isin(x2, x1)
+    overlap = np.sum((s1[mask12] + s2[mask21]) / 2)
+    vert_dist = np.sum(np.abs(y1[mask12] - y2[mask21]))
+    return overlap, vert_dist
+
+
+def compute_all_overlaps(all_jets: list, props_as_ds: xr.Dataset) -> Tuple[NDArray, NDArray]:
+    overlaps = np.full(len(all_jets), np.nan)
+    vert_dists = np.full(len(all_jets), np.nan)
+    time = props_as_ds.time.values
+    for i, (jets, are_polar) in enumerate(zip(all_jets, props_as_ds['is_polar'].values)):
+        nj = min(len(are_polar), len(jets))
+        if nj < 2 or sum(are_polar[:nj]) == nj or sum(are_polar[:nj]) == 0:
+            continue
+        polars = []
+        subtropicals = []
+        for jet, is_polar in zip(jets, are_polar):
+            if is_polar:
+                polars.append(jet)
+            else:
+                subtropicals.append(jet)
+        polars = np.concatenate(polars, axis=0)
+        subtropicals = np.concatenate(subtropicals, axis=0)
+        overlaps[i], vert_dists[i] = jet_overlap_values(polars, subtropicals)
+    overlaps = xr.DataArray(overlaps, coords={'time': time})
+    vert_dists = xr.DataArray(vert_dists, coords={'time': time})
+    return overlaps, vert_dists
     
     
 def all_jets_to_one_array(all_jets: list):
@@ -316,7 +369,7 @@ def amin_ax1(a):
 
 
 @njit
-def track_jets(all_jets_one_array, where_are_jets):
+def track_jets(all_jets_one_array, where_are_jets, progress_proxy=None):
     factor: float = 0.2
     yearbreaks = 92 if where_are_jets.shape[0] < 10000 else 92 * 4 # find better later
     guess_nflags: int = 6000
@@ -401,6 +454,9 @@ def track_jets(all_jets_one_array, where_are_jets):
                 flags[t + 1, j] = last_flag
                 flagged[j] = True
 
+        if progress_proxy is not None:
+            progress_proxy.update(1)
+
     return all_jets_over_time, flags
 
 
@@ -415,12 +471,15 @@ def extract_props_over_time(jet, all_props):
 
 def add_persistence_to_props(ds_props: xr.Dataset, flags: NDArray):
     names = tuple(ds_props.coords.keys())
+    dt1 = (ds_props.time.values[1] - ds_props.time.values[0]).astype('timedelta64[h]')
+    dt2 = np.timedelta64(1, 'D') 
+    factor = float(dt1 / dt2)
     num_jets = ds_props['mean_lon'].shape[1]
     jet_persistence_prop = flags[:, :num_jets].copy().astype(float)
     nan_flag = np.amax(flags)
     unique_flags, jet_persistence = np.unique(flags, return_counts=True)
     for i, flag in enumerate(unique_flags[:-1]):
-        jet_persistence_prop[flags[:, :num_jets] == flag] = jet_persistence[i]
+        jet_persistence_prop[flags[:, :num_jets] == flag] = jet_persistence[i] * factor
     jet_persistence_prop[flags[:, :num_jets] == nan_flag] = np.nan
     ds_props['persistence'] = (names, jet_persistence_prop)
     return ds_props
