@@ -13,6 +13,7 @@ except ImportError:
 import pandas as pd
 import xarray as xr
 from dask.diagnostics import ProgressBar
+from numba_progress import ProgressBar as NumbaProgress
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from kmedoids import KMedoids
@@ -133,7 +134,7 @@ def cluster_from_projs(
     else:
         max_weight = np.argmax(X, axis=1)
         Xmax = np.take_along_axis(X, max_weight[:, None], axis=1)
-        sign = np.ones(Xmax.shape)
+        sign = np.ones(Xmax.shape, dtype=int)
     offset = 0
     if adjust:
         sign[np.abs(Xmax) < sigma] = 0
@@ -255,8 +256,7 @@ class Experiment(object):
         
         da_path = self.path.joinpath('da.nc')
         if da_path.is_file():
-            with ProgressBar():
-                self.da = xr.open_dataarray(da_path).load()
+            self.da = xr.open_dataarray(da_path).load()
         else:
             self.da = open_da(*self.open_da_args)
             with ProgressBar():
@@ -265,6 +265,13 @@ class Experiment(object):
 
         self.lon, self.lat = self.da.lon.values, self.da.lat.values
         self.time = self.da.time
+        
+    def add_data(self, new_year: list | tuple | int):
+        open_args = self.open_da_args.copy()
+        open_args[3] = new_year
+        other_da = open_da(open_args)
+        self.da = xr.concat([self.da, other_da], dim='time')
+        self.da.to_netcdf(self.path.joinpath('da.nc'), format='NETCDF4')
         
     def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
         norm_path = self.path.joinpath(f"norm.nc")
@@ -770,7 +777,7 @@ class Experiment(object):
     @_only_windspeed
     def compute_jet_props(self) -> Tuple:
         all_jets, _, _ = self.find_jets()
-        return compute_all_jet_props(all_jets)
+        return compute_all_jet_props(all_jets, self.da)
 
     @_only_windspeed
     def track_jets(self) -> Tuple:
@@ -789,8 +796,8 @@ class Experiment(object):
                 all_jets_over_time,
                 flags,
             )
-
-        all_jets_over_time, flags = track_jets(all_jets_one_array, where_are_jets)
+        with NumbaProgress(total=where_are_jets.shape[0] - 1) as progress:
+            all_jets_over_time, flags = track_jets(all_jets_one_array, where_are_jets, progress_proxy=progress)
 
         save_pickle(all_jets_over_time, ofile_ajot)
         np.save(ofile_flags, flags)
@@ -799,9 +806,9 @@ class Experiment(object):
     
     @_only_windspeed
     def props_as_ds(self, categorize: bool = True) -> xr.Dataset:
-        _, _, _, _, flags = self.track_jets()
+        _, where_are_jets, _, _, flags = self.track_jets()
         all_props = self.compute_jet_props()
-        props_as_ds = props_to_ds(all_props, self.time, 4)
+        props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
         props_as_ds = add_persistence_to_props(props_as_ds, flags)
         if categorize:
             return categorize_ds_jets(props_as_ds)
