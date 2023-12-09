@@ -1,14 +1,18 @@
+from ast import Assert
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from nptyping import NDArray
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import xarray as xr
+import flox.xarray
 import xrft
 from tqdm import tqdm
 from dask.diagnostics import ProgressBar, ResourceProfiler
 from jetstream_hugo.definitions import (
+    N_WORKERS,
     DEFAULT_VARNAME,
     DATADIR,
     CLIMSTOR,
@@ -147,7 +151,7 @@ def determine_chunks(da: xr.DataArray, chunk_type=None) -> Mapping:
     lat_name = "lat" if "lat" in dims else "latitude"
     lev_name = "lev" if "lev" in dims else "level"
     if lev_name in dims:
-        chunks = {lev_name: -1}
+        chunks = {lev_name: 6}
     else:
         chunks = {}
         
@@ -278,8 +282,10 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
         filename = filename[0]
     if isinstance(filename, list):
         da = xr.open_mfdataset(filename, chunks=None)
+        da = da.unify_chunks()
     else:
         da = xr.open_dataset(filename, chunks='auto')
+        da = da.unify_chunks()
     try:
         da = da[varname]
     except KeyError:
@@ -375,13 +381,19 @@ def open_da(
             print(f"Wrong season specifier : {season} is not a valid xarray season")
             raise ValueError
         
-    if 'lev' in da.dims:
+    if 'lev' in da.dims and levels != 'all':
         da = extract_levels(da, levels)
+    elif 'lev' in da.dims:
+        da = da.chunk({'lev': 1})
         
     if clim_type is not None or smoothing is None:
         return da
     
     return smooth(da, smoothing)
+
+
+def compute_hourofyear(da: xr.DataArray) -> xr.DataArray:
+    return da.time.dt.hour + 24 * (da.time.dt.dayofyear - 1)
 
 
 def compute_all_smoothed_anomalies(
@@ -414,31 +426,52 @@ def compute_all_smoothed_anomalies(
             anom = smooth(anom, smoothing).compute(**COMPUTE_KWARGS)
             anom.to_netcdf(dest)
         return
-    if clim_type.lower() in ["doy", "dayofyear"]:
-        coordname = "dayofyear"
-    elif clim_type.lower() in ["month", "monthly"]:
-        coordname = "month"
+    da = open_da(
+        dataset, varname, resolution, period="all", levels="all"
+    )
+    
+    if clim_type.lower() == 'hourofyear':
+        da = da.assign_coords(hourofyear=compute_hourofyear(da))
+        coord = da.hourofyear
+    elif clim_type.lower() in [att for att in dir(da.time.dt) if not att.startswith('_')]:
+        coord = getattr(da.time.dt, clim_type)
     else:
-        raise NotImplementedError()
-    if dest_clim.is_file():
-        clim = xr.open_dataarray(dest_clim)
-    else:
-        da = open_da(
-            dataset, varname, resolution, period="all", levels="all"
-        )
-        gb = da.groupby(f"time.{coordname}")
-        with ProgressBar():
-            clim = gb.mean(dim="time").compute(**COMPUTE_KWARGS)
-        clim = smooth(clim, clim_smoothing)
-        clim.to_netcdf(dest_clim)
+        raise NotImplementedError
+    da = flox.xarray.rechunk_for_cohorts(
+        da,
+        dim="time",
+        labels=coord,
+        force_new_chunk_at=np.linspace(coord.min() // 12, coord.max() // 12, N_WORKERS * 32 + 2, dtype=int)[1:-1] * 12,
+        ignore_old_chunks=True,
+    )
+    try:
+        da = da.chunk({'lev': 1})
+    except ValueError:
+        pass
+    with ProgressBar():
+        clim = flox.xarray.xarray_reduce(
+            da,
+            coord,
+            func="mean",
+            method="cohorts",
+        ).compute(**COMPUTE_KWARGS)
+    clim = smooth(clim, clim_smoothing)
+    clim.to_netcdf(dest_clim)
     if len(sources) > 1:
         iterator_ = tqdm(zip(sources, dests_anom), total=len(dests_anom))
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
         anom = rename_coords(_open_dataarray(source, varname))
-        this_gb = anom.groupby(f"time.{coordname}")
-        anom = (this_gb - clim).reset_coords(coordname, drop=True)
+        if clim_type.lower() == 'hourofyear':
+            anom = anom.assign_coords(hourofyear=compute_hourofyear(da))
+            coord = anom.hourofyear
+        elif clim_type.lower() in [att for att in dir(anom.time.dt) if not att.startswith('_')]:
+            coord = getattr(anom.time.dt, clim_type)
+        else:
+            raise NotImplementedError
+        this_gb = anom.groupby(coord)
+        anom = (this_gb - clim).reset_coords(clim_type, drop=True)
         if smoothing is not None :
             anom = smooth(anom, smoothing)
         if len(sources) > 1:
@@ -463,3 +496,36 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
             filename + 1, format="%Y"
         )
     return ((time_da >= t1) & (time_da < t2)).values
+
+
+def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.Dataset, xr.Dataset]:
+    ofile = Path('/storage/scratch/users/hb22g102/ERA5/pvs/6H')
+    ofile1 = ofile.joinpath('full.nc')
+    ofile2 = ofile.joinpath('anom.nc')
+    try:
+        ds_pvs = xr.open_dataset(ofile1).load()
+        ds_pvs_anoms = xr.open_dataset(ofile2).load()
+    except FileNotFoundError:
+        print('Events to xarray')
+        events = gpd.read_parquet('/storage/scratch/users/hb22g102/ERA5/RWB_index/era5_pv_streamers_350K_1959-2022.parquet')
+        events = events[events.event_area >= events.event_area.quantile(q)]
+        from wavebreaking import to_xarray
+        events = events[np.isin(events.date.dt.month, [6, 7, 8])]
+        da_s_late = da_template.sel(time=da_template.time.dt.year>=1959)
+        mask_anti = events.intensity >= 0
+        mask_cycl = events.intensity < 0
+        mask_tropo = events.mean_var < events.level
+        da_pvs_anti = to_xarray(da_s_late, events[mask_anti & mask_tropo])
+        da_pvs_cycl = to_xarray(da_s_late, events[mask_cycl & mask_tropo])
+
+        ds_pvs = {'anti': da_pvs_anti, 'cycl': da_pvs_cycl}
+        ds_pvs = xr.Dataset(ds_pvs)
+        ds_pvs_anoms = {}
+        for typ in ['anti', 'cycl']:
+            da = ds_pvs[typ]
+            da_gb = da.groupby('time.year')
+            ds_pvs_anoms[typ] = (da_gb - da_gb.mean()).reset_coords('year', drop=True)
+        ds_pvs_anoms = xr.Dataset(ds_pvs_anoms)    
+        ds_pvs.to_netcdf(ofile1)
+        ds_pvs_anoms.astype(np.float32).to_netcdf(ofile2)
+    return ds_pvs, ds_pvs_anoms
