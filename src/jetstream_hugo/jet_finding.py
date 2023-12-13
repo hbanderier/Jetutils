@@ -200,7 +200,7 @@ def get_jet_width(x, y, s, da) -> Tuple[NDArray, NDArray]:
     return below, above
 
 
-def compute_jet_props(jets: list, da: xr.DataArray) -> list:
+def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
     props = []
 
     for jet in jets:
@@ -218,8 +218,11 @@ def compute_jet_props(jets: list, da: xr.DataArray) -> list:
         slope, _, r_value, _, _ = linregress(x, y)
         dic["tilt"] = slope
         dic["sinuosity"] = 1 - r_value**2
-        above, below = get_jet_width(x, y, s, da)
-        dic["width"] = np.mean(above + below + 1)
+        try:
+            above, below = get_jet_width(x, y, s, da)
+            dic["width"] = np.mean(above + below + 1)
+        except AttributeError:
+            pass
         try:
             dic["int_over_europe"] = jet_integral(jet[x > -10])
         except ValueError:
@@ -235,10 +238,12 @@ def unpack_compute_jet_props(args):  # No such thing as starimap
 
 def compute_all_jet_props(
     all_jets: list,
-    da: xr.DataArray,
+    da: xr.DataArray = None,
     processes: int = N_WORKERS,
     chunk_size: int = 50,
 ) -> list:
+    if da is None:
+        da = [None] * len(all_jets)
     with Pool(processes=processes) as pool:
         all_props = list(
             tqdm(
@@ -255,12 +260,8 @@ def props_to_ds(
     all_props: list, time: NDArray | xr.DataArray = None, maxnjet: int = 4
 ) -> xr.Dataset:
     if time is None:
-        time = DATERANGEPL_SUMMER
-    try:
-        time_name = time.name
-        time = time.values
-    except AttributeError:
-        time_name = "time"
+        time = DATERANGEPL_EXT_SUMMER
+    time_name = "time"
     assert len(time) == len(all_props)
     varnames = list(all_props[0][0].keys())
     ds = {}
