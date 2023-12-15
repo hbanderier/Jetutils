@@ -163,7 +163,7 @@ def find_jets_v32(
 def find_all_jets(
     da: xr.DataArray,
     processes: int = N_WORKERS,
-    chunksize: int = 20,
+    chunksize: int = 2,
     **kwargs,
 ) -> Tuple[list, xr.DataArray]:
     func = partial(find_jets_v32, **kwargs)
@@ -240,7 +240,7 @@ def compute_all_jet_props(
     all_jets: list,
     da: xr.DataArray = None,
     processes: int = N_WORKERS,
-    chunk_size: int = 50,
+    chunk_size: int = 10,
 ) -> list:
     if da is None:
         da = [None] * len(all_jets)
