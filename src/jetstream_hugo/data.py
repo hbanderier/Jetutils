@@ -71,6 +71,12 @@ def fn(date: Union[list, NDArray, pd.DatetimeIndex, pd.Timestamp], which):
         raise TypeError(f"Invalid type : {type(date)}")
     
     
+def get_land_mask() -> xr.DataArray:
+    mask = xr.open_dataarray(f'{DATADIR}/ERA5/land_sea.nc')
+    mask = mask.squeeze().rename(longitude='lon', latitude='lat').reset_coords('time', drop=True)
+    return mask.astype(bool)
+    
+    
 def determine_file_structure(path: Path) -> str:
     if path.joinpath("full.nc").is_file():
         return "one_file"
@@ -373,7 +379,7 @@ def open_da(
         da = da.isel(time=np.isin(da.time.dt.year, period))
 
     if isinstance(season, list):
-        da.isel(time=np.isin(da.time.dt.month, season))
+        da = da.isel(time=np.isin(da.time.dt.month, season))
     elif isinstance(season, str):
         if season in ["DJF", "MAM", "JJA", "SON"]:
             da = da.isel(time=da.time.dt.season == season)
