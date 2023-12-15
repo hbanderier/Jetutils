@@ -29,6 +29,7 @@ from jetstream_hugo.definitions import (
     DATERANGEPL_EXT_SUMMER,
     YEARSPL,
     YEARSPL_EXT,
+    N_WORKERS,
     COMPUTE_KWARGS,
     degcos,
     degsin,
@@ -756,7 +757,7 @@ class Experiment(object):
         return wrapper_decorator
 
     @_only_windspeed
-    def find_jets(self) -> Tuple:
+    def find_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
         ofile_aj = self.path.joinpath("all_jets.pkl")
         ofile_waj = self.path.joinpath("where_are_jets.npy")
         ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
@@ -767,7 +768,7 @@ class Experiment(object):
             all_jets_one_array = np.load(ofile_ajoa)
             return all_jets, where_are_jets, all_jets_one_array
 
-        all_jets = find_all_jets(self.da)
+        all_jets = find_all_jets(self.da, processes, chunksize)
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
         save_pickle(all_jets, ofile_aj)
         np.save(ofile_waj, where_are_jets)
@@ -775,13 +776,13 @@ class Experiment(object):
         return all_jets, where_are_jets, all_jets_one_array
 
     @_only_windspeed
-    def compute_jet_props(self) -> Tuple:
-        all_jets, _, _ = self.find_jets()
-        return compute_all_jet_props(all_jets, self.da)
+    def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+        all_jets, _, _ = self.find_jets(processes, chunksize)
+        return compute_all_jet_props(all_jets, self.da, processes, chunksize)
 
     @_only_windspeed
-    def track_jets(self) -> Tuple:
-        all_jets, where_are_jets, all_jets_one_array = self.find_jets()
+    def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+        all_jets, where_are_jets, all_jets_one_array = self.find_jets(processes, chunksize)
         ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
         ofile_flags = self.path.joinpath("flags.npy")
 
@@ -805,9 +806,9 @@ class Experiment(object):
         return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
     
     @_only_windspeed
-    def props_as_ds(self, categorize: bool = True) -> xr.Dataset:
+    def props_as_ds(self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2) -> xr.Dataset:
         _, where_are_jets, _, _, flags = self.track_jets()
-        all_props = self.compute_jet_props()
+        all_props = self.compute_jet_props(processes, chunksize)
         props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
         props_as_ds = add_persistence_to_props(props_as_ds, flags)
         if categorize:
