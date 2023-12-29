@@ -14,7 +14,7 @@ from sklearn.cluster import AgglomerativeClustering
 from scipy.sparse.csgraph import csgraph_from_masked, shortest_path
 from libpysal.weights import DistanceBand
 from tqdm import tqdm
-from numba import njit
+from numba import njit, jit
 
 from jetstream_hugo.definitions import (
     DATERANGEPL_SUMMER,
@@ -477,11 +477,11 @@ def amin_ax1(a):
     return result
 
 
-@njit
-def track_jets(all_jets_one_array, where_are_jets, progress_proxy=None):
+def track_jets(all_jets_one_array, where_are_jets, yearbreaks: int = None, progress_proxy = None):
     factor: float = 0.2
-    yearbreaks = 92 if where_are_jets.shape[0] < 10000 else 92 * 4  # find better later
-    guess_nflags: int = 6000
+    if yearbreaks is None:
+        yearbreaks = 92 if where_are_jets.shape[0] < 10000 else 92 * 4  # find better later
+    guess_nflags: int = 13000
     all_jets_over_time = np.full(
         (guess_nflags, yearbreaks, 2), fill_value=len(where_are_jets), dtype=np.int32
     )
@@ -502,10 +502,11 @@ def track_jets(all_jets_one_array, where_are_jets, progress_proxy=None):
             last_valid_idx[from_ : last_flag + 1, None],
             axis=1,
         ).flatten()
+        timesteps_to_check = np.asarray([t, t - 1, t - 2, t - 3])
         potentials = (
             from_
             + np.where(
-                isin(times_to_test, [t, t - 1, t - 2, t - 3])
+                isin(times_to_test, timesteps_to_check)
                 & ((times_to_test // yearbreaks) == ((t + 1) // yearbreaks)).astype(
                     np.bool_
                 )

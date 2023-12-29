@@ -797,8 +797,11 @@ class Experiment(object):
                 all_jets_over_time,
                 flags,
             )
-        with NumbaProgress(total=where_are_jets.shape[0] - 1) as progress:
-            all_jets_over_time, flags = track_jets(all_jets_one_array, where_are_jets, progress_proxy=progress)
+        yearbreaks = np.sum(
+            self.da.time.dt.year.values == self.da.time.dt.year.values[0]
+        )
+        with NumbaProgress(total=self.da.shape[0]) as progress:
+            all_jets_over_time, flags = track_jets(all_jets_one_array, where_are_jets, yearbreaks=yearbreaks, progress_proxy=progress)
 
         save_pickle(all_jets_over_time, ofile_ajot)
         np.save(ofile_flags, flags)

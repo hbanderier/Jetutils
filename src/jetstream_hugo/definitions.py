@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+np.set_printoptions(precision=5, suppress=True)
+os.environ["PATH"] += os.pathsep + '/storage/homefs/hb22g102/latex/bin/x86_64-linux/'
+
 pf = platform.platform()
 if pf.find("cray") >= 0:
     NODE = "DAINT"
@@ -25,7 +28,7 @@ elif pf.find("el7") >= 0:  # find better later
     DATADIR = "/storage/scratch/users/hb22g102"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
     N_WORKERS = 10
-    MEMORY_LIMIT = "1GiB"
+    MEMORY_LIMIT = "8GiB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8

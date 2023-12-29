@@ -234,14 +234,25 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     return dim == "dayofyear"
 
 
+def _window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
+    if dim != 'hourofyear':
+        return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
+    groups = da.groupby(da.hourofyear % 24)
+    to_concat = []
+    winsize = winsize // len(groups)
+    for group in groups.groups.values():
+        to_concat.append(da[group].rolling({dim: winsize}, center=True, min_periods=1).mean())
+    return xr.concat(to_concat, dim=dim)
+
+
 def window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
-    halfwinsize = int(np.ceil(winsize / 2))
     if pad_wrap(da, dim):
+        halfwinsize = int(np.ceil(winsize / 2))
         da = da.pad({dim: halfwinsize}, mode="wrap")
-        newda = da.rolling({dim: winsize}, center=True).mean()
+        newda = _window_smoothing(da, dim, halfwinsize)
         newda = newda.isel({dim: slice(halfwinsize, -halfwinsize)})
     else:
-        newda = da.rolling({dim: winsize}, center=True, min_periods=1).mean()
+        newda = _window_smoothing(da, dim, winsize)
     newda.attrs = da.attrs
     return newda
 
@@ -292,6 +303,8 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
     else:
         da = xr.open_dataset(filename, chunks='auto')
         da = da.unify_chunks()
+    if 'expver' in da.dims:
+        da = da.sel(expver=1).reset_coords('expver', drop=True)
     try:
         da = da[varname]
     except KeyError:
@@ -470,7 +483,7 @@ def compute_all_smoothed_anomalies(
     for source, dest in iterator_:
         anom = rename_coords(_open_dataarray(source, varname))
         if clim_type.lower() == 'hourofyear':
-            anom = anom.assign_coords(hourofyear=compute_hourofyear(da))
+            anom = anom.assign_coords(hourofyear=compute_hourofyear(anom))
             coord = anom.hourofyear
         elif clim_type.lower() in [att for att in dir(anom.time.dt) if not att.startswith('_')]:
             coord = getattr(anom.time.dt, clim_type)
@@ -515,20 +528,22 @@ def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.Dataset, xr.
         print('Events to xarray')
         events = gpd.read_parquet('/storage/scratch/users/hb22g102/ERA5/RWB_index/era5_pv_streamers_350K_1959-2022.parquet')
         events = events[events.event_area >= events.event_area.quantile(q)]
-        from wavebreaking import to_xarray
         events = events[np.isin(events.date.dt.month, [6, 7, 8])]
-        da_s_late = da_template.sel(time=da_template.time.dt.year>=1959)
         mask_anti = events.intensity >= 0
         mask_cycl = events.intensity < 0
         mask_tropo = events.mean_var < events.level
-        da_pvs_anti = to_xarray(da_s_late, events[mask_anti & mask_tropo])
-        da_pvs_cycl = to_xarray(da_s_late, events[mask_cycl & mask_tropo])
-
+        events['flag'] = events.index
+        events_anti = events[mask_anti & mask_tropo]
+        events_cycl = events[mask_cycl & mask_tropo]
+        from wavebreaking import to_xarray
+        da_s_late = da_template.sel(time=da_template.time.dt.year>=1959)
+        da_pvs_anti = to_xarray(da_s_late, events_anti, flag='flag')
+        da_pvs_cycl = to_xarray(da_s_late, events_cycl, flag='flag')
         ds_pvs = {'anti': da_pvs_anti, 'cycl': da_pvs_cycl}
         ds_pvs = xr.Dataset(ds_pvs)
         ds_pvs_anoms = {}
         for typ in ['anti', 'cycl']:
-            da = ds_pvs[typ]
+            da = ds_pvs[typ] > 0
             da_gb = da.groupby('time.year')
             ds_pvs_anoms[typ] = (da_gb - da_gb.mean()).reset_coords('year', drop=True)
         ds_pvs_anoms = xr.Dataset(ds_pvs_anoms)    
