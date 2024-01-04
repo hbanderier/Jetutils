@@ -1,82 +1,97 @@
-from typing import Union, Tuple, Iterable
+from typing import Union, Tuple, Iterable, Literal
 from nptyping import NDArray
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-
+from xclim.indices.run_length import rle, run_bounds
 from jetstream_hugo.definitions import (
     DATADIR,
     REGIONS,
     DATERANGEPL,
 )
 
-def hotspells_mask(
-    filename: str = f"{DATADIR}/hotspells.csv",
-    daysbefore: int = 21,
-    daysafter: int = 5,
-    timerange: NDArray | pd.DatetimeIndex | xr.DataArray = None,
-    names: Iterable = None,
-) -> xr.DataArray:
-    """Returns timeseries mask of hotspells in several regions in `timerange` as a xr.DataArray with two dimensions and coordinates. It has shape (len(timerange), n_regions). n_regions is either inferred from the file or from the len of names if it is provided
 
-    Args:
-        filename (str, optional): path to hotspell center dates. Defaults to 'hotspells.csv'.
-        daysbefore (int, optional): how many days before the center will the mask extend (inclusive). Defaults to 21.
-        daysafter (int, optional): how many days after the center will the mask extend (inclusive). Defaults to 5.
-        timerange (NDArray | pd.DatetimeIndex | xr.DataArray, optional): the time range to mask. Defaults to DATERANGEPL.
-        names (Iterable, optional): names of the regions. See body for default values.
-
-    Returns:
-        xr.DataArray: at position (day, region) this is True if this day is part of a hotspell in this region
-    """
-    if names is None:
-        names = REGIONS
-    if timerange is None:
-        timerange = DATERANGEPL
-    else:
-        try:
-            timerange = timerange.values
-        except AttributeError:
-            pass
-        timerange = pd.DatetimeIndex(timerange).floor(freq="1D")
-    list_of_dates = np.loadtxt(filename, delimiter=",", dtype=np.datetime64)
-    assert len(names) == list_of_dates.shape[1]
-    data = np.zeros((len(timerange), len(names)), dtype=bool)
-    coords = {"time": timerange, "region": names}
-    data = xr.DataArray(data, coords=coords)
-    for i, dates in enumerate(list_of_dates.T):
-        dates = np.sort(dates)
-        dates = dates[
-            ~(np.isnat(dates) | (np.datetime_as_string(dates, unit="Y") == "2022"))
-        ]
-        for date in dates:
-            tsta = date - np.timedelta64(daysbefore, "D")
-            tend = date + np.timedelta64(daysafter, "D")
-            data.loc[tsta:tend, names[i]] = True
-    return data
+def heat_waves_from_t(
+    da: xr.DataArray,
+    q: float = 0.95,
+    fill_holes: bool = False,
+    minlen: np.timedelta64 = np.timedelta64(3, 'D'),
+    time_before: pd.Timedelta = pd.Timedelta(0, 'D'),
+    time_after: pd.Timedelta = pd.Timedelta(0, 'D'),
+    output_type: Literal['arr'] | Literal['list'] = 'arr'
+) -> xr.DataArray | Tuple[list[NDArray]]:
+    dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
+    months = np.unique(da.time.dt.month.values)
+    months = [str(months[0]).zfill(2), str(months[-1] + 1).zfill(2)]
+    hot_days = (da > da.quantile(dim='time', q=q))
+    if fill_holes:
+        holes = rle(~hot_days)
+        holes = np.where(holes.values == 1)[0]
+        hot_days[holes] = 1
+    heat_waves = run_bounds(hot_days)
+    mask = (heat_waves[0].dt.year == heat_waves[1].dt.year).values
+    heat_waves = heat_waves[:, mask]
+    mask = heat_waves.astype('datetime64[h]').values
+    mask = (mask[1] - mask[0]) >= minlen
+    heat_waves = heat_waves[:, mask].T
+    heat_waves_ts = []
+    lengths = []
+    for heat_wave in heat_waves:
+        hw_len = (heat_wave[1] - heat_wave[0]).values.astype('timedelta64[D]')
+        year = heat_wave[0].dt.year.values
+        min_time = np.datetime64(f'{year}-{months[0]}-01T00:00')
+        max_time = np.datetime64(f'{year}-{months[1]}-01T00:00') - dt
+        first_time = max(min_time, (heat_wave[0] - time_before).values)
+        last_time = min(max_time, (heat_wave[1] + time_after).values)
+        this_hw = pd.date_range(first_time, last_time, freq='6h')
+        heat_waves_ts.append(this_hw)
+        lengths.append(np.full(len(this_hw), hw_len.astype(int)))
+    if output_type == 'list':
+        return heat_waves_ts, heat_waves.astype('datetime64[h]').values
+    da_hs = da.copy(data=np.zeros(da.shape, dtype=int))
+    da_hs.loc[np.concatenate(heat_waves_ts)] = np.concatenate(lengths)
+    return da_hs
 
 
-def get_hotspells_v2(
-    filename: str = f"{DATADIR}/hotspells_v2.csv", lag_behind: int = 10, regions: list = None
-) -> list:
-    if regions is None:
-        regions = REGIONS
-    hotspells_raw = pd.read_csv(filename)
-    hotspells = []
-    maxlen = 0
-    maxnhs = 0
-    for i, key in enumerate(regions):
-        hotspells.append([])
-        for line in hotspells_raw[f"dates{i + 1}"]:
-            if line == "-999":
-                continue
-            dateb, datee = [np.datetime64(d) for d in line.split("/")]
-            dateb -= np.timedelta64(lag_behind, "D")
-            hotspells[-1].append(pd.date_range(dateb, datee, freq="1D"))
-            maxlen = max(maxlen, len(hotspells[-1][-1]))
-        maxnhs = max(maxnhs, len(hotspells[-1]))
-    return hotspells, maxnhs, maxlen
+def mask_from_t(
+    da: xr.DataArray,
+    ds: xr.Dataset,
+    q: float = 0.95,
+    fill_holes: bool = False,
+    minlen: np.timedelta64 = np.timedelta64(3, 'D'),
+    time_before: pd.Timedelta = pd.Timedelta(0, 'D'),
+    time_after: pd.Timedelta = pd.Timedelta(0, 'D'),
+) -> xr.Dataset:
+    heat_waves_ts, heat_waves = heat_waves_from_t(
+        da, q, fill_holes, minlen, time_before, time_after, output_type='list'
+    )
+    dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
+    months = np.unique(ds.time.dt.month.values)
+    months = [str(months[0]).zfill(2), str(months[-1] + 1).zfill(2)]
+    lengths = heat_waves[:, 1] - heat_waves[:, 0]
+    longest_hotspell = np.argmax(lengths)
+    time_around_beg = heat_waves_ts[longest_hotspell] - heat_waves[longest_hotspell, 0]
+    time_around_beg = time_around_beg.values
+    ds_masked = ds.loc[dict(time=ds.time.values[0])].reset_coords('time', drop=True).copy(deep=True)
+    ds_masked.loc[dict()] = np.nan
+    ds_masked = ds_masked.expand_dims(
+        heat_wave=np.arange(len(heat_waves)),
+        time_around_beg=time_around_beg,
+    ).copy(deep=True)
+    ds_masked = ds_masked.assign_coords(lengths=('heat_wave', lengths))
+    dummy_da = np.zeros((list(ds_masked.dims.values())[:2])) + np.nan
+    ds_masked = ds_masked.assign_coords(temperature=(['heat_wave', 'time_around_beg'], dummy_da))
+    ds_masked = ds_masked.assign_coords(absolute_time=(['heat_wave', 'time_around_beg'], dummy_da.astype('datetime64[h]')))
+    for i, heat_wave in enumerate(heat_waves_ts):
+        unexpected_offset = time_before - (heat_waves[i][0] - heat_wave[0])
+        this_tab = time_around_beg[:len(heat_wave)] + unexpected_offset
+        to_assign = ds.loc[dict(time=heat_wave)].assign_coords(time=this_tab).rename(time='time_around_beg')
+        accessor_dict = dict(heat_wave=i, time_around_beg=this_tab)
+        ds_masked.loc[accessor_dict] = to_assign
+        ds_masked.temperature.loc[accessor_dict] = da.loc[dict(time=heat_wave)].values
+        ds_masked.absolute_time.loc[accessor_dict] = heat_wave
+    return ds_masked
 
 
 def apply_hotspells_mask_v2(
@@ -152,7 +167,7 @@ def hotspells_as_da(da_time: xr.DataArray | NDArray, timesteps_before: int = 0, 
             hs_da.loc[first_time:last_time, region] = len(hotspell)
     return hs_da
 
-    
+
 def get_hotspell_lag_mask(da_time: xr.DataArray | NDArray, num_lags: int = 1) -> xr.DataArray:
     hotspells = get_hotspells_v2(lag_behind=num_lags)[0]
     if isinstance(da_time, xr.DataArray):
@@ -166,3 +181,4 @@ def get_hotspell_lag_mask(da_time: xr.DataArray | NDArray, num_lags: int = 1) ->
             except KeyError:
                 ...
     return hs_mask
+#%%

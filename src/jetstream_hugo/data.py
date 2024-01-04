@@ -1,8 +1,6 @@
-from ast import Assert
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from nptyping import NDArray
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -20,9 +18,10 @@ from jetstream_hugo.definitions import (
     COMPUTE_KWARGS
 )
 
+
 def filenamesml(
     y: int, m: int, d: int
-) -> str:  # Naming conventions of the files on climstor (why are they so different?)
+) -> list[str]:  # Naming conventions of the files on climstor (why are they so different?)
     return [
         f"{CLIMSTOR}/ML/data/{str(y)}/P{str(y)}{str(m).zfill(2)}{str(d).zfill(2)}_{str(h).zfill(2)}"
         for h in range(0, 24, 6)
@@ -31,23 +30,23 @@ def filenamesml(
 
 def filenamessfc(
     y: int, m: int, d: int
-) -> str:  # Naming conventions of the files on climstor (why are they so different?)
+) -> list[str]:  # Naming conventions of the files on climstor (why are they so different?)
     return [
         f"{CLIMSTOR}/SFC/data/{str(y)}/an_sfc_ERA5_{str(y)}-{str(m).zfill(2)}-{str(d).zfill(2)}.nc"
     ]
 
 
-def filenamespl(y: int, m: int, d: int) -> str:
+def filenamespl(y: int, m: int, d: int) -> list[str]:
     return [
         f"{CLIMSTOR}/PL/data/an_pl_ERA5_{str(y)}-{str(m).zfill(2)}-{str(d).zfill(2)}.nc"
     ]  # returns iterable to have same call signature as filenamescl(y, m, d)
 
 
-def filenamegeneric(y: int, m: int, folder: int) -> str:
+def filenamegeneric(y: int, m: int, folder: str) -> list[str]:
     return [f"{DATADIR}/{folder}/{y}{str(m).zfill(2)}.nc"]
 
 
-def _fn(date: pd.Timestamp, which: str) -> str:
+def _fn(date: pd.Timestamp, which: str) -> list[str]:
     if which == "ML":
         return filenamesml(date.year, date.month, date.day)
     elif which == "PL":
@@ -201,7 +200,7 @@ def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
     return levels, level_names
 
 
-def extract_levels(da, levels):
+def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal["all"]):
     if levels == "all" or (isinstance(levels, Sequence) and 'all' in levels):
         return da.squeeze()
 
@@ -229,7 +228,7 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     resolution = da[dim][1] - da[dim][0]
     if dim in ["lon", "longitude"]:
         return (
-            da[dim][-1] <= 360 and da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
+                360 >= da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
         )
     return dim == "dayofyear"
 
@@ -335,7 +334,7 @@ def open_da(
     Args:
         dataset (str): _description_
         varname (str): _description_
-        resolution (str): Time resolution like '6H' -> Change to data_type (str), '6H_p' ? To accomodate for isentrope data ?
+        resolution (str): Time resolution like '6H' -> Change to data_type (str), '6H_p' ?
         period (list | tuple | Literal[&quot;all&quot;] | int | str, optional): _description_. Defaults to "all".
         season (list | str, optional): _description_. Defaults to None.
         minlon (Optional[int  |  float], optional): _description_. Defaults to None.
@@ -366,6 +365,8 @@ def open_da(
         period = YEARSPL_EXT
     elif isinstance(period, int | str):
         period = [int(period)]
+
+    files_to_load = []
 
     if file_structure == "one_file":
         files_to_load = [path.joinpath("full.nc")]
@@ -491,12 +492,12 @@ def compute_all_smoothed_anomalies(
             raise NotImplementedError
         this_gb = anom.groupby(coord)
         anom = (this_gb - clim).reset_coords(clim_type, drop=True)
-        if smoothing is not None :
+        if smoothing is not None:
             anom = smooth(anom, smoothing)
         if len(sources) > 1:
             anom = anom.compute(**COMPUTE_KWARGS)
         else:
-            with ResourceProfiler() as a, ProgressBar() as b:
+            with ResourceProfiler(), ProgressBar():
                 anom = anom.compute(**COMPUTE_KWARGS)
         anom.to_netcdf(dest)
 

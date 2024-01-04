@@ -330,10 +330,10 @@ def better_is_polar(
 def categorize_ds_jets(props_as_ds: xr.Dataset):
     time_name, time_val = list(props_as_ds.coords.items())[0]
     ds = xr.Dataset(coords={time_name: time_val, "jet": ["subtropical", "polar"]})
+    cond = props_as_ds["is_polar"]
     for varname in props_as_ds.data_vars:
         if varname == "is_polar":
             continue
-        cond = props_as_ds["is_polar"]
         values = np.zeros((len(time_val), 2))
         values[:, 0] = props_as_ds[varname].where(1 - cond).mean(dim="jet").values
         values[:, 1] = props_as_ds[varname].where(cond).mean(dim="jet").values
