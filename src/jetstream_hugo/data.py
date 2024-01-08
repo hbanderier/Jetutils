@@ -224,6 +224,18 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     return da2.squeeze()
 
 
+def extract_season(da: xr.DataArray | xr.Dataset, season: list, str) -> xr.DataArray | xr.Dataset:
+    if isinstance(season, list):
+        da = da.isel(time=np.isin(da.time.dt.month, season))
+    elif isinstance(season, str):
+        if season in ["DJF", "MAM", "JJA", "SON"]:
+            da = da.isel(time=da.time.dt.season == season)
+        else:
+            print(f"Wrong season specifier : {season} is not a valid xarray season")
+            raise ValueError
+    return da
+
+
 def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     resolution = da[dim][1] - da[dim][0]
     if dim in ["lon", "longitude"]:
@@ -392,14 +404,7 @@ def open_da(
     if (file_structure == "one_file") and (period != "all"):
         da = da.isel(time=np.isin(da.time.dt.year, period))
 
-    if isinstance(season, list):
-        da = da.isel(time=np.isin(da.time.dt.month, season))
-    elif isinstance(season, str):
-        if season in ["DJF", "MAM", "JJA", "SON"]:
-            da = da.isel(time=da.time.dt.season == season)
-        else:
-            print(f"Wrong season specifier : {season} is not a valid xarray season")
-            raise ValueError
+    da = extract_season(da, season)
         
     if 'lev' in da.dims and levels != 'all':
         da = extract_levels(da, levels)
