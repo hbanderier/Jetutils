@@ -1,11 +1,14 @@
 import warnings
 from functools import wraps, partial
-from typing import Sequence, Tuple, Literal, Mapping, Optional
+from typing import Sequence, Tuple, Literal, Mapping, Optional, Callable
+
+from sklearn.inspection import partial_dependence
 from nptyping import NDArray, Float, Shape
 import logging
 from pathlib import Path
 
 import numpy as np
+
 try:
     import cupy as cp
 except ImportError:
@@ -14,11 +17,14 @@ import pandas as pd
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from numba_progress import ProgressBar as NumbaProgress
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
 from kmedoids import KMedoids
 import scipy.linalg as linalg
 from scipy.optimize import minimize
+from scipy.spatial.distance import squareform
+from scipy.cluster.hierarchy import linkage, cut_tree
+from sklearn.metrics import pairwise_distances
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 from simpsom import SOMNet
 
 from jetstream_hugo.definitions import (
@@ -38,9 +44,21 @@ from jetstream_hugo.definitions import (
 )
 
 from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import data_path, open_da, unpack_levels
+from jetstream_hugo.data import (
+    data_path,
+    open_da,
+    unpack_levels,
+    get_land_mask,
+    extract_season,
+)
 from jetstream_hugo.jet_finding import (
-    find_all_jets, all_jets_to_one_array, props_to_ds, compute_all_jet_props, track_jets, add_persistence_to_props, categorize_ds_jets
+    find_all_jets,
+    all_jets_to_one_array,
+    props_to_ds,
+    compute_all_jet_props,
+    track_jets,
+    add_persistence_to_props,
+    categorize_ds_jets,
 )
 
 RAW = 0
@@ -53,6 +71,7 @@ ADJUST_REALSPACE = 6
 
 DIRECT_REALSPACE = 7  # KMEDOIDS only
 ADJUST_DIRECT_REALSPACE = 8
+
 
 def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     if filename == "full.nc":
@@ -152,8 +171,10 @@ def labels_to_centers(
     counts = counts / float(len(labels))
     centers = [da.isel(time=(labels == i)).mean(dim="time") for i in unique_labels]
     centers = xr.concat(centers, dim=coord)
-    centers = centers.assign_coords({'ratio': (coord, counts), 'label': (coord, unique_labels)})
-    return centers.set_xindex('label')
+    centers = centers.assign_coords(
+        {"ratio": (coord, counts), "label": (coord, unique_labels)}
+    )
+    return centers.set_xindex("label")
 
 
 def centers_as_dataarray(
@@ -180,6 +201,57 @@ def timeseries_on_map(timeseries: NDArray, labels: list | NDArray):
     return np.asarray(
         [[np.nanmean(timeseries_[mas]) for mas in mask.T] for timeseries_ in timeseries]
     )
+
+
+def quantile_exceedence(
+    da: xr.DataArray, q: float = 0.95, dim: str = "time"
+) -> xr.DataArray:
+    return da > da.quantile(q, dim=dim)
+
+
+def spatial_agglomerative_clustering(
+    da: xr.DataArray,
+    condition_function: Callable = lambda x: x,
+    mask: xr.DataArray | Literal["land"] | None = None,
+    season: str | list | None = "JJA",
+    metric: str = "jaccard",
+) -> NDArray:
+    lon, lat = da.lon.values, da.lat.values
+    if mask and mask == "land":
+        mask = get_land_mask()
+    if mask is not None:
+        mask = mask.sel(lon=lon, lat=lat)
+    da = extract_season(da, season)
+    to_cluster = condition_function(da)
+    stack_dims = {"lat_lon": ("lat", "lon")}
+    to_cluster_flat = to_cluster.stack(stack_dims)
+    if mask is not None:
+        mask_flat = mask.stack(stack_dims)
+        to_cluster_flat = to_cluster_flat.values[:, mask_flat.values]
+    return pairwise_distances(to_cluster_flat.T, metric=metric, n_jobs=N_WORKERS)
+
+
+def select_cluster(
+    Z: NDArray,
+    da: xr.DataArray,
+    n_clusters: int,
+    i_cluster: int,
+    mask: xr.DataArray | Literal["land"] | None = None,
+) -> xr.DataArray:
+    lon, lat = da.lon.values, da.lat.values
+    if mask and mask == "land":
+        mask = get_land_mask()
+    if mask is not None:
+        mask = mask.sel(lon=lon, lat=lat)
+        stack_dims = {"lat_lon": ("lat", "lon")}
+        mask_flat = mask.stack(stack_dims)
+    clusters = cut_tree(Z, n_clusters=n_clusters)[:, 0]
+    clusters_da = np.zeros(mask_flat.shape, dtype=float)
+    clusters_da[:] = np.nan
+    clusters_da = mask_flat.copy(data=clusters_da)
+    clusters_da[mask_flat] = clusters
+    this_region = clusters_da.where(clusters_da == i_cluster).unstack()
+    return da.where(this_region).mean(dim=["lon", "lat"]).copy()
 
 
 class Experiment(object):
@@ -219,14 +291,13 @@ class Experiment(object):
             clim_smoothing,
             smoothing,
         )
-            
 
         self.varname = varname
         self.region = (minlon, maxlon, minlat, maxlat)
         self.clim_type = clim_type
         self.levels, self.level_names = unpack_levels(levels)
         self.inner_norm = inner_norm
-        
+
         self.metadata = {
             "period": period,
             "season": season,
@@ -254,32 +325,32 @@ class Experiment(object):
             self.path = self.path.joinpath(str(id))
             self.path.mkdir()
             save_pickle(self.metadata, self.path.joinpath("metadata.pkl"))
-        
-        da_path = self.path.joinpath('da.nc')
+
+        da_path = self.path.joinpath("da.nc")
         if da_path.is_file():
             self.da = xr.open_dataarray(da_path).load()
         else:
             self.da = open_da(*self.open_da_args)
             with ProgressBar():
                 self.da = self.da.load()
-            self.da.to_netcdf(da_path, format='NETCDF4')
+            self.da.to_netcdf(da_path, format="NETCDF4")
 
         self.lon, self.lat = self.da.lon.values, self.da.lat.values
         self.time = self.da.time
-        
+
     def add_data(self, new_year: list | tuple | int):
         open_args = self.open_da_args.copy()
         open_args[3] = new_year
         other_da = open_da(open_args)
-        self.da = xr.concat([self.da, other_da], dim='time')
-        self.da.to_netcdf(self.path.joinpath('da.nc'), format='NETCDF4')
-        
+        self.da = xr.concat([self.da, other_da], dim="time")
+        self.da.to_netcdf(self.path.joinpath("da.nc"), format="NETCDF4")
+
     def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
         norm_path = self.path.joinpath(f"norm.nc")
         if norm_path.is_file():
             norm_da = xr.open_dataarray(norm_path)
         else:
-            norm_da = np.sqrt(degcos(self.da.lat)) # lat as da to simplify mult
+            norm_da = np.sqrt(degcos(self.da.lat))  # lat as da to simplify mult
 
             if self.inner_norm and self.inner_norm == 1:  # Grams et al. 2017
                 with ProgressBar():
@@ -297,7 +368,7 @@ class Experiment(object):
             elif self.inner_norm and self.inner_norm not in [1, 2]:
                 raise NotImplementedError()
             norm_da.to_netcdf(norm_path)
-        
+
         da_weighted = self.da * norm_da
         X = da_weighted.values.reshape(len(da_weighted.time), -1)
         return X, self.da
@@ -388,19 +459,19 @@ class Experiment(object):
             factor1 = x.T @ C0minushalf @ autocorrs @ C0minushalf @ x
             return -2 * np.trapz(factor1**2) / normxsq**2
 
-        def minus_T2_gradient(x) -> NDArray[Shape["*"], Float]:
+        def minus_T2_gradient(x) -> NDArray:
             normxsq = linalg.norm(x) ** 2
             factor1 = x.T @ C0minushalf @ autocorrs @ C0minushalf @ x
             factor2 = (
                 C0minushalf @ (autocorrs + autocorrs.transpose((0, 2, 1))) @ C0minushalf
             ) @ x
-            numerator = 4 * np.trapz((factor1)[:, None] * factor2, axis=0)
+            numerator = 4 * np.trapz(factor1[:, None] * factor2, axis=0)
             return -numerator / normxsq**2 - 4 * minus_T2(x) * x / normxsq**3
 
         def norm0(x) -> float:
             return 10 - linalg.norm(x) ** 2
 
-        def jac_norm0(x) -> NDArray[Shape["*"], Float]:
+        def jac_norm0(x) -> NDArray:
             return -2 * x
 
         Id = np.eye(X.shape[1])
@@ -746,7 +817,11 @@ class Experiment(object):
     def _only_windspeed(func):
         @wraps(func)
         def wrapper_decorator(self, *args, **kwargs):
-            if (self.varname != "s") or (self.clim_type is not None) or (len(self.levels) > 1):
+            if (
+                (self.varname != "s")
+                or (self.clim_type is not None)
+                or (len(self.levels) > 1)
+            ):
                 print("Only valid for absolute wind speed, single pressure level")
                 print(self.varname, self.clim_type, self.levels)
                 raise RuntimeError
@@ -782,7 +857,9 @@ class Experiment(object):
 
     @_only_windspeed
     def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        all_jets, where_are_jets, all_jets_one_array = self.find_jets(processes, chunksize)
+        all_jets, where_are_jets, all_jets_one_array = self.find_jets(
+            processes, chunksize
+        )
         ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
         ofile_flags = self.path.joinpath("flags.npy")
 
@@ -801,15 +878,22 @@ class Experiment(object):
             self.da.time.dt.year.values == self.da.time.dt.year.values[0]
         )
         with NumbaProgress(total=self.da.shape[0]) as progress:
-            all_jets_over_time, flags = track_jets(all_jets_one_array, where_are_jets, yearbreaks=yearbreaks, progress_proxy=progress)
+            all_jets_over_time, flags = track_jets(
+                all_jets_one_array,
+                where_are_jets,
+                yearbreaks=yearbreaks,
+                progress_proxy=progress,
+            )
 
         save_pickle(all_jets_over_time, ofile_ajot)
         np.save(ofile_flags, flags)
-        
+
         return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
-    
+
     @_only_windspeed
-    def props_as_ds(self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2) -> xr.Dataset:
+    def props_as_ds(
+        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2
+    ) -> xr.Dataset:
         _, where_are_jets, _, _, flags = self.track_jets()
         all_props = self.compute_jet_props(processes, chunksize)
         props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
@@ -817,4 +901,45 @@ class Experiment(object):
         if categorize:
             return categorize_ds_jets(props_as_ds)
         return props_as_ds
-    
+
+    def _only_temp(func):
+        @wraps(func)
+        def wrapper_decorator(self, *args, **kwargs):
+            if self.varname != "t":
+                print("Only valid for temperature, single pressure level")
+                print(self.varname, self.clim_type, self.levels)
+                raise RuntimeError
+            value = func(self, *args, **kwargs)
+
+            return value
+
+        return wrapper_decorator
+
+    def linkage(
+        self,
+        condition_function: Callable = lambda x: x,
+        mask: xr.DataArray | Literal["land"] | None = None,
+        season: str | list | None = "JJA",
+        metric: str = "jaccard",
+    ):
+        distance_path = self.path.joinpath("distances.npy")
+        try:
+            distances = np.load(distance_path)
+        except FileNotFoundError:
+            distances = spatial_agglomerative_clustering(
+                self.da, condition_function, mask, season=season, metric=metric
+            )
+        return linkage(squareform(distances), method="average")
+
+    @_only_temp
+    def heat_wave_linkage(self):
+        condition_function = partial(quantile_exceedence, q=0.95, dim="time")
+        mask = "land"
+        season = [7, 8]
+        metric = "jaccard"
+        return self.linkage(condition_function, mask, season, metric)
+
+    @_only_temp
+    def select_heat_wave_cluster(self, n_clusters: int = 9, i_cluster: int = 5):
+        Z = self.heat_wave_linkage()
+        return select_cluster(Z, self.da, n_clusters, i_cluster, "land")
