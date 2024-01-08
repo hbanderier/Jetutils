@@ -208,7 +208,7 @@ def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
         dic = {}
         dic["mean_lon"] = np.average(x, weights=s)
         dic["mean_lat"] = np.average(y, weights=s)
-        dic["is_polar"] = dic["mean_lat"] > 45
+        dic["is_polar"] = dic["mean_lat"] - 0.4 * dic['mean_lon'] > 40
         maxind = np.argmax(s)
         dic["Lon"] = x[maxind]
         dic["Lat"] = y[maxind]
