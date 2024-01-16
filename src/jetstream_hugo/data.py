@@ -1,3 +1,4 @@
+from genericpath import isfile
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from nptyping import NDArray
 from pathlib import Path
@@ -17,62 +18,11 @@ from jetstream_hugo.definitions import (
     YEARSPL_EXT,
     COMPUTE_KWARGS
 )
-
-
-def filenamesml(
-    y: int, m: int, d: int
-) -> list[str]:  # Naming conventions of the files on climstor (why are they so different?)
-    return [
-        f"{CLIMSTOR}/ML/data/{str(y)}/P{str(y)}{str(m).zfill(2)}{str(d).zfill(2)}_{str(h).zfill(2)}"
-        for h in range(0, 24, 6)
-    ]
-
-
-def filenamessfc(
-    y: int, m: int, d: int
-) -> list[str]:  # Naming conventions of the files on climstor (why are they so different?)
-    return [
-        f"{CLIMSTOR}/SFC/data/{str(y)}/an_sfc_ERA5_{str(y)}-{str(m).zfill(2)}-{str(d).zfill(2)}.nc"
-    ]
-
-
-def filenamespl(y: int, m: int, d: int) -> list[str]:
-    return [
-        f"{CLIMSTOR}/PL/data/an_pl_ERA5_{str(y)}-{str(m).zfill(2)}-{str(d).zfill(2)}.nc"
-    ]  # returns iterable to have same call signature as filenamescl(y, m, d)
-
-
-def filenamegeneric(y: int, m: int, folder: str) -> list[str]:
-    return [f"{DATADIR}/{folder}/{y}{str(m).zfill(2)}.nc"]
-
-
-def _fn(date: pd.Timestamp, which: str) -> list[str]:
-    if which == "ML":
-        return filenamesml(date.year, date.month, date.day)
-    elif which == "PL":
-        return filenamespl(date.year, date.month, date.day)
-    elif which == "SFC":
-        return filenamessfc(date.year, date.month, date.day)
-    else:
-        return filenamegeneric(date.year, date.month, which)
-
-
-# instead takes pandas.timestamp (or iterable of _) as input
-def fn(date: Union[list, NDArray, pd.DatetimeIndex, pd.Timestamp], which):
-    if isinstance(date, (list, NDArray, pd.DatetimeIndex)):
-        filenames = []
-        for d in date:
-            filenames.extend(_fn(d, which))
-        return filenames
-    elif isinstance(date, pd.Timestamp):
-        return _fn(date, which)
-    else:
-        raise TypeError(f"Invalid type : {type(date)}")
     
     
 def get_land_mask() -> xr.DataArray:
-    mask = xr.open_dataarray(f'{DATADIR}/ERA5/land_sea.nc')
-    mask = mask.squeeze().rename(longitude='lon', latitude='lat').reset_coords('time', drop=True)
+    mask = xr.open_dataarray(f"{DATADIR}/ERA5/land_sea.nc")
+    mask = mask.squeeze().rename(longitude="lon", latitude="lat").reset_coords("time", drop=True)
     return mask.astype(bool)
     
     
@@ -107,6 +57,7 @@ def unpack_smooth_map(smooth_map: Mapping | Sequence) -> str:
 
 def data_path(
     dataset: str,
+    level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
     varname: str,
     resolution: str,
     clim_type: str = None,
@@ -129,7 +80,7 @@ def data_path(
         print("Cannot define clim_smoothing if clim is None")
         raise TypeError
 
-    path = Path(DATADIR, dataset, varname, resolution)
+    path = Path(DATADIR, dataset, level_type, varname, resolution)
 
     unpacked = unpack_smooth_map(clim_smoothing)
     underscore = "_" if unpacked != "" else ""
@@ -137,7 +88,7 @@ def data_path(
     clim_path = path.joinpath(clim_type + underscore + unpacked)
     anom_path = clim_path.joinpath(unpack_smooth_map(smoothing))
     if not anom_path.is_dir() and not for_compute_anomaly:
-        if not clim_type == '':
+        if not clim_type == "":
             print(
                 "Folder does not exist. Try running compute_all_smoothed_anomalies before"
             )
@@ -201,7 +152,7 @@ def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
 
 
 def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal["all"]):
-    if levels == "all" or (isinstance(levels, Sequence) and 'all' in levels):
+    if levels == "all" or (isinstance(levels, Sequence) and "all" in levels):
         return da.squeeze()
 
     levels, level_names = unpack_levels(levels)
@@ -224,7 +175,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     return da2.squeeze()
 
 
-def extract_season(da: xr.DataArray | xr.Dataset, season: list, str) -> xr.DataArray | xr.Dataset:
+def extract_season(da: xr.DataArray | xr.Dataset, season: list | str) -> xr.DataArray | xr.Dataset:
     if isinstance(season, list):
         da = da.isel(time=np.isin(da.time.dt.month, season))
     elif isinstance(season, str):
@@ -246,7 +197,7 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
 
 
 def _window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
-    if dim != 'hourofyear':
+    if dim != "hourofyear":
         return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
     groups = da.groupby(da.hourofyear % 24)
     to_concat = []
@@ -312,10 +263,10 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
         da = xr.open_mfdataset(filename, chunks=None)
         da = da.unify_chunks()
     else:
-        da = xr.open_dataset(filename, chunks='auto')
+        da = xr.open_dataset(filename, chunks="auto")
         da = da.unify_chunks()
-    if 'expver' in da.dims:
-        da = da.sel(expver=1).reset_coords('expver', drop=True)
+    if "expver" in da.dims:
+        da = da.sel(expver=1).reset_coords("expver", drop=True)
     try:
         da = da[varname]
     except KeyError:
@@ -328,6 +279,7 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
 
 def open_da(
     dataset: str,
+    level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
     varname: str,
     resolution: str,
     period: list | tuple | Literal["all"] | int | str = "all",
@@ -365,7 +317,7 @@ def open_da(
         xr.DataArray: _description_
     """
     path = data_path(
-        dataset, varname, resolution, clim_type, clim_smoothing, smoothing, False
+        dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
     )
     file_structure = determine_file_structure(path)
 
@@ -403,13 +355,13 @@ def open_da(
 
     if (file_structure == "one_file") and (period != "all"):
         da = da.isel(time=np.isin(da.time.dt.year, period))
-
-    da = extract_season(da, season)
+    if season is not None:
+        da = extract_season(da, season)
         
-    if 'lev' in da.dims and levels != 'all':
+    if "lev" in da.dims and levels != "all":
         da = extract_levels(da, levels)
-    elif 'lev' in da.dims:
-        da = da.chunk({'lev': 1})
+    elif "lev" in da.dims:
+        da = da.chunk({"lev": 1})
         
     if clim_type is not None or smoothing is None:
         return da
@@ -421,8 +373,51 @@ def compute_hourofyear(da: xr.DataArray) -> xr.DataArray:
     return da.time.dt.hour + 24 * (da.time.dt.dayofyear - 1)
 
 
+def assign_clim_coord(da: xr.DataArray, clim_type: str):
+    if clim_type.lower() == "hourofyear":
+        da = da.assign_coords(hourofyear=compute_hourofyear(da))
+        coord = da.hourofyear
+    elif clim_type.lower() in [att for att in dir(da.time.dt) if not att.startswith("_")]:
+        coord = getattr(da.time.dt, clim_type)
+    else:
+        raise NotImplementedError
+    return da, coord
+
+
+def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
+    da, coord = assign_clim_coord(da, clim_type)
+    try:
+        da = da.chunk({"lev": 1})
+    except ValueError:
+        pass
+    with ProgressBar():
+        clim = flox.xarray.xarray_reduce(
+            da,
+            coord,
+            func="mean",
+            method="cohorts",
+            reindex=False,
+        ).compute(**COMPUTE_KWARGS)
+    return clim
+    
+
+def compute_anom(anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False):
+    anom, coord = assign_clim_coord(anom, clim_type)
+    this_gb = anom.groupby(coord)
+    if not normalized:
+        with ProgressBar():
+            anom = (this_gb - clim)
+    else:
+        anom  = ((this_gb - clim) / anom)
+        anom = anom.where((anom != np.nan) & (anom != np.inf) & (anom != -np.inf), 0)
+    with ProgressBar():
+        anom = anom.compute(**COMPUTE_KWARGS)
+    return anom.reset_coords(clim_type, drop=True)
+    
+
 def compute_all_smoothed_anomalies(
     dataset: str,
+    level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
     varname: str,
     resolution: str,
     clim_type: str = None,
@@ -430,7 +425,7 @@ def compute_all_smoothed_anomalies(
     smoothing: Mapping = None,
 ) -> None:
     path, clim_path, anom_path = data_path(
-        dataset, varname, resolution, clim_type, clim_smoothing, smoothing, True
+        dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, True
     )
     anom_path.mkdir(parents=True, exist_ok=True)
 
@@ -454,49 +449,19 @@ def compute_all_smoothed_anomalies(
     da = open_da(
         dataset, varname, resolution, period="all", levels="all"
     )
-    
-    if clim_type.lower() == 'hourofyear':
-        da = da.assign_coords(hourofyear=compute_hourofyear(da))
-        coord = da.hourofyear
-    elif clim_type.lower() in [att for att in dir(da.time.dt) if not att.startswith('_')]:
-        coord = getattr(da.time.dt, clim_type)
+    if dest_clim.isfile():
+        clim = xr.open_dataarray(dest_clim)
     else:
-        raise NotImplementedError
-    da = flox.xarray.rechunk_for_cohorts(
-        da,
-        dim="time",
-        labels=coord,
-        force_new_chunk_at=np.linspace(coord.min() // 12, coord.max() // 12, N_WORKERS * 32 + 2, dtype=int)[1:-1] * 12,
-        ignore_old_chunks=True,
-    )
-    try:
-        da = da.chunk({'lev': 1})
-    except ValueError:
-        pass
-    with ProgressBar():
-        clim = flox.xarray.xarray_reduce(
-            da,
-            coord,
-            func="mean",
-            method="cohorts",
-        ).compute(**COMPUTE_KWARGS)
-    clim = smooth(clim, clim_smoothing)
-    clim.to_netcdf(dest_clim)
+        clim = compute_clim(da, clim_type)
+        clim = smooth(clim, clim_smoothing)
+        clim.to_netcdf(dest_clim)
     if len(sources) > 1:
         iterator_ = tqdm(zip(sources, dests_anom), total=len(dests_anom))
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
         anom = rename_coords(_open_dataarray(source, varname))
-        if clim_type.lower() == 'hourofyear':
-            anom = anom.assign_coords(hourofyear=compute_hourofyear(anom))
-            coord = anom.hourofyear
-        elif clim_type.lower() in [att for att in dir(anom.time.dt) if not att.startswith('_')]:
-            coord = getattr(anom.time.dt, clim_type)
-        else:
-            raise NotImplementedError
-        this_gb = anom.groupby(coord)
-        anom = (this_gb - clim).reset_coords(clim_type, drop=True)
+        anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)
         if len(sources) > 1:
@@ -523,36 +488,46 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     return ((time_da >= t1) & (time_da < t2)).values
 
 
-def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.Dataset, xr.Dataset]:
-    ofile = Path('/storage/scratch/users/hb22g102/ERA5/pvs/6H')
-    ofile1 = ofile.joinpath('full.nc')
-    ofile2 = ofile.joinpath('anom.nc')
+def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.DataArray]:
+    ofile = Path(f"{DATADIR}/ERA5/plev/pvs/6H")
+    ofile1 = ofile.joinpath("full.nc")
+    ofile2 = ofile.joinpath("anom.nc")
+    ofile3 = ofile.joinpath("anom_normd.nc")
     try:
-        ds_pvs = xr.open_dataset(ofile1).load()
-        ds_pvs_anoms = xr.open_dataset(ofile2).load()
+        da_pvs = xr.open_dataarray(ofile1).load()
+        da_pvs_anom = xr.open_dataarray(ofile2).load()
+        da_pvs_anom_normd = xr.open_dataarray(ofile3).load()
     except FileNotFoundError:
-        print('Events to xarray')
-        events = gpd.read_parquet('/storage/scratch/users/hb22g102/ERA5/RWB_index/era5_pv_streamers_350K_1959-2022.parquet')
+        print("Events to xarray")
+        events = gpd.read_parquet(f"{DATADIR}/ERA5/RWB_index/era5_pv_streamers_350K_1959-2022.parquet")
         events = events[events.event_area >= events.event_area.quantile(q)]
         events = events[np.isin(events.date.dt.month, [6, 7, 8])]
         mask_anti = events.intensity >= 0
         mask_cycl = events.intensity < 0
         mask_tropo = events.mean_var < events.level
-        events['flag'] = events.index
+        events["flag"] = events.index
         events_anti = events[mask_anti & mask_tropo]
         events_cycl = events[mask_cycl & mask_tropo]
         from wavebreaking import to_xarray
-        da_s_late = da_template.sel(time=da_template.time.dt.year>=1959)
-        da_pvs_anti = to_xarray(da_s_late, events_anti, flag='flag')
-        da_pvs_cycl = to_xarray(da_s_late, events_cycl, flag='flag')
-        ds_pvs = {'anti': da_pvs_anti, 'cycl': da_pvs_cycl}
-        ds_pvs = xr.Dataset(ds_pvs)
-        ds_pvs_anoms = {}
-        for typ in ['anti', 'cycl']:
-            da = ds_pvs[typ] > 0
-            da_gb = da.groupby('time.year')
-            ds_pvs_anoms[typ] = (da_gb - da_gb.mean()).reset_coords('year', drop=True)
-        ds_pvs_anoms = xr.Dataset(ds_pvs_anoms)    
-        ds_pvs.to_netcdf(ofile1)
-        ds_pvs_anoms.astype(np.float32).to_netcdf(ofile2)
-    return ds_pvs, ds_pvs_anoms
+        da_template = da_template.sel(time=da_template.time.dt.year>=1959)
+        da_pvs_anti = to_xarray(da_template, events_anti, flag="flag")
+        da_pvs_cycl = to_xarray(da_template, events_cycl, flag="flag")
+        da_pvs = {"anti": da_pvs_anti, "cycl": da_pvs_cycl}
+        da_pvs = xr.Dataset(da_pvs)
+        da_pvs = da_pvs.to_array(dim="type").transpose("time", "type", "lat", "lon").chunk({"lon": 10, "lat": 10})
+        clim = compute_clim(da_pvs, "hourofyear")
+        da_pvs_anom = compute_anom(da_pvs, clim, "hourofyear")
+        da_pvs_anom_normd = compute_anom(da_pvs, clim, "hourofyear", True) 
+        da_pvs.to_netcdf(ofile1)
+        da_pvs_anom.astype(np.float32).to_netcdf(ofile2)
+        da_pvs_anom_normd.astype(np.float32).to_netcdf(ofile3)
+    return da_pvs, da_pvs_anom, da_pvs_anom_normd
+
+
+def get_nao(interp_like: xr.DataArray | xr.Dataset | None = None) -> xr.DataArray:
+    df = pd.read_csv(f"{DATADIR}/ERA5/daily_nao.csv", delimiter=",")
+    index = pd.to_datetime(df.iloc[:, :3])
+    series = xr.DataArray(df.iloc[:, 3].values, coords={"time": index})
+    if interp_like is None:
+        return series
+    return series.interp_like(interp_like)

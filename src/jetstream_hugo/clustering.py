@@ -258,6 +258,7 @@ class Experiment(object):
     def __init__(
         self,
         dataset: str,
+        level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
         varname: str,
         resolution: str,
         period: list | tuple | Literal["all"] | int | str = "all",
@@ -273,11 +274,12 @@ class Experiment(object):
         inner_norm: int = None,
     ) -> None:
         self.path = data_path(
-            dataset, varname, resolution, clim_type, clim_smoothing, smoothing, False
+            dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
         ).joinpath("results")
         self.path.mkdir(exist_ok=True)
         self.open_da_args = (
             dataset,
+            level_type,
             varname,
             resolution,
             period,
@@ -929,6 +931,7 @@ class Experiment(object):
             distances = spatial_agglomerative_clustering(
                 self.da, condition_function, mask, season=season, metric=metric
             )
+            np.save(distance_path, distances)
         return linkage(squareform(distances), method="average")
 
     @_only_temp
