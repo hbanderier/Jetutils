@@ -10,7 +10,7 @@ import pandas as pd
 import xarray as xr
 
 np.set_printoptions(precision=5, suppress=True)
-os.environ["PATH"] += os.pathsep + '/storage/homefs/hb22g102/latex/bin/x86_64-linux/'
+os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
 
 pf = platform.platform()
 if pf.find("cray") >= 0:
@@ -25,10 +25,10 @@ elif platform.node()[:4] == "clim":
     MEMORY_LIMIT = "4GiB"
 elif pf.find("el7") >= 0:  # find better later
     NODE = "UBELIX"
-    DATADIR = "/storage/scratch/users/hb22g102"
+    DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    N_WORKERS = 10
-    MEMORY_LIMIT = "8GiB"
+    N_WORKERS = 8
+    MEMORY_LIMIT = "3GiB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
@@ -36,12 +36,12 @@ else:
     MEMORY_LIMIT = "2GiB"
 
 COMPUTE_KWARGS = {
-    'n_workers': N_WORKERS,
-    'memory_limit': MEMORY_LIMIT,
+    "n_workers": N_WORKERS,
+    "memory_limit": MEMORY_LIMIT,
 }
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
-FIGURES = '/storage/homefs/hb22g102/persistent-extremes-era5/Figures'
+FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGEPL = pd.date_range("19590101", "20211231")
@@ -52,7 +52,7 @@ DATERANGEPL_EXT = pd.date_range("19400101", "20221231")
 YEARSPL_EXT = np.unique(DATERANGEPL_EXT.year)
 DATERANGEPL_EXT_SUMMER = DATERANGEPL_EXT[np.isin(DATERANGEPL_EXT.month, [6, 7, 8])]
 
-DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq='6H')
+DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq="6H")
 DATERANGEPL_EXT_6H_SUMMER = DATERANGEPL_EXT_6H[np.isin(DATERANGEPL_EXT_6H.month, [6, 7, 8])]
 
 DATERANGEML = pd.date_range("19770101", "20211231")
@@ -72,74 +72,75 @@ SMALLNAME = {
 }  # Wind speed
 
 PRETTIER_VARNAME = {
-    'mean_lon': 'Avg. Longitude',
-    'mean_lat': 'Avg. Latitude',
-    'Lon': 'Lon. of max. speed',
-    'Lat': 'Lat. of max. speed',
-    'Spe': 'Max. speed',
-    'lon_ext': 'Extent in lon.',
-    'lat_ext': 'Extent in lat.',
-    'tilt': 'Tilt',
-    'sinuosity': 'Sinuosity',
-    'width': 'Width',
-    'int': 'Integrated speed',
-    'int_low': 'Integrated speed low level',
-    'int_over_europe': 'Integrated speed over Europe',
-    'persistence': 'Jet lifetime',
-    'exists': 'Exists',
+    "mean_lon": "Avg. Longitude",
+    "mean_lat": "Avg. Latitude",
+    "Lon": "Lon. of max. speed",
+    "Lat": "Lat. of max. speed",
+    "Spe": "Max. speed",
+    "lon_ext": "Extent in lon.",
+    "lat_ext": "Extent in lat.",
+    "tilt": "Tilt",
+    "sinuosity": "Sinuosity",
+    "width": "Width",
+    "int": "Integrated speed",
+    "int_low": "Intd. speed low level",
+    "int_over_europe": "Intd. speed over Eur.",
+    "persistence": "Jet lifetime",
+    "exists": "Exists",
+    "int_ratio": "Ratio low / high intd. speed",
 }
 
 UNITS = {
-    'mean_lon': r'$~^{\circ} \mathrm{E}$',
-    'mean_lat': r'$~^{\circ} \mathrm{N}$',
-    'Lon': r'$~^{\circ} \mathrm{E}$',
-    'Lat': r'$~^{\circ} \mathrm{N}$',
-    'Spe': r'$\mathrm{m} \cdot \mathrm{s}^{-1}$',
-    'lon_ext': r'$~^{\circ} \mathrm{E}$',
-    'lat_ext': r'$~^{\circ} \mathrm{N}$',
-    'tilt': r'$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$',
-    'sinuosity': r'$~$',
-    'width': r'$~^{\circ} \mathrm{N}$',
-    'int': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
-    'int_low': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
-    'int_over_europe': r'$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$',
-    'persistence': r'$\mathrm{day}$',
-    'exists': r'$~$',
+    "mean_lon": r"$~^{\circ} \mathrm{E}$",
+    "mean_lat": r"$~^{\circ} \mathrm{N}$",
+    "Lon": r"$~^{\circ} \mathrm{E}$",
+    "Lat": r"$~^{\circ} \mathrm{N}$",
+    "Spe": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
+    "lon_ext": r"$~^{\circ} \mathrm{E}$",
+    "lat_ext": r"$~^{\circ} \mathrm{N}$",
+    "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+    "sinuosity": r"$~$",
+    "width": r"$~^{\circ} \mathrm{N}$",
+    "int": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
+    "int_low": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
+    "int_over_europe": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
+    "persistence": r"$\mathrm{day}$",
+    "exists": r"$~$",
 }
 
 DEFAULT_VALUES = {
-    'mean_lon': 0,
-    'mean_lat': 45,
-    'Lon': 0,
-    'Lat': 45,
-    'Spe': 0,
-    'lon_ext': 0,
-    'lat_ext': 0,
-    'tilt': 0,
-    'sinuosity': 0,
-    'width': 0,
-    'int': 0,
-    'int_low': 0,
-    'int_over_europe': 0,
-    'persistence': 1,
-    'exists': 0,
+    "mean_lon": 0,
+    "mean_lat": 45,
+    "Lon": 0,
+    "Lat": 45,
+    "Spe": 0,
+    "lon_ext": 0,
+    "lat_ext": 0,
+    "tilt": 0,
+    "sinuosity": 0,
+    "width": 0,
+    "int": 0,
+    "int_low": 0,
+    "int_over_europe": 0,
+    "persistence": 1,
+    "exists": 0,
 }
 
 LATEXY_VARNAME = {
-    'mean_lon': '$\overline{\lambda}$',
-    'mean_lat': '$\overline{\phi}$',
-    'Lon': '$\lambda_{s^*}$',
-    'Lat': '$\phi_{s^*}$',
-    'Spe': '$s^*$',
-    'lon_ext': '$\Delta \lambda$',
-    'lat_ext': '$\Delta \phi$',
-    'tilt': r'$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$',
-    'sinuosity': r'$R^2$',
-    'width': '$w$',
-    'int': '$\int s \mathrm{d}\lambda$',
-    'int_low': r'$\int_{700\text{ hPa}} s \mathrm{d}\lambda$',
-    'int_over_europe': '$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$',
-    'persistence': '$\Delta t$',
+    "mean_lon": "$\overline{\lambda}$",
+    "mean_lat": "$\overline{\phi}$",
+    "Lon": "$\lambda_{s^*}$",
+    "Lat": "$\phi_{s^*}$",
+    "Spe": "$s^*$",
+    "lon_ext": "$\Delta \lambda$",
+    "lat_ext": "$\Delta \phi$",
+    "tilt": r"$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$",
+    "sinuosity": r"$R^2$",
+    "width": "$w$",
+    "int": "$\int s \mathrm{d}\lambda$",
+    "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",
+    "int_over_europe": "$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$",
+    "persistence": "$\Delta t$",
 }
 
 RADIUS = 6.371e6  # m
