@@ -263,6 +263,9 @@ def infer_extent(
 def create_levels(
     to_plot: list, nlevels: int = None, sym: bool = False, start: float = None, q: float=0.99
 ) -> Tuple[NDArray, NDArray, str]:
+    if to_plot[0].dtype == bool:
+        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', False
+    
     if sym is None:
         sym = infer_sym(to_plot)
 
