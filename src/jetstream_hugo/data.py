@@ -1,7 +1,7 @@
-from genericpath import isfile
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from nptyping import NDArray
 from pathlib import Path
+import warnings
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -107,7 +107,7 @@ def determine_chunks(da: xr.DataArray, chunk_type=None) -> Mapping:
     lat_name = "lat" if "lat" in dims else "latitude"
     lev_name = "lev" if "lev" in dims else "level"
     if lev_name in dims:
-        chunks = {lev_name: 6}
+        chunks = {lev_name: -1}
     else:
         chunks = {}
         
@@ -220,19 +220,17 @@ def window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
 
 
 def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
-    if dim == "time":
-        winsize *= 24 * 3600
     name = da.name
-    ft = xrft.fft(da, dim=dim, true_phase=True, true_amplitude=True)
-    loc_kwargs = {f"freq_{dim}": np.abs(ft[f"freq_{dim}"]) > 1 / winsize}
-    ft.loc[loc_kwargs] = 0
-    newda = (
-        xrft.ifft(ft, dim=f"freq_{dim}", true_phase=True, true_amplitude=True, lag=ft[f"freq_{dim}"].direct_lag)
-        .real.assign_coords(da.coords)
-        .rename(name)
-    )
-    if (da < 0).sum() == 0:
-        newda = np.abs(newda)
+    dim = dim.split("+")
+    ft = xrft.fft(da, dim=dim)
+    mask = 0
+    for dim_ in dim:
+        mask = mask + np.abs(ft[f"freq_{dim_}"])
+    mask = mask < winsize
+    ft = ft.where(mask, 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=FutureWarning)
+        newda = xrft.ifft(ft, dim=[f"freq_{dim_}" for dim_ in dim]).real.assign_coords(da.coords).rename(name)
     newda.attrs = da.attrs
     return newda
 

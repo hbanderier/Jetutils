@@ -297,7 +297,10 @@ class Experiment(object):
         self.varname = varname
         self.region = (minlon, maxlon, minlat, maxlat)
         self.clim_type = clim_type
-        self.levels, self.level_names = unpack_levels(levels)
+        if levels != 'all':
+            self.levels, self.level_names = unpack_levels(levels)
+        else: 
+            self.levels = 'all'
         self.inner_norm = inner_norm
 
         self.metadata = {

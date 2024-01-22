@@ -16,7 +16,7 @@ from sklearn.metrics import roc_auc_score, f1_score, balanced_accuracy_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
-from jetstream_hugo.definitions import N_WORKERS, infer_sym
+from jetstream_hugo.definitions import N_WORKERS, infer_direction
 
 def autocorrelation(path: Path, time_steps: int = 50) -> Path:
     ds = xr.open_dataset(path)
@@ -130,9 +130,9 @@ def field_significance(
         empirical_distribution.append(
             np.mean(np.take(take_from, indices[:, ns:end], axis=0), axis=1)
         )
-    sym = infer_sym(empirical_distribution)
+    direction = infer_direction(empirical_distribution)
     empirical_distribution = np.mean(empirical_distribution, axis=0)
-    q = q / 2 if sym else q
+    q = q / 2 if direction == 0 else q
     p = norm.cdf(
         to_test.mean(dim="time").values,
         loc=np.mean(empirical_distribution, axis=0),
