@@ -181,16 +181,20 @@ def case_insensitive_equal(str1: str, str2: str) -> bool:
     return str1.casefold() == str2.casefold()
 
 
-def infer_sym(to_plot: Any) -> bool:
-    max = np.amax(to_plot)
-    min = np.amin(to_plot)
-    sym = (np.sign(max) == -np.sign(min)) and (
-        np.abs(np.log10(np.abs(max)) - np.log10(np.abs(min))) <= 2
-    )
+def infer_direction(to_plot: Any) -> int:
+    max_ = np.nanquantile(to_plot, 0.99)
+    min_ = np.nanquantile(to_plot, 0.01)
     try:
-        return sym.item()
+        max_ = max_.item()
+        min_ = min_.item()
     except AttributeError:
-        return sym
+        pass
+    sym = np.sign(max_) == - np.sign(min_)
+    sym = sym and np.abs(np.log10(np.abs(max_)) - np.log10(np.abs(min_))) <= 2
+    if not sym:
+        return 1 if np.abs(max_) > np.abs(min_) else -1
+    return 0
+    
 
 
 def labels_to_mask(labels: xr.DataArray | NDArray) -> NDArray:
@@ -215,3 +219,9 @@ def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
             da.latitude.min().item(),
             da.latitude.max().item(),
         )
+        
+        
+def slice_1d(da: xr.DataArray | xr.Dataset, indexers: list, dim: str = "points"):
+    return da.loc[tuple(
+        [xr.DataArray(indexer, dims=dim) for indexer in indexers]
+    )]

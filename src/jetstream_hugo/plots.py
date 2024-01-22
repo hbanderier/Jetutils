@@ -39,7 +39,7 @@ from jetstream_hugo.definitions import (
     REGIONS,
     PRETTIER_VARNAME,
     LATBINS,
-    infer_sym,
+    infer_direction,
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
 
@@ -92,39 +92,6 @@ def num2tex(x: float, force: bool = False) -> str:
         return float_str
 
 
-def make_transparent(
-    cmap: str | Colormap,
-    nlev: int = None,
-    alpha_others: float = 1,
-    n_transparent: int = 1,
-    sym: bool = False,
-) -> Colormap:
-    if isinstance(cmap, str):
-        cmap = mpl.colormaps[cmap]
-    if nlev is None:
-        nlev = cmap.N
-    colorlist = cmap(np.linspace(0, 1, nlev + sym))
-    if sym:
-        midpoint = int(np.ceil(nlev / 2))
-        colorlist[midpoint - n_transparent + 1 : midpoint + n_transparent, -1] = 0
-        colorlist[midpoint + n_transparent :, -1] = alpha_others
-        colorlist[: midpoint - n_transparent + 1, -1] = alpha_others
-    else:
-        colorlist[:n_transparent, -1] = 0
-        colorlist[n_transparent:, -1] = alpha_others
-
-    return ListedColormap(colorlist)
-
-
-def num2tex(x: float) -> str:
-    float_str = f"{x:.2g}"
-    if "e" in float_str:
-        base, exponent = float_str.split("e")
-        return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
-    else:
-        return float_str
-
-
 def make_boundary_path(
     minlon: float, maxlon: float, minlat: float, maxlat: float, n: int = 50
 ) -> mpath.Path:
@@ -170,18 +137,6 @@ def figtitle(
     maxlat: str,
     season: str,
 ) -> str:
-    """Write extend of a region lon lat box in a nicer way, plus season
-
-    Args:
-        minlon (str): minimum longitude
-        maxlon (str): maximum longitude
-        minlat (str): minimum latitude
-        maxlat (str): maximum latitude
-        season (str): season
-
-    Returns:
-        str: Nice title
-    """
     minlon, maxlon, minlat, maxlat = (
         float(minlon),
         float(maxlon),
@@ -213,36 +168,64 @@ def honeycomb_panel(
     return fig, axes
 
 
-def infer_extent(
-    to_plot: list, sym: bool, start: float = None, q: float=0.99
-) -> Tuple[int, float]:  # I could market this
-    max = np.nanquantile(to_plot, q=q)
-    lmax = np.log10(max)
-    lmax = int(np.sign(lmax) * np.round(np.abs(lmax)))
 
-    if sym:
-        min = 0
-    elif start is not None:
-        min = start
+def make_transparent(
+    cmap: str | Colormap,
+    nlev: int = None,
+    alpha_others: float = 1,
+    n_transparent: int = 1,
+    direction: int = 1,
+) -> Colormap:
+    if isinstance(cmap, str):
+        cmap = mpl.colormaps[cmap]
+    if nlev is None:
+        nlev = cmap.N
+    colorlist = cmap(np.linspace(0, 1, nlev + int(direction == 0)))
+    if direction == 0:
+        midpoint = int(np.ceil(nlev / 2))
+        colorlist[midpoint - n_transparent + 1 : midpoint + n_transparent, -1] = 0
+        colorlist[midpoint + n_transparent :, -1] = alpha_others
+        colorlist[: midpoint - n_transparent + 1, -1] = alpha_others
+    elif direction == 1:
+        colorlist[:n_transparent, -1] = 0
+        colorlist[n_transparent:, -1] = alpha_others
     else:
-        min = np.nanmin(to_plot)
+        colorlist[-n_transparent:, -1] = 0
+        colorlist[:-n_transparent, -1] = alpha_others
+    return ListedColormap(colorlist)
+
+
+
+def infer_extent(
+    to_plot: list, direction: int, q: float=0.99
+) -> Tuple[int, float, float]:  # I could market this
+    
+    lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
+    lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
+    lmax = int(np.round(np.abs(lmax)))
+
+    if direction == 0:
+        lowbound, highbound = 0, max(np.abs(lowbound), np.abs(highbound))
+        lowbound = 0
+    elif direction == -1:
+        lowbound, highbound = 0, np.abs(lowbound)
 
     num_digits = 1000
     for minus in [0.5, 1, 1.5, 2]:
-        if minus == int(minus) and sym:
-            max_rounded = np.ceil(max * 10 ** (-lmax + minus)) * 10 ** (lmax - minus)
+        if minus == int(minus) and direction == 0:
+            max_rounded = np.ceil(highbound * 10 ** (-lmax + minus)) * 10 ** (lmax - minus)
             min_rounded = 0
         else:
             minus = int(np.ceil(minus))
             min_rounded = (
-                np.floor(min * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
+                np.floor(lowbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
             )
             max_rounded = (
-                np.ceil(max * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
+                np.ceil(highbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
             )
         extent = max_rounded - min_rounded
-        minnlev = 4 if sym else 5
-        maxnlev = 8 if sym else 10
+        minnlev = 4 if direction == 0 else 5
+        maxnlev = 8 if direction == 0 else 10
         for nlev in range(minnlev, maxnlev):
             try:
                 firstlev = np.round(extent / (nlev - 1), decimals=6)
@@ -257,24 +240,25 @@ def infer_extent(
             ):
                 winner = (nlev, min_rounded, max_rounded)
                 num_digits = cand_nd
+    if direction == -1:
+        winner = (winner[0], -winner[2], winner[1])
     return winner
 
 
 def create_levels(
-    to_plot: list, nlevels: int = None, sym: bool = False, start: float = None, q: float=0.99
-) -> Tuple[NDArray, NDArray, str]:
+    to_plot: list, nlevels: int = None, q: float=0.99
+) -> Tuple[NDArray, NDArray, str, int]:
     if to_plot[0].dtype == bool:
         return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', False
     
-    if sym is None:
-        sym = infer_sym(to_plot)
+    direction = infer_direction(to_plot)
 
-    nlevels_cand, min_rounded, max_rounded = infer_extent(to_plot, sym, start, q=q)
+    nlevels_cand, min_rounded, max_rounded = infer_extent(to_plot, direction, q=q)
 
     if nlevels is None:
         nlevels = nlevels_cand
 
-    if sym:
+    if direction == 0:
         levels0 = np.delete(
             np.append(
                 np.linspace(-max_rounded, 0, nlevels),
@@ -284,11 +268,15 @@ def create_levels(
         )
         levels = np.delete(levels0, nlevels - 1)
         extend = "both"
-    else:
+    elif direction == 1:
         levels0 = np.linspace(min_rounded, max_rounded, nlevels)
         levels = levels0
         extend = "max"
-    return levels0, levels, extend, sym
+    elif direction == -1:
+        levels0 = np.linspace(min_rounded, max_rounded, nlevels)
+        levels = levels0
+        extend = "min"
+    return levels0, levels, extend, direction
 
 
 def doubleit(thing: list | str | None, length: int, default: str) -> list:
@@ -430,8 +418,6 @@ class Clusterplot:
         lon: NDArray = None,
         lat: NDArray = None,
         nlevels: int = None,
-        sym: bool = None,
-        start: float = None,
         clabels: Union[bool, list] = False,
         draw_gridlines: bool = False,
         titles: Iterable = None,
@@ -444,18 +430,18 @@ class Clusterplot:
 
         lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
 
-        levelsc, levelscf, _, sym = create_levels(to_plot, nlevels, sym, start, q=q)
+        levelsc, levelscf, _, direction = create_levels(to_plot, nlevels, q=q)
 
-        if sym and linestyles is None:
+        if direction == 0 and linestyles is None:
             linestyles = ["dashed", "solid"]
 
-        if sym:
+        if direction == 0:
             colors = doubleit(colors, len(levelsc), "black")
             linestyles = doubleit(linestyles, len(levelsc), "solid")
 
-        if not sym and colors is None:
+        if direction != 0 and colors is None:
             colors = "black"
-        if not sym and linestyles is None:
+        if direction != 0 and linestyles is None:
             linestyles = "solid"
         if 'cmap' in kwargs and kwargs['cmap'] is not None:
             colors=None
@@ -491,8 +477,6 @@ class Clusterplot:
         self,
         to_plot: list,
         nlevels: int = None,
-        sym: bool = None,
-        start: float = None,
         cmap: str | Colormap = 'twilight_shifted',
         transparify: bool | float | int = False,
         contours: bool = False,
@@ -502,21 +486,21 @@ class Clusterplot:
         q: float=0.99,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, NDArray]:
-        levelsc, levelscf, extend, sym = create_levels(to_plot, nlevels, sym, start, q=q)
+        levelsc, levelscf, extend, direction = create_levels(to_plot, nlevels, q=q)
 
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
         if transparify:
             if isinstance(transparify, int):
                 cmap = make_transparent(
-                    cmap, nlev=len(levelscf), n_transparent=transparify, sym=sym
+                    cmap, nlev=len(levelscf), n_transparent=transparify, direction=direction
                 )
             elif isinstance(transparify, float):
                 cmap = make_transparent(
-                    cmap, nlev=len(levelscf), alpha_others=transparify, sym=sym
+                    cmap, nlev=len(levelscf), alpha_others=transparify, direction=direction
                 )
             else:
-                cmap = make_transparent(cmap, nlev=len(levelscf), sym=sym)
+                cmap = make_transparent(cmap, nlev=len(levelscf), direction=direction)
 
         if cbar_kwargs is None:
             cbar_kwargs = {}
@@ -528,7 +512,7 @@ class Clusterplot:
         im = ScalarMappable(norm=norm, cmap=cmap)
 
         if contours or clabels is not None:
-            self.add_contour(to_plot, nlevels, sym, clabels)
+            self.add_contour(to_plot, nlevels, clabels)
 
         return (
             dict(
@@ -550,8 +534,6 @@ class Clusterplot:
         lon: NDArray = None,
         lat: NDArray = None,
         nlevels: int = None,
-        sym: bool = None,
-        start: float = None,
         cmap: str | Colormap = 'twilight_shifted',
         transparify: bool | float | int = False,
         contours: bool = False,
@@ -563,7 +545,7 @@ class Clusterplot:
         cbar_kwargs: Mapping = None,
         q: float=0.99,
         **kwargs,
-    ) -> ScalarMappable:
+    ) -> Tuple[ScalarMappable, Mapping]:
         assert len(to_plot) <= len(self.axes)
 
         lon, lat = setup_lon_lat(to_plot, lon, lat)
@@ -571,8 +553,6 @@ class Clusterplot:
         kwargs, cbar_kwargs, im, levelsc = self.setup_contourf(
             to_plot,
             nlevels,
-            sym,
-            start,
             cmap,
             transparify,
             contours,
