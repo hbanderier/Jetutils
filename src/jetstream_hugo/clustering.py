@@ -52,13 +52,17 @@ from jetstream_hugo.data import (
     extract_season,
 )
 from jetstream_hugo.jet_finding import (
-    find_all_jets,
     all_jets_to_one_array,
     props_to_ds,
     compute_all_jet_props,
     track_jets,
     add_persistence_to_props,
     categorize_ds_jets,
+    default_preprocess,
+    define_blobs_wind_speed,
+    compute_weights_wind_speed,
+    refine_jets_shortest_path,
+    JetFinder,
 )
 
 RAW = 0
@@ -847,8 +851,23 @@ class Experiment(object):
             where_are_jets = np.load(ofile_waj)
             all_jets_one_array = np.load(ofile_ajoa)
             return all_jets, where_are_jets, all_jets_one_array
-
-        all_jets = find_all_jets(self.da, processes, chunksize)
+        this_define_blobs = partial(define_blobs_wind_speed, min_size=750)
+        refine_jets = partial(
+            refine_jets_shortest_path, 
+            compute_weights=compute_weights_wind_speed,
+            jet_cutoff=2.4e3
+        )
+        jet_finder = JetFinder(
+            preprocess=default_preprocess,
+            define_blobs=this_define_blobs,
+            refine_jets=refine_jets,
+        )
+        all_jets = find_all_jets(
+            jet_finder,
+            xr.Dataset({'s': self.da}),
+            processes=processes,
+            chunksize=chunksize,
+        )
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
         save_pickle(all_jets, ofile_aj)
         np.save(ofile_waj, where_are_jets)

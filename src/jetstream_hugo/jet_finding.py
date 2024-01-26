@@ -1,12 +1,13 @@
 import warnings
 from pathlib import Path
 from functools import partial
-from typing import Callable, Mapping, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 from nptyping import NDArray
 from multiprocessing import Pool
 from itertools import pairwise
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from scipy.stats import linregress
 from scipy.sparse.csgraph import csgraph_from_masked, shortest_path, csgraph_from_dense
@@ -32,8 +33,7 @@ from jetstream_hugo.data import smooth
 
 
 def default_preprocess(da: xr.DataArray) -> xr.DataArray:
-    print("Use a proper preprocess step")
-    raise ValueError
+    return da
 
 
 def smooth_wrapper(smooth_map: Mapping = None):
@@ -50,6 +50,34 @@ def preprocess_frangi(da: xr.DataArray, sigmas: list):
 
 def frangi_wrapper(sigmas: list):
     return partial(preprocess_frangi, sigmas=sigmas)
+
+
+def compute_criterion(ds: xr.Dataset) -> xr.Dataset:
+    varnames = {
+        varname: (f"{varname}_smo" if f"{varname}_smo" in ds else varname)
+        for varname in ["s", "u", "v"]
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        sigma = (
+            ds[varnames["v"]] * ds[varnames["s"]].differentiate("lon")
+            - ds[varnames["u"]] * ds[varnames["s"]].differentiate("lat")
+        ) / ds[varnames["s"]]
+        Udsigmadn = ds[varnames["v"]] * sigma.differentiate("lon") - ds[
+            varnames["s"]
+        ] * sigma.differentiate("lat")
+    ds["criterion"] = Udsigmadn + 2 * sigma**2
+    return ds
+
+
+def compute_criterion_mona(ds: xr.Dataset) -> xr.Dataset:
+    varname = "pv_smo" if "pv_smo" in ds else "pv"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        criterion = np.log(ds[varname])
+        criterion = criterion.differentiate("lon") ** 2 + criterion.differentiate("lat") ** 2
+        ds["criterion"] = np.sqrt(criterion)
+    return ds
 
 
 def default_define_blobs(
@@ -79,7 +107,7 @@ def my_pairwise(X):
     return output
 
 
-def define_blobs(
+def define_blobs_generic(
     criterion: xr.DataArray,
     *append_to_groups: xr.DataArray,
     criterion_threshold: float = 0,
@@ -88,12 +116,18 @@ def define_blobs(
     min_size: int = 50,
 ) -> Tuple[list, list]:
     lon, lat = criterion.lon.values, criterion.lat.values
+    if "lev" in criterion.values:
+        maxlev = criterion.argmax(dim="lev")
+        append_to_groups = [atg.isel(lev=maxlev) for atg in append_to_groups]
+        append_to_groups.append(criterion.lev[maxlev])
+        criterion = criterion.isel(lev=maxlev)
     X = criterion.values
-    mask = X > criterion_threshold
-    idxs = np.where(mask)
+    idxs = np.where(X > criterion_threshold)
+    append_names = [atg.name for atg in append_to_groups]
     append_to_groups = [atg.values[idxs[0], idxs[1]] for atg in append_to_groups]
     points = np.asarray([lon[idxs[1]], lat[idxs[0]], *append_to_groups]).T
-    dist_matrix = distance_function(points[:, :2])
+    points = pd.DataFrame(points, columns=["lon", "lat", *append_names])
+    dist_matrix = distance_function(points[["lon", "lat"]])
     labels = (
         AgglomerativeClustering(
             n_clusters=None,
@@ -105,10 +139,9 @@ def define_blobs(
         .labels_
     )
     masks = labels_to_mask(labels)
-    groups = [points[mask] for mask in masks.T if np.sum(mask) > min_size]
-    dist_mats = [
-        dist_matrix[mask, :][:, mask] for mask in masks.T if np.sum(mask) > min_size
-    ]
+    valid_masks = [mask for mask in masks.T if np.sum(mask) > min_size]
+    groups = [points.iloc[mask] for mask in valid_masks]
+    dist_mats = [dist_matrix[mask, :][:, mask] for mask in valid_masks]
     return groups, dist_mats
 
 
@@ -118,32 +151,15 @@ def define_blobs_wind_speed(
     distance_function: Callable = pairwise_distances,
     distance_threshold: float = 0.75,
     min_size: int = 750,
-) -> Tuple[list, list, xr.Dataset]:
-    return (
-        *define_blobs(
-            ds["s_smo"],
-            ds["s"],
-            criterion_threshold=criterion_threshold,
-            distance_function=distance_function,
-            distance_threshold=distance_threshold,
-            min_size=min_size,
-        ),
-        ds,
+) -> Tuple[list, list]:
+    return define_blobs_generic(
+        ds["s_smo"],
+        ds["s"],
+        criterion_threshold=criterion_threshold,
+        distance_function=distance_function,
+        distance_threshold=distance_threshold,
+        min_size=min_size,
     )
-
-
-def compute_criterion(ds: xr.Dataset) -> xr.Dataset:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        sigma = (
-            ds["v_smo"] * ds["s_smo"].differentiate("lon")
-            - ds["u_smo"] * ds["s_smo"].differentiate("lat")
-        ) / ds["s_smo"]
-        Udsigmadn = ds["v_smo"] * sigma.differentiate("lon") - ds[
-            "u_smo"
-        ] * sigma.differentiate("lat")
-    ds["criterion"] = Udsigmadn + 2 * sigma**2
-    return ds
 
 
 def define_blobs_spensberger(
@@ -153,17 +169,13 @@ def define_blobs_spensberger(
     distance_threshold: float = 0.75,
     min_size: int = 40,
 ) -> Tuple[list, list]:
-    ds = compute_criterion(ds)
-    return (
-        *define_blobs(
-            -ds["criterion"],
-            ds["s"],
-            criterion_threshold=-criterion_threshold,
-            distance_function=distance_function,
-            distance_threshold=distance_threshold,
-            min_size=min_size,
-        ),
-        ds,
+    return define_blobs_generic(
+        -ds["criterion"],
+        ds["s"],
+        criterion_threshold=-criterion_threshold,
+        distance_function=distance_function,
+        distance_threshold=distance_threshold,
+        min_size=min_size,
     )
 
 
@@ -186,7 +198,7 @@ def default_refine_jets(
 def merge_jets(jets: list[NDArray], threshold: float = 1.5) -> list[NDArray]:
     to_merge = []
     for (i1, j1), (i2, j2) in pairwise(enumerate(jets)):
-        if np.amin(pairwise_distances(j1[:, :2], j2[:, :2])) < 1.5:
+        if np.amin(pairwise_distances(j1[["lon", "lat"]], j2[["lon", "lat"]])) < threshold:
             for merger in to_merge:
                 if i1 in merger:
                     merger.append(i2)
@@ -205,10 +217,10 @@ def merge_jets(jets: list[NDArray], threshold: float = 1.5) -> list[NDArray]:
 
 
 def jet_overlap(jet1: NDArray, jet2: NDArray) -> bool:
-    _, idx1 = np.unique(jet1[:, 0], return_index=True)
-    _, idx2 = np.unique(jet2[:, 0], return_index=True)
-    x1, y1 = jet1[idx1, :2].T
-    x2, y2 = jet2[idx2, :2].T
+    _, idx1 = np.unique(jet1["lon"], return_index=True)
+    _, idx2 = np.unique(jet2["lon"], return_index=True)
+    x1, y1 = jet1.iloc[idx1, :2].T.to_numpy()
+    x2, y2 = jet2.iloc[idx2, :2].T.to_numpy()
     mask12 = np.isin(x1, x2)
     mask21 = np.isin(x2, x1)
     with warnings.catch_warnings():
@@ -227,7 +239,7 @@ def get_path_from_predecessors(Pr: NDArray, j: int) -> list:
 
 
 def get_splits(
-    group: NDArray, Pr: NDArray | list, js: NDArray | list, cutoff: float
+    group: pd.DataFrame, Pr: NDArray | list, js: NDArray | list, cutoff: float
 ) -> list:
     # js in descending order
     splits = []
@@ -239,7 +251,7 @@ def get_splits(
             newk = Pr[k]
             Pr[k] = -9999
             k = newk
-        if np.sum(group[path, 2]) > cutoff:
+        if np.sum(group["s"].iloc[path]) > cutoff:
             splits.append(j)
     return splits
 
@@ -288,34 +300,40 @@ def compute_weights_gaussian(x: NDArray, is_nei: NDArray):
     return output
 
 
+def slice_from_df(da: xr.DataArray | xr.Dataset, indexer: pd.DataFrame, dim: str = "point") -> xr.DataArray | xr.Dataset:
+    cols = [col for col in ["lev", "lon", "lat"] if col in indexer]
+    indexer = {col: xr.DataArray(indexer[col].to_numpy(), dims=dim) for col in cols}
+    return da.loc[indexer]
+
+
 def compute_weights_wind_speed(
-    ds: xr.Dataset, group: NDArray, is_nei: NDArray
+    ds: xr.Dataset, group: pd.DataFrame, is_nei: NDArray
 ) -> NDArray:
-    x = slice_1d(ds["s"], group[:, [1, 0]].T).values
+    x = slice_from_df(ds["s"], group).values
     return compute_weights_gaussian(x, is_nei)
-    
+
 
 def compute_weights_criterion(
-    ds: xr.Dataset, group: NDArray, is_nei: NDArray
+    ds: xr.Dataset, group: pd.DataFrame, is_nei: NDArray
 ) -> NDArray:
-    x = -slice_1d(ds["criterion"], group[:, [1, 0]].T).values
+    x = slice_from_df(ds["s"], group).values
     return compute_weights_gaussian(x, is_nei)
 
 
 def jets_from_predecessor(
-    group: NDArray, splits: Sequence, Pr: NDArray, jet_cutoff: float = 7.5e3
+    group: pd.DataFrame, splits: Sequence, Pr: NDArray, jet_cutoff: float = 7.5e3
 ) -> list:
     thesejets = []
     jets = []
     for k in splits:
         sp = get_path_from_predecessors(Pr, k)
         jet = group[sp]
-        if np.sum(jet[:, 2]) > jet_cutoff:
+        if np.sum(jet["s"]) > jet_cutoff:
             thesejets.append(jet)
     if len(thesejets) == 0:
         return []
     thesejets = [
-        thesejets[i] for i in np.argsort([np.sum(jet[:, 2]) for jet in thesejets])[::-1]
+        thesejets[i] for i in np.argsort([np.sum(jet["s"]) for jet in thesejets])[::-1]
     ]
     jets.append(thesejets[0])
     for otherjet in thesejets[1:]:
@@ -326,7 +344,7 @@ def jets_from_predecessor(
 
 def refine_jets_shortest_path(
     ds: xr.Dataset,
-    groups: list[NDArray],
+    groups: list[pd.DataFrame],
     dist_mats: list[NDArray],
     compute_weights: Callable = default_compute_weights,
     jet_cutoff: float = 7.5e3,
@@ -338,7 +356,7 @@ def refine_jets_shortest_path(
         graph = np.ma.array(graph, mask=~is_nei)
         graph = csgraph_from_masked(graph)
         candidates = list(np.unravel_index(np.argmax(dist_mat), dist_mat.shape))
-        im = candidates[np.argmax(group[candidates, 2])]
+        im = candidates[np.argmax(group["s"].iloc[candidates])]
         dmat, Pr = shortest_path(
             graph, directed=False, return_predecessors=True, indices=im
         )
@@ -350,14 +368,15 @@ def refine_jets_shortest_path(
 
 def refine_jets_shortest_path_larger(
     ds: xr.Dataset,
-    groups: list[NDArray],
+    groups: list[pd.DataFrame],
     dist_mats: list[NDArray],
     compute_weights: Callable = default_compute_weights,
     jet_cutoff: float = 7.5e3,
 ) -> list[NDArray]:
     jets = []
     for group in groups:
-        x, y, _ = group.copy().T
+        x = group["lon"].to_numpy()
+        y = group["lat"].to_numpy()
         a, b = np.polyfit(x, y, deg=1)
         distance_to_line = np.abs(a * x - y + b) / np.sqrt(a**2 + 1)
         maxdist = distance_to_line.max()
@@ -376,11 +395,17 @@ def refine_jets_shortest_path_larger(
         mask = distance_to_line_2 <= (maxdist)
         ix, iy = np.where(mask)
         xmesh[xmesh >= 180] -= 360
-        smask = slice_1d(ds["s"], [ymesh[mask], xmesh[mask]]).values
-        mesh = np.asarray([xmesh[mask], ymesh[mask], smask]).T
+        append_names = [col for col in group.columns if col not in ["lon", "lat"]]
+        append_to_group = [ds[col] for col in append_names]
+        if "lev" in ds:
+            maxlev = ds["s_smo"].argmax(dim="lev")
+            append_to_mesh = [atm.isel(lev=maxlev) for atm in append_to_mesh]
+        append_to_mesh = [slice_1d(atm, [ymesh[mask], xmesh[mask]]) for atm in append_to_mesh]
+        mesh = np.asarray([xmesh[mask], ymesh[mask], *append_to_mesh]).T
+        mesh = pd.DataFrame(mesh, columns=group.columns)
         grid_to_mesh = np.argmax(
-            (mesh[:, None, 0] == group[None, :, 0])
-            & (mesh[:, None, 1] == group[None, :, 1]),
+            (xmesh[:, None] == x[None, :])
+            & (ymesh[:, None] == y[None, :]),
             axis=0,
         )
         is_nei = pairwise_distances(np.asarray([ix, iy]).T, metric="manhattan") == 1
@@ -398,46 +423,51 @@ def refine_jets_shortest_path_larger(
     return merge_jets(jets, 1.5)
 
 
-def find_jets(
-    ds: xr.Dataset,
-    preprocess: Callable = default_preprocess,
-    define_blobs: Callable = default_define_blobs,
-    refine_jets: Callable = default_refine_jets,
-) -> list[NDArray]:
-    ds["s_smo"] = preprocess(ds["s"])
-    ds["s_smo"] = ds["s_smo"].where(ds["s_smo"] > 0, 0)
-    for varname in ("u", "v"):
-        if varname in ds:
-            ds[f"{varname}_smo"] = preprocess(ds[varname])
-    groups, dist_mats, ds = define_blobs(ds)
-    jets = refine_jets(ds, groups, dist_mats)
-    return jets
-
-
 class JetFinder(object):
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
+    def __init__(
+        self,
+        preprocess: Callable = default_preprocess,
+        compute_criterion: Callable = default_preprocess,
+        define_blobs: Callable = default_define_blobs,
+        refine_jets: Callable = default_refine_jets,
+    ):
+        self.preprocess = preprocess
+        self.compute_criterion = compute_criterion
+        self.define_blobs = define_blobs
+        self.refine_jets = refine_jets
 
-    def call(self, *args):
-        return find_jets(*args, **self.kwargs)
+    def pre_loop_call(self, ds: xr.Dataset) -> xr.Dataset:
+        ds["s_smo"] = self.preprocess(ds["s"])
+        ds["s_smo"] = ds["s_smo"].where(ds["s_smo"] > 0, 0)
+        for varname in ("u", "v"):
+            if varname in ds:
+                ds[f"{varname}_smo"] = self.preprocess(ds[varname])
+        ds = self.compute_criterion(ds)
+        return ds
 
+    def loop_call(self, ds):
+        groups, dist_mats, ds = self.define_blobs(ds)
+        jets = self.refine_jets(ds, groups, dist_mats)
+        return jets
 
-def find_all_jets(
-    jet_finder: JetFinder,
-    ds: xr.DataArray,
-    processes: int = N_WORKERS,
-    chunk_size: int = 2,
-) -> list:
-    iterable = (ds.sel(time=time_) for time_ in ds.time.values)
-    if processes == 1:
-        return list(tqdm(map(jet_finder.call, iterable), total=ds.time.shape[0]))
-    with Pool(processes=processes) as pool:
-        return list(
-            tqdm(
-                pool.imap(jet_finder.call, iterable, chunksize=chunk_size),
-                total=ds.time.shape[0],
+    def call(
+        self, ds: xr.Dataset, processes: int = N_WORKERS, chunksize: int = 2
+    ) -> list:
+        ds = self.pre_loop_call(ds)
+        try:
+            iterable = (ds.sel(time=time_) for time_ in ds.time.values)
+        except AttributeError:
+            iterable = (ds.sel(cluster=cluster_) for cluster_ in ds.cluster.values)
+        if processes == 1:
+            return list(tqdm(map(self.loop_call, iterable), total=ds["s"].shape[0]))
+        with Pool(processes=processes) as pool:
+            return list(
+                tqdm(
+                    pool.imap(self.loop_call, iterable, chunksize=chunksize),
+                    total=ds["s"].shape[0],
+                )
             )
-        )
+
 
 def jet_trapz(jet: NDArray) -> float:
     return np.trapz(
@@ -504,7 +534,7 @@ def compute_all_jet_props(
     all_jets: list,
     da: xr.DataArray = None,
     processes: int = N_WORKERS,
-    chunk_size: int = 10,
+    chunksize: int = 10,
 ) -> list:
     if da is None:
         da = [None] * len(all_jets)
@@ -512,7 +542,7 @@ def compute_all_jet_props(
         all_props = list(
             tqdm(
                 pool.imap(
-                    unpack_compute_jet_props, zip(all_jets, da), chunksize=chunk_size
+                    unpack_compute_jet_props, zip(all_jets, da), chunksize=chunksize
                 ),
                 total=len(all_jets),
             )
@@ -848,7 +878,7 @@ def extract_props_over_time(jet, all_props):
 
 
 def add_persistence_to_props(ds_props: xr.Dataset, flags: NDArray):
-    names = tuple(ds_props.coords.keys())
+    names = ["time", "jet"]
     dt1 = (ds_props.time.values[1] - ds_props.time.values[0]).astype("timedelta64[h]")
     dt2 = np.timedelta64(1, "D")
     factor = float(dt1 / dt2)
