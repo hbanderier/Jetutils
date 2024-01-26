@@ -1,4 +1,5 @@
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
+from dask.distributed import Client
 from nptyping import NDArray
 from pathlib import Path
 import warnings
@@ -158,8 +159,10 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     levels, level_names = unpack_levels(levels)
 
     if ~any([isinstance(level, tuple) for level in levels]):
-        da = da.sel(lev=levels)
-        return da.squeeze()
+        da = da.sel(lev=levels).squeeze()
+        if len(levels) == 1:
+            return da.reset_coords("lev", drop=True)
+        return da
 
     newcoords = {dim: da.coords[dim] for dim in ["time", "lat", "lon"]}
     if "lev" in da.coords:
@@ -172,6 +175,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
         else:
             val = da.sel(lev=level).values
         da2.loc[:, :, :, level_name] = val
+    
     return da2.squeeze()
 
 
@@ -196,25 +200,27 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     return dim == "dayofyear"
 
 
-def _window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
+def _window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
     if dim != "hourofyear":
         return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
     groups = da.groupby(da.hourofyear % 24)
     to_concat = []
     winsize = winsize // len(groups)
+    if "time" in da.dims:
+        dim = "time"
     for group in groups.groups.values():
-        to_concat.append(da[group].rolling({dim: winsize}, center=True, min_periods=1).mean())
-    return xr.concat(to_concat, dim=dim)
+        to_concat.append(da[group].rolling({dim: winsize // 4}, center=center, min_periods=1).mean())
+    return xr.concat(to_concat, dim=dim).sortby(dim)
 
 
-def window_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
+def window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
     if pad_wrap(da, dim):
         halfwinsize = int(np.ceil(winsize / 2))
         da = da.pad({dim: halfwinsize}, mode="wrap")
-        newda = _window_smoothing(da, dim, halfwinsize)
+        newda = _window_smoothing(da, dim, halfwinsize, center)
         newda = newda.isel({dim: slice(halfwinsize, -halfwinsize)})
     else:
-        newda = _window_smoothing(da, dim, winsize)
+        newda = _window_smoothing(da, dim, winsize, center)
     newda.attrs = da.attrs
     return newda
 
@@ -388,14 +394,9 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
         da = da.chunk({"lev": 1})
     except ValueError:
         pass
-    with ProgressBar():
-        clim = flox.xarray.xarray_reduce(
-            da,
-            coord,
-            func="mean",
-            method="cohorts",
-            reindex=False,
-        ).compute(**COMPUTE_KWARGS)
+    da = da.chunk({"time": 100, "lon": -1, "lat": -1})
+    with Client(**COMPUTE_KWARGS):
+        clim = da.groupby(coord).mean(method="cohorts", engine="flox").compute()
     return clim
     
 
@@ -445,9 +446,9 @@ def compute_all_smoothed_anomalies(
             anom.to_netcdf(dest)
         return
     da = open_da(
-        dataset, varname, resolution, period="all", levels="all"
+        dataset, level_type, varname, resolution, period="all", levels="all"
     )
-    if dest_clim.isfile():
+    if dest_clim.is_file():
         clim = xr.open_dataarray(dest_clim)
     else:
         clim = compute_clim(da, clim_type)
@@ -516,10 +517,11 @@ def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.DataArray]:
         clim = compute_clim(da_pvs, "hourofyear")
         da_pvs_anom = compute_anom(da_pvs, clim, "hourofyear")
         da_pvs_anom_normd = compute_anom(da_pvs, clim, "hourofyear", True) 
-        da_pvs.to_netcdf(ofile1)
-        da_pvs_anom.astype(np.float32).to_netcdf(ofile2)
-        da_pvs_anom_normd.astype(np.float32).to_netcdf(ofile3)
-    return da_pvs, da_pvs_anom, da_pvs_anom_normd
+        return da_pvs, da_pvs_anom, da_pvs_anom_normd
+    #     da_pvs.astype(int).to_netcdf(ofile1)
+    #     da_pvs_anom.astype(np.float32).to_netcdf(ofile2)
+    #     da_pvs_anom_normd.astype(np.float32).to_netcdf(ofile3)
+    # return da_pvs, da_pvs_anom, da_pvs_anom_normd
 
 
 def get_nao(interp_like: xr.DataArray | xr.Dataset | None = None) -> xr.DataArray:

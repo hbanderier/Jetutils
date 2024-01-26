@@ -82,7 +82,8 @@ def mask_from_t(
         time_around_beg=time_around_beg,
     ).copy(deep=True)
     ds_masked = ds_masked.assign_coords(lengths=('heat_wave', lengths))
-    dummy_da = np.zeros((list(ds_masked.dims.values())[:2])) + np.nan
+    dims = list(ds_masked.sizes.values())[:2]
+    dummy_da = np.zeros(dims) + np.nan
     ds_masked = ds_masked.assign_coords(temperature=(['heat_wave', 'time_around_beg'], dummy_da))
     ds_masked = ds_masked.assign_coords(absolute_time=(['heat_wave', 'time_around_beg'], dummy_da.astype('datetime64[h]')))
     for i, heat_wave in enumerate(heat_waves_ts):

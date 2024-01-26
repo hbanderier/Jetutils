@@ -16,8 +16,8 @@ pf = platform.platform()
 if pf.find("cray") >= 0:
     NODE = "DAINT"
     DATADIR = "/scratch/snx3000/hbanderi/data/persistent"
-    N_WORKERS = 16
-    MEMORY_LIMIT = "4GiB"
+    N_WORKERS = 8
+    MEMORY_LIMIT = "8GiB"
 elif platform.node()[:4] == "clim":
     NODE = "CLIM"
     DATADIR = "/scratch2/hugo"
@@ -28,16 +28,19 @@ elif pf.find("el7") >= 0:  # find better later
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
     N_WORKERS = 8
-    MEMORY_LIMIT = "3GiB"
+    MEMORY_LIMIT = "13GB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
     DATADIR = "../data"
-    MEMORY_LIMIT = "2GiB"
+    MEMORY_LIMIT = "2GB"
 
 COMPUTE_KWARGS = {
+    "processes": True,
+    "threads_per_worker": 1,
     "n_workers": N_WORKERS,
     "memory_limit": MEMORY_LIMIT,
+    "silence_logs": False,
 }
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
