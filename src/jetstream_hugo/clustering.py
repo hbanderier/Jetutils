@@ -50,6 +50,7 @@ from jetstream_hugo.data import (
     unpack_levels,
     get_land_mask,
     extract_season,
+    smooth,
 )
 from jetstream_hugo.jet_finding import (
     all_jets_to_one_array,
@@ -58,10 +59,10 @@ from jetstream_hugo.jet_finding import (
     track_jets,
     add_persistence_to_props,
     categorize_ds_jets,
-    default_preprocess,
-    define_blobs_wind_speed,
+    define_mask_wind_speed,
     compute_weights_wind_speed,
-    refine_jets_shortest_path,
+    jets_from_mask,
+    flatten_by,
     JetFinder,
 )
 
@@ -829,7 +830,6 @@ class Experiment(object):
             if (
                 (self.varname != "s")
                 or (self.clim_type is not None)
-                or (len(self.levels) > 1)
             ):
                 print("Only valid for absolute wind speed, single pressure level")
                 print(self.varname, self.clim_type, self.levels)
@@ -851,22 +851,25 @@ class Experiment(object):
             where_are_jets = np.load(ofile_waj)
             all_jets_one_array = np.load(ofile_ajoa)
             return all_jets, where_are_jets, all_jets_one_array
-        this_define_blobs = partial(define_blobs_wind_speed, min_size=750)
-        refine_jets = partial(
-            refine_jets_shortest_path, 
-            compute_weights=compute_weights_wind_speed,
-            jet_cutoff=2.4e3
+        jetfinder = JetFinder(
+            preprocess=partial(smooth, smooth_map={"lon+lat": ("fft", 0.2)}),
+            compute_criterion=partial(flatten_by, by="s"),
+            define_mask=partial(
+                define_mask_wind_speed, 
+                criterion_threshold=25,
+                distance_function=pairwise_distances,
+            ),
+            refine_jets=partial(
+                jets_from_mask,
+                compute_weights=compute_weights_wind_speed,
+                jet_cutoff=2e8,
+                min_size=700,
+            ),
         )
-        jet_finder = JetFinder(
-            preprocess=default_preprocess,
-            define_blobs=this_define_blobs,
-            refine_jets=refine_jets,
-        )
-        all_jets = find_all_jets(
-            jet_finder,
+        all_jets = jetfinder.call(
             xr.Dataset({'s': self.da}),
             processes=processes,
-            chunksize=chunksize,
+            chunksize=chunksize
         )
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
         save_pickle(all_jets, ofile_aj)
@@ -881,6 +884,8 @@ class Experiment(object):
 
     @_only_windspeed
     def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+        print("broken, let")
+        raise NotImplementedError
         all_jets, where_are_jets, all_jets_one_array = self.find_jets(
             processes, chunksize
         )

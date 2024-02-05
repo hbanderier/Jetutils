@@ -40,7 +40,6 @@ COMPUTE_KWARGS = {
     "threads_per_worker": 1,
     "n_workers": N_WORKERS,
     "memory_limit": MEMORY_LIMIT,
-    "silence_logs": False,
 }
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
