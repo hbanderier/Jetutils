@@ -66,17 +66,10 @@ from jetstream_hugo.jet_finding import (
     JetFinder,
 )
 
-RAW = 0
-RAW_ADJUST_LABELS = 1
-ADJUST_RAW = 2
-REALSPACE_INV_TRANS = 3
-REALSPACE_INV_TRANS_ADJUST_LABELS = 4
-REALSPACE_FROM_LABELS = 5
-ADJUST_REALSPACE = 6
-
-DIRECT_REALSPACE = 7  # KMEDOIDS only
-ADJUST_DIRECT_REALSPACE = 8
-
+RAW_REALSPACE: int = 0
+RAW_PCSPACE: int = 1
+ADJUST: int = 2
+ADJUST_TWOSIDED: int = 3
 
 def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     if filename == "full.nc":
@@ -94,43 +87,22 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     return ((time_da >= t1) & (time_da < t2)).values
 
 
-def project_onto_clusters(
-    X: NDArray | xr.DataArray, centers: NDArray | xr.DataArray, weighs: tuple = None
-) -> NDArray | xr.DataArray:
-    if isinstance(X, NDArray):
-        if isinstance(centers, xr.DataArray):  # always cast to type of X
-            centers = centers.values
-        if weighs is not None:
-            X = np.swapaxes(
-                np.swapaxes(X, weighs[0], -1) * weighs[1], -1, weighs[0]
-            )  # https://stackoverflow.com/questions/30031828/multiply-numpy-ndarray-with-1d-array-along-a-given-axis
-        return np.tensordot(X, centers.T, axes=X.ndim - 1)
-
-    if isinstance(X, xr.DataArray):
-        if isinstance(centers, NDArray):
-            if centers.ndim == 4:
-                centers = centers.reshape(
-                    (
-                        centers.shape[0] * centers.shape[1],
-                        centers.shape[2],
-                        centers.shape[3],
-                    )
-                )
-            coords = dict(
-                centers=np.arange(centers.shape[0]),
-                **{key: val for key, val in X.coords if key != "time"},
-            )
-            centers = xr.DataArray(centers, coords=coords)
-        try:
-            weighs = np.sqrt(degcos(X.lat))
-            X *= weighs
-            denominator = np.sum(weighs.values)
-        except AttributeError:
-            denominator = 1
-        return X.dot(centers) / denominator
+def centers_realspace(centers: NDArray, feature_dims: Mapping) -> xr.DataArray:
+    coords = {"cluster": np.arange(centers.shape[0])} | feature_dims
+    shape = [len(coord) for coord in coords.values()]
+    return xr.DataArray(centers.reshape(shape), coords=coords)
 
 
-def cluster_from_projs(
+def get_feature_dims(da: xr.DataArra) -> Mapping:
+    excluded = ["time", "member", "cluster"]
+    return {key: da[key].values for key in da.dims if key not in excluded}
+
+
+def centers_realspace_from_da(centers: NDArray, da: xr.DataArray) -> xr.DataArray:
+    return centers_realspace(centers, get_feature_dims(da))
+
+
+def labels_from_projs(
     X1: NDArray,
     X2: NDArray = None,
     cutoff: int = None,
@@ -168,36 +140,19 @@ def cluster_from_projs(
 
 
 def labels_to_centers(
-    labels: list | NDArray | xr.DataArray, da: xr.DataArray, coord: str = "center"
+    labels: list | NDArray | xr.DataArray, da: xr.DataArray, coord: str = "cluster"
 ) -> xr.DataArray:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
     unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(len(labels))
-    centers = [da.isel(time=(labels == i)).mean(dim="time") for i in unique_labels]
+    dims = list(get_feature_dims(da))
+    centers = [da.isel(time=(labels == i)).mean(dim=dims) for i in unique_labels]
     centers = xr.concat(centers, dim=coord)
     centers = centers.assign_coords(
         {"ratio": (coord, counts), "label": (coord, unique_labels)}
     )
     return centers.set_xindex("label")
-
-
-def centers_as_dataarray(
-    centers: NDArray[Shape["*, *"], Float] | Tuple[NDArray, NDArray],
-    X: NDArray[Shape["*, *"], Float],
-    da: xr.DataArray,
-    coord: str = "center",
-) -> xr.DataArray:
-    logging.debug("Projecting on dataarray")
-    neg = coord.lower() in ["opp", "opps", "pca", "pcas", "eof", "eofs"]
-    if isinstance(centers, tuple):
-        proj1 = project_onto_clusters(X, centers[0])
-        proj2 = project_onto_clusters(X, centers[1])
-        labels = cluster_from_projs(proj1, proj2, neg=neg)
-    else:
-        projection = project_onto_clusters(X, centers)
-        labels = cluster_from_projs(projection, neg=neg)
-    return labels_to_centers(labels, da, coord)
 
 
 def timeseries_on_map(timeseries: NDArray, labels: list | NDArray):
@@ -345,15 +300,22 @@ class Experiment(object):
                 self.da = self.da.load()
             self.da.to_netcdf(da_path, format="NETCDF4")
 
+        self.samples_dims = {"time": self.da.time.values}
+        try:
+            self.samples_dims["member"] = self.da.member.values
+        except AttributeError:
+            pass
         self.lon, self.lat = self.da.lon.values, self.da.lat.values
-        self.time = self.da.time
-
-    def add_data(self, new_year: list | tuple | int):
-        open_args = self.open_da_args.copy()
-        open_args[3] = new_year
-        other_da = open_da(open_args)
-        self.da = xr.concat([self.da, other_da], dim="time")
-        self.da.to_netcdf(self.path.joinpath("da.nc"), format="NETCDF4")
+        try:
+            self.feature_dims = {"lev": self.da.lev.values}
+        except AttributeError:
+            self.feature_dims = {}
+        self.feature_dims["lon"] = self.lon
+        self.feature_dims["lat"] = self.lat
+        self.flat_shape = (
+            np.prod([len(dim) for dim in self.samples_dims.values()]),
+            np.prod([len(dim) for dim in self.feature_dims.values()])
+        )
 
     def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
         norm_path = self.path.joinpath(f"norm.nc")
@@ -380,21 +342,23 @@ class Experiment(object):
             norm_da.to_netcdf(norm_path)
 
         da_weighted = self.da * norm_da
-        X = da_weighted.values.reshape(len(da_weighted.time), -1)
+        X = da_weighted.values.reshape(self.flat_shape)
         return X, self.da
-
-    def compute_pcas(self, n_pcas: int, force: bool = False) -> str:
+    
+    def _pca_file(self, n_pcas: int) -> str | None:
         potential_paths = list(self.path.glob("pca_*.pkl"))
         potential_paths = {
             path: int(path.stem.split("_")[1]) for path in potential_paths
         }
-        found = False
         for key, value in potential_paths.items():
             if value >= n_pcas:
-                found = True
-                break
-        if found and not force:
-            return key
+                return key
+        return None
+
+    def compute_pcas(self, n_pcas: int, force: bool = False) -> str:
+        path = self._pca_file(n_pcas)
+        if path is not None:
+            return path
         logging.debug(f"Computing {n_pcas} pcas")
         X, _ = self.prepare_for_clustering()
         pca_path = self.path.joinpath(f"pca_{n_pcas}.pkl")
@@ -426,8 +390,99 @@ class Experiment(object):
         diff_n_pcas = pca_results.n_components - X.shape[1]
         X = np.pad(X, [[0, 0], [0, diff_n_pcas]])
         X = pca_results.inverse_transform(X)
-        return X.reshape(X.shape[0], -1)
+        return X.reshape(X.shape[0], -1) # why reshape ?
+    
+    def labels_as_da(self, labels: NDArray) -> xr.DataArray:
+        shape = [len(dim) for dim in self.samples_dims]
+        labels = labels.reshape(shape)
+        return xr.DataArray(labels, coords=self.samples_dims).rename("labels")
+    
+    def _centers_realspace(self, centers: NDArray):
+        n_pcas_tentative = centers.shape[1]
+        pca_path = self._pca_file(n_pcas_tentative)
+        if pca_path is not None:
+            centers = self.pca_inverse_transform(centers, n_pcas_tentative)
+        centers = centers_realspace(centers, self.feature_dims)
+        norm_path = self.path.joinpath(f"norm.nc")
+        norm_da = xr.open_dataarray(norm_path.as_posix())
+        if "time" in norm_da:
+            norm_da = norm_da.mean(dim="time")
+        return centers / norm_da
+    
+    def _cluster_output(
+        self,
+        centers: NDArray,
+        labels: NDArray,
+        return_type: int = RAW_REALSPACE,
+        da: xr.DataArray = None,
+        X: NDArray = None,
+    ) -> Tuple[xr.DataArray, xr.DataArray]:
+        """
+        All the clustering methods are responsible for producing their centers in pca space and their labels in sample space. This function handles the rest
+        """
+        if return_type == RAW_PCSPACE:
+            unique, counts = np.unique(labels, return_counts=True)
+            counts = counts / float(len(labels))
+            labels = self.labels_as_da(labels)
+            coords_centers = {
+                "cluster": np.arange(centers.shape[0]),
+                "pc": np.arange(centers.shape[1])
+            }
+            centers = xr.DataArray(centers, coords=coords_centers)
+            centers = centers.assign_coords({"ratios": ("cluster", counts)})
+        
+        elif return_type == RAW_REALSPACE:
+            unique, counts = np.unique(labels, return_counts=True)
+            counts = counts / float(len(labels))
+            labels = self.labels_as_da(labels)
+            centers = self._cluster_output(centers)
+            centers = centers.assign_coords({"ratios": ("cluster", counts)})
+            
+        elif return_type in [ADJUST, ADJUST_TWOSIDED]:
+            projection = np.tensordot(X, centers.T, axes=X.ndim - 1)
+            neg = return_type == ADJUST_TWOSIDED
+            newlabels = labels_from_projs(projection, neg=neg, adjust=True)
+            centers = labels_to_centers(newlabels, self.da, coord="cluster")
+            
+        else:
+            print("Wrong return specifier")
+            raise ValueError
 
+        return centers, labels
+
+    def cluster(
+        self,
+        n_clu: int,
+        n_pcas: int,
+        kind: str = "kmeans",
+        return_type: int = RAW_REALSPACE,
+    ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
+        X, da = self.prepare_for_clustering()
+        X = self.pca_transform(X, n_pcas)
+        if case_insensitive_equal(kind, "kmeans"):
+            results = KMeans(n_clu)
+            suffix = ""
+        elif case_insensitive_equal(kind, "kmedoids"):
+            results = KMedoids(n_clu)
+            suffix = "med"
+        else:
+            raise NotImplementedError(
+                f"{kind} clustering not implemented. Options are kmeans and kmedoids"
+            )
+
+        results_path = self.path.joinpath(f"k{suffix}_{n_clu}_{n_pcas}.pkl")
+        if results_path.is_file():
+            results = load_pickle(results_path)
+        else:
+            logging.debug(f"Fitting {kind} clustering with {n_clu} clusters")
+            results = results.fit(X)
+            save_pickle(results, results_path)
+            
+        centers = results.cluster_centers_
+        labels = results.labels_
+        
+        return self._cluster_output(centers, labels, return_type, X, da)
+    
     def _compute_opps_T1(
         self,
         X: NDArray,
@@ -518,7 +573,7 @@ class Experiment(object):
         lag_max: int = 90,
         type: int = 1,
         return_realspace: bool = False,
-    ) -> Tuple[Path, dict] | Tuple[NDArray, xr.DataArray, Path]:
+    ) -> Tuple[Path, dict]:
         if type not in [1, 2]:
             raise ValueError(f"Wrong OPP type, pick 1 or 2")
         X, da = self.prepare_for_clustering()
@@ -540,196 +595,16 @@ class Experiment(object):
             results = load_pickle(opp_path)
         if not return_realspace:
             return opp_path, results
-        OPPs = results["OPPs"]
-        eigenvals = results["T"]
-        OPPs = centers_as_dataarray(OPPs, X, da, "OPP")
-        return eigenvals, OPPs, opp_path
-
-    def opp_transform(
-        self,
-        X: NDArray[Shape["*, *"], Float],
-        n_pcas: int,
-        cutoff: int = None,
-        type: int = 1,
-    ) -> NDArray[Shape["*, *"], Float]:
-        _, results = self.compute_opps(n_pcas, type=type)
-        if not X.shape[1] == n_pcas:
-            X = self.pca_transform(X, n_pcas)
-        if cutoff is None:
-            cutoff = n_pcas if type == 1 else 10
-        OPPs = results["OPPs"][:cutoff]
-        X = X @ OPPs.T
-        return X
-
-    def opp_inverse_transform(
-        self,
-        X: NDArray[Shape["*, *"], Float],
-        n_pcas: int = None,
-        cutoff: int = None,
-        to_realspace=False,
-        type: int = 1,
-    ) -> NDArray[Shape["*, *"], Float]:
-        _, results = self.compute_opps(n_pcas, type=type)
-        if cutoff is None:
-            cutoff = n_pcas if type == 1 else 10
-        OPPs = results["OPPs"][:cutoff]
-        X = X @ OPPs
-        if to_realspace:
-            return self.pca_inverse_transform(X)
-        return X
-
-    def inverse_transform_centers(
-        self,
-        centers: NDArray[Shape["*, *"], Float],
-        n_pcas: int = None,
-        coord: str = "eof",
-    ) -> xr.DataArray:
-        logging.debug("Transforming to dataarray")
-        coords = {
-            coord: np.arange(centers.shape[0]),
-            "lat": self.lat,
-            "lon": self.lon,
-        }
-        shape = [len(coord) for coord in coords.values()]
-        if n_pcas:  # 0 pcas is also no transform
-            centers = self.pca_inverse_transform(centers, n_pcas)
-        centers = xr.DataArray(centers.reshape(shape), coords=coords)
-        norm_path = self.path.joinpath(f"norm.nc")
-        norm_da = xr.open_dataarray(norm_path.as_posix())
-        if "time" in norm_da:
-            norm_da = norm_da.mean(dim="time")
-        return centers / norm_da
-
-    def center_output(
-        self,
-        centers,
-        labels,
-        medoids: NDArray = None,
-        return_type: int = RAW,
-        da: xr.DataArray = None,
-        X: NDArray = None,
-    ) -> Tuple[xr.DataArray, xr.DataArray]:
-        unique_labels, counts = np.unique(labels, return_counts=True)
-        counts = counts / len(labels)
-        labels = xr.DataArray(labels, coords={"time": da.time.values})
-
-        if return_type == ADJUST_RAW:
-            centers = np.stack([np.mean(X[labels == i], axis=0) for i in unique_labels])
-
-        if return_type in [RAW, ADJUST_RAW, RAW_ADJUST_LABELS]:
-            centers = xr.DataArray(
-                centers,
-                coords={
-                    "cluster": np.arange(centers.shape[0]),
-                    "pca": np.arange(centers.shape[1]),
-                },
-            )
-
-        elif return_type in [REALSPACE_FROM_LABELS, ADJUST_REALSPACE]:
-            centers = labels_to_centers(labels, da, coord="cluster")
-
-        elif return_type in [REALSPACE_INV_TRANS, REALSPACE_INV_TRANS_ADJUST_LABELS]:
-            centers = self.inverse_transform_centers(
-                centers, centers.shape[1], coord="cluster"
-            )
-
-        elif return_type in [DIRECT_REALSPACE, ADJUST_DIRECT_REALSPACE]:
-            centers = da.isel(time=medoids)
-            centers = centers.assign_coords({"time": np.arange(centers.shape[0])})
-            centers = centers.rename({"time": "medoid"})
-
-        else:
-            raise ValueError(f"Wrong return type")
-
-        try:
-            centers = centers.assign_coords({"ratios": ("cluster", counts)})
-        except AttributeError:
-            pass
-
-        return centers, labels
-
-    def cluster(
-        self,
-        n_clu: int,
-        n_pcas: int,
-        kind: str = "kmeans",
-        return_type: int = RAW,
-    ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
-        X, da = self.prepare_for_clustering()
-        X = self.pca_transform(X, n_pcas)
-        if case_insensitive_equal(kind, "kmeans"):
-            results = KMeans(n_clu)
-            suffix = ""
-        elif case_insensitive_equal(kind, "kmedoids"):
-            results = KMedoids(n_clu)
-            suffix = "med"
-        else:
-            raise NotImplementedError(
-                f"{kind} clustering not implemented. Options are kmeans and kmedoids"
-            )
-
-        results_path = self.path.joinpath(f"k{suffix}_{n_clu}_{n_pcas}.pkl")
-        if results_path.is_file():
-            results = load_pickle(results_path)
-        else:
-            logging.debug(f"Fitting {kind} clustering with {n_clu} clusters")
-            results = results.fit(X)
-            save_pickle(results, results_path)
-
-        if return_type is None:
-            return results_path
-
-        direct = return_type in [DIRECT_REALSPACE, ADJUST_DIRECT_REALSPACE]
-        if direct and not case_insensitive_equal(kind, "kmedoids"):
-            warnings.warn(f"Return type {return_type} only compatible with kmedoids")
-            return_type = (
-                REALSPACE_FROM_LABELS
-                if return_type == DIRECT_REALSPACE
-                else ADJUST_REALSPACE
-            )
-
-        centers = results.cluster_centers_
-        try:
-            medoids = results.medoid_indices_
-        except AttributeError:
-            medoids = None
-
-        if (
-            return_type
-            in [  # Has to be here if center_output is to be able to accept both OPP clustering and regular clustering. Absolutely dirty, might change later
-                RAW_ADJUST_LABELS,
-                ADJUST_RAW,
-                REALSPACE_INV_TRANS_ADJUST_LABELS,
-                ADJUST_REALSPACE,
-                ADJUST_DIRECT_REALSPACE,
-            ]
-        ):
-            projection = project_onto_clusters(X, centers)
-            labels = cluster_from_projs(projection, neg=False)
-
-        else:
-            labels = results.labels_
-
-        centers, labels = self.center_output(
-            centers, labels, medoids, return_type, da, X
-        )
-        return centers, labels, results_path
 
     def opp_cluster(
         self,
         n_clu: int,
         n_pcas: int,
         type: int = 1,
-        return_type: int = RAW,
+        return_type: int = RAW_REALSPACE,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         X, da = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
-        adjust = return_type in [
-            ADJUST_RAW,
-            RAW_ADJUST_LABELS,
-            REALSPACE_INV_TRANS_ADJUST_LABELS,
-            ADJUST_REALSPACE,
-        ]
 
         if type == 3:
             OPPs = np.empty((2 * n_clu, n_pcas))
@@ -742,88 +617,46 @@ class Experiment(object):
             X1 = self.opp_transform(X, n_pcas, cutoff=n_clu, type=type)
             X2 = None
 
-        labels = cluster_from_projs(X1, X2, cutoff=n_clu, neg=True, adjust=adjust)
-        return self.center_output(OPPs, labels, None, return_type, da, X)
+        labels = cluster_from_projs(X1, X2, cutoff=n_clu, neg=False, adjust=False)
+        return self._cluster_output(OPPs, labels, return_type, da, X)
 
-    def compute_som(
+    def som_cluster(
         self,
         nx: int,
         ny: int,
-        n_pcas: int = None,
-        OPP: int = 0,
-        GPU: bool = False,
-        return_type: int = RAW,
+        n_pcas: int = 0,
+        PBC: bool = True,
+        return_type: int = RAW_REALSPACE,
         train_kwargs: dict = None,
         **kwargs,
     ) -> Tuple[SOMNet, xr.DataArray, NDArray]:
-        if n_pcas is None and OPP:
-            logging.warning("OPP flag will be ignored because n_pcas is set to None")
-        opp_suffix = ""
-
-        if OPP == 1:
-            opp_suffix = "_T1"
-        elif OPP == 2:
-            opp_suffix = "_T2"
-
-        output_path = self.path.joinpath(f"som_{nx}_{ny}_{n_pcas}_{opp_suffix}.npy")
+        pbc_flag = "_pbc" if PBC else ""
+        output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.npy")
 
         if train_kwargs is None:
             train_kwargs = {}
-
-        if OPP:
-            X, da = self.prepare_for_clustering()
-            X = self.opp_transform(X, n_pcas=n_pcas, type=OPP)
-        else:
-            X, da = self.prepare_for_clustering()
-            X = self.pca_transform(X, n_pcas=n_pcas)
-
-        if GPU:
-            try:
-                X = cp.asarray(X)
-            except NameError:
-                GPU = False
-
-        if X.shape[1] > 1000:
-            init = "random"
-        else:
-            init = "pca"
-
+        X, da = self.prepare_for_clustering()
+        X = self.pca_transform(X, n_pcas=n_pcas)
+        
+        init = "random" if X.shape[1] > 1000 else "pca"
         if output_path.is_file():
-            net = SOMNet(nx, ny, X, GPU=GPU, PBC=True, load_file=output_path.as_posix())
+            net = SOMNet(nx, ny, X, GPU=False, PBC=PBC, load_file=output_path.as_posix())
         else:
             net = SOMNet(
                 nx,
                 ny,
                 X,
-                PBC=True,
-                GPU=GPU,
+                PBC=PBC,
                 init=init,
                 **kwargs,
-                # output_path=self.path.as_posix(),
             )
             net.train(**train_kwargs)
             net.save_map(output_path.as_posix())
 
-        if (
-            return_type
-            in [  # Has to be here if center_output is to be able to accept both OPP clustering and regular clustering. Absolutely dirty, might change later
-                RAW_ADJUST_LABELS,
-                ADJUST_RAW,
-                REALSPACE_INV_TRANS_ADJUST_LABELS,
-                ADJUST_REALSPACE,
-                ADJUST_DIRECT_REALSPACE,
-            ]
-        ):
-            projection = project_onto_clusters(X, net.weights)
-            labels = cluster_from_projs(projection, neg=False)
-        else:
-            labels = net.bmus
+        labels = net.bmus
 
-        centers, labels = self.center_output(
-            net.weights, labels, None, return_type, da, X
-        )
-        return net, centers, labels
-
+        return self._cluster_output(net.weights, labels, return_type, da, X)
+    
     def _only_windspeed(func):
         @wraps(func)
         def wrapper_decorator(self, *args, **kwargs):
