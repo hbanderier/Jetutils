@@ -394,9 +394,12 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
         da = da.chunk({"lev": 1})
     except ValueError:
         pass
-    da = da.chunk({"time": 100, "lon": -1, "lat": -1})
-    with Client(**COMPUTE_KWARGS):
-        clim = da.groupby(coord).mean(method="cohorts", engine="flox").compute()
+    try:
+        da = da.chunk({"time": 100, "lon": -1, "lat": -1})
+    except ValueError:
+        pass
+    with Client(**COMPUTE_KWARGS), ProgressBar():
+        clim = da.groupby(coord).mean(engine="flox").compute()
     return clim
     
 

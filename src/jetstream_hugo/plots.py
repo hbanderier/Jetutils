@@ -29,7 +29,7 @@ from matplotlib.colors import (
 )
 from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
-import colormaps as cmaps
+import colormaps
 import seaborn as sns
 import cartopy.crs as ccrs
 import cartopy.feature as feat
@@ -77,7 +77,8 @@ BORDERS = feat.NaturalEarthFeature(
     facecolor="none",
 )
 
-COLOR_JETS = cmaps.bold(np.arange(12))
+COLOR_JETS = colormaps.bold(np.arange(12))
+DEFAULT_COLORMAP = colormaps.apple_r
 
 mpl.rcParams["font.size"] = 18
 mpl.rcParams["animation.ffmpeg_path"] = r"~/mambaforge/envs/env11/bin/ffmpeg"
@@ -477,7 +478,7 @@ class Clusterplot:
         self,
         to_plot: list,
         nlevels: int = None,
-        cmap: str | Colormap = 'twilight_shifted',
+        cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
         clabels: Union[bool, list] = None,
@@ -534,7 +535,7 @@ class Clusterplot:
         lon: NDArray = None,
         lat: NDArray = None,
         nlevels: int = None,
-        cmap: str | Colormap = 'twilight_shifted',
+        cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
         clabels: Union[bool, list] = None,

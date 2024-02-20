@@ -3,7 +3,9 @@ import platform
 import pickle as pkl
 from pathlib import Path
 from nptyping import NDArray
-from typing import Any
+from typing import Any, Callable, ClassVar, Dict, Optional
+from dataclasses import dataclass, field
+import time
 
 import numpy as np
 import pandas as pd
@@ -54,7 +56,7 @@ DATERANGEPL_EXT = pd.date_range("19400101", "20221231")
 YEARSPL_EXT = np.unique(DATERANGEPL_EXT.year)
 DATERANGEPL_EXT_SUMMER = DATERANGEPL_EXT[np.isin(DATERANGEPL_EXT.month, [6, 7, 8])]
 
-DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq="6H")
+DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq="6h")
 DATERANGEPL_EXT_6H_SUMMER = DATERANGEPL_EXT_6H[np.isin(DATERANGEPL_EXT_6H.month, [6, 7, 8])]
 
 DATERANGEML = pd.date_range("19770101", "20211231")
@@ -193,10 +195,9 @@ def infer_direction(to_plot: Any) -> int:
         pass
     sym = np.sign(max_) == - np.sign(min_)
     sym = sym and np.abs(np.log10(np.abs(max_)) - np.log10(np.abs(min_))) <= 2
-    if not sym:
-        return 1 if np.abs(max_) > np.abs(min_) else -1
-    return 0
-    
+    if sym:
+        return 0
+    return 1 if np.abs(max_) > np.abs(min_) else -1    
 
 
 def labels_to_mask(labels: xr.DataArray | NDArray) -> NDArray:
@@ -227,3 +228,53 @@ def slice_1d(da: xr.DataArray | xr.Dataset, indexers: list, dim: str = "points")
     return da.loc[tuple(
         [xr.DataArray(indexer, dims=dim) for indexer in indexers]
     )]
+
+
+class TimerError(Exception):
+    """A custom exception used to report errors in use of Timer class"""
+
+@dataclass
+class Timer:
+    timers: ClassVar[Dict[str, float]] = {}
+    name: Optional[str] = None
+    text: str = "Elapsed time: {:0.4f} seconds"
+    logger: Optional[Callable[[str], None]] = print
+    _start_time: Optional[float] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Add timer to dict of timers after initialization"""
+        if self.name is not None:
+            self.timers.setdefault(self.name, 0)
+
+    def start(self) -> None:
+        """Start a new timer"""
+        if self._start_time is not None:
+            raise TimerError(f"Timer is running. Use .stop() to stop it")
+
+        self._start_time = time.perf_counter()
+
+    def stop(self) -> float:
+        """Stop the timer, and report the elapsed time"""
+        if self._start_time is None:
+            raise TimerError(f"Timer is not running. Use .start() to start it")
+
+        # Calculate elapsed time
+        elapsed_time = time.perf_counter() - self._start_time
+        self._start_time = None
+
+        # Report elapsed time
+        if self.logger:
+            self.logger(self.text.format(elapsed_time))
+        if self.name:
+            self.timers[self.name] += elapsed_time
+
+        return elapsed_time
+    
+    def __enter__(self):
+        """Start a new timer as a context manager"""
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        """Stop the context manager timer"""
+        self.stop()
