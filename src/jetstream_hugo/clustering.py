@@ -59,9 +59,6 @@ from jetstream_hugo.jet_finding import (
     track_jets,
     add_persistence_to_props,
     categorize_ds_jets,
-    define_mask_wind_speed,
-    compute_weights_wind_speed,
-    jets_from_mask,
     flatten_by,
     JetFinder,
 )
@@ -93,7 +90,7 @@ def centers_realspace(centers: NDArray, feature_dims: Mapping) -> xr.DataArray:
     return xr.DataArray(centers.reshape(shape), coords=coords)
 
 
-def get_feature_dims(da: xr.DataArra) -> Mapping:
+def get_feature_dims(da: xr.DataArray) -> Mapping:
     excluded = ["time", "member", "cluster"]
     return {key: da[key].values for key in da.dims if key not in excluded}
 
@@ -655,7 +652,7 @@ class Experiment(object):
 
         labels = net.bmus
 
-        return self._cluster_output(net.weights, labels, return_type, da, X)
+        return net, *self._cluster_output(net.weights, labels, return_type, da, X)
     
     def _only_windspeed(func):
         @wraps(func)
@@ -673,136 +670,132 @@ class Experiment(object):
 
         return wrapper_decorator
 
-    @_only_windspeed
-    def find_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        ofile_aj = self.path.joinpath("all_jets.pkl")
-        ofile_waj = self.path.joinpath("where_are_jets.npy")
-        ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
+    # @_only_windspeed
+    # def find_jets(self, **kwargs) -> Tuple:
+    #     ofile_aj = self.path.joinpath("all_jets.pkl")
+    #     ofile_waj = self.path.joinpath("where_are_jets.npy")
+    #     ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
 
-        if all([ofile.is_file() for ofile in (ofile_aj, ofile_waj, ofile_ajoa)]):
-            all_jets = load_pickle(ofile_aj)
-            where_are_jets = np.load(ofile_waj)
-            all_jets_one_array = np.load(ofile_ajoa)
-            return all_jets, where_are_jets, all_jets_one_array
-        jetfinder = JetFinder(
-            preprocess=partial(smooth, smooth_map={"lon+lat": ("fft", 0.2)}),
-            compute_criterion=partial(flatten_by, by="s"),
-            define_mask=partial(
-                define_mask_wind_speed, 
-                criterion_threshold=25,
-                distance_function=pairwise_distances,
-            ),
-            refine_jets=partial(
-                jets_from_mask,
-                compute_weights=compute_weights_wind_speed,
-                jet_cutoff=2e8,
-                min_size=700,
-            ),
-        )
-        all_jets = jetfinder.call(
-            xr.Dataset({'s': self.da}),
-            processes=processes,
-            chunksize=chunksize
-        )
-        where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
-        save_pickle(all_jets, ofile_aj)
-        np.save(ofile_waj, where_are_jets)
-        np.save(ofile_ajoa, all_jets_one_array)
-        return all_jets, where_are_jets, all_jets_one_array
+    #     if all([ofile.is_file() for ofile in (ofile_aj, ofile_waj, ofile_ajoa)]):
+    #         all_jets = load_pickle(ofile_aj)
+    #         where_are_jets = np.load(ofile_waj)
+    #         all_jets_one_array = np.load(ofile_ajoa)
+    #         return all_jets, where_are_jets, all_jets_one_array
+    #     jetfinder = JetFinder(
+    #         preprocess=partial(smooth, smooth_map={"lon+lat": ("fft", 0.2)}),
+    #         compute_criterion=partial(flatten_by, by="s"),
+    #         define_mask=partial(
+    #             define_mask_wind_speed, 
+    #             criterion_threshold=25,
+    #             distance_function=pairwise_distances,
+    #         ),
+    #         refine_jets=partial(
+    #             jets_from_mask,
+    #             compute_weights=compute_weights_wind_speed,
+    #             jet_cutoff=2e8,
+    #             min_size=700,
+    #         ),
+    #     )
+    #     all_jets = jetfinder.call(xr.Dataset({'s': self.da}), **kwargs)
+    #     where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
+    #     save_pickle(all_jets, ofile_aj)
+    #     np.save(ofile_waj, where_are_jets)
+    #     np.save(ofile_ajoa, all_jets_one_array)
+    #     return all_jets, where_are_jets, all_jets_one_array
 
-    @_only_windspeed
-    def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        all_jets, _, _ = self.find_jets(processes, chunksize)
-        return compute_all_jet_props(all_jets, self.da, processes, chunksize)
+    # @_only_windspeed
+    # def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+    #     all_jets, _, _ = self.find_jets(processes, chunksize)
+    #     return compute_all_jet_props(all_jets, self.da, processes, chunksize)
 
-    @_only_windspeed
-    def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        print("broken, let")
-        raise NotImplementedError
-        all_jets, where_are_jets, all_jets_one_array = self.find_jets(
-            processes, chunksize
-        )
-        ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
-        ofile_flags = self.path.joinpath("flags.npy")
+    # @_only_windspeed
+    # def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+    #     print("broken, let")
+    #     raise NotImplementedError
+    #     all_jets, where_are_jets, all_jets_one_array = self.find_jets(
+    #         processes, chunksize
+    #     )
+    #     ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
+    #     ofile_flags = self.path.joinpath("flags.npy")
 
-        if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]):
-            all_jets_over_time = load_pickle(ofile_ajot)
-            flags = np.load(ofile_flags)
+    #     if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]):
+    #         all_jets_over_time = load_pickle(ofile_ajot)
+    #         flags = np.load(ofile_flags)
 
-            return (
-                all_jets,
-                where_are_jets,
-                all_jets_one_array,
-                all_jets_over_time,
-                flags,
-            )
-        yearbreaks = np.sum(
-            self.da.time.dt.year.values == self.da.time.dt.year.values[0]
-        )
-        with NumbaProgress(total=self.da.shape[0]) as progress:
-            all_jets_over_time, flags = track_jets(
-                all_jets_one_array,
-                where_are_jets,
-                yearbreaks=yearbreaks,
-                progress_proxy=progress,
-            )
+    #         return (
+    #             all_jets,
+    #             where_are_jets,
+    #             all_jets_one_array,
+    #             all_jets_over_time,
+    #             flags,
+    #         )
+    #     yearbreaks = np.sum(
+    #         self.da.time.dt.year.values == self.da.time.dt.year.values[0]
+    #     )
+    #     with NumbaProgress(total=self.da.shape[0]) as progress:
+    #         all_jets_over_time, flags = track_jets(
+    #             all_jets_one_array,
+    #             where_are_jets,
+    #             yearbreaks=yearbreaks,
+    #             progress_proxy=progress,
+    #         )
 
-        save_pickle(all_jets_over_time, ofile_ajot)
-        np.save(ofile_flags, flags)
+    #     save_pickle(all_jets_over_time, ofile_ajot)
+    #     np.save(ofile_flags, flags)
 
-        return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
+    #     return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
 
-    @_only_windspeed
-    def props_as_ds(
-        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2
-    ) -> xr.Dataset:
-        _, where_are_jets, _, _, flags = self.track_jets()
-        all_props = self.compute_jet_props(processes, chunksize)
-        props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
-        props_as_ds = add_persistence_to_props(props_as_ds, flags)
-        if categorize:
-            return categorize_ds_jets(props_as_ds)
-        return props_as_ds
+    # @_only_windspeed
+    # def props_as_ds(
+    #     self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2
+    # ) -> xr.Dataset:
+    #     _, where_are_jets, _, _, flags = self.track_jets()
+    #     all_props = self.compute_jet_props(processes, chunksize)
+    #     props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
+    #     props_as_ds = add_persistence_to_props(props_as_ds, flags)
+    #     if categorize:
+    #         return categorize_ds_jets(props_as_ds)
+    #     return props_as_ds
 
-    def _only_temp(func):
-        @wraps(func)
-        def wrapper_decorator(self, *args, **kwargs):
-            if self.varname != "t":
-                print("Only valid for temperature, single pressure level")
-                print(self.varname, self.clim_type, self.levels)
-                raise RuntimeError
-            value = func(self, *args, **kwargs)
+    # def _only_temp(func):
+    #     @wraps(func)
+    #     def wrapper_decorator(self, *args, **kwargs):
+    #         if self.varname != "t":
+    #             print("Only valid for temperature, single pressure level")
+    #             print(self.varname, self.clim_type, self.levels)
+    #             raise RuntimeError
+    #         value = func(self, *args, **kwargs)
 
-            return value
+    #         return value
 
-        return wrapper_decorator
+    #     return wrapper_decorator
 
-    def linkage(
-        self,
-        condition_function: Callable = lambda x: x,
-        mask: xr.DataArray | Literal["land"] | None = None,
-        season: str | list | None = "JJA",
-        metric: str = "jaccard",
-    ):
-        distance_path = self.path.joinpath("distances.npy")
-        try:
-            distances = np.load(distance_path)
-        except FileNotFoundError:
-            distances = spatial_agglomerative_clustering(
-                self.da, condition_function, mask, season=season, metric=metric
-            )
-            np.save(distance_path, distances)
-        return linkage(squareform(distances), method="average")
+    # def linkage(
+    #     self,
+    #     condition_function: Callable = lambda x: x,
+    #     mask: xr.DataArray | Literal["land"] | None = None,
+    #     season: str | list | None = "JJA",
+    #     metric: str = "jaccard",
+    # ):
+    #     distance_path = self.path.joinpath("distances.npy")
+    #     try:
+    #         distances = np.load(distance_path)
+    #     except FileNotFoundError:
+    #         distances = spatial_agglomerative_clustering(
+    #             self.da, condition_function, mask, season=season, metric=metric
+    #         )
+    #         np.save(distance_path, distances)
+    #     return linkage(squareform(distances), method="average")
 
-    @_only_temp
-    def heat_wave_linkage(self):
-        condition_function = partial(quantile_exceedence, q=0.95, dim="time")
-        mask = "land"
-        season = [7, 8]
-        metric = "jaccard"
-        return self.linkage(condition_function, mask, season, metric)
+    # @_only_temp
+    # def heat_wave_linkage(self):
+    #     condition_function = partial(quantile_exceedence, q=0.95, dim="time")
+    #     mask = "land"
+    #     season = [7, 8]
+    #     metric = "jaccard"
+    #     return self.linkage(condition_function, mask, season, metric)
 
-    @_only_temp
-    def select_heat_wave_cluster(self, n_clusters: int = 9, i_cluster: int = 5):
-        Z = self.heat_wave_linkage()
-        return select_cluster(Z, self.da, n_clusters, i_cluster, "land")
+    # @_only_temp
+    # def select_heat_wave_cluster(self, n_clusters: int = 9, i_cluster: int = 5):
+    #     Z = self.heat_wave_linkage()
+    #     return select_cluster(Z, self.da, n_clusters, i_cluster, "land")
