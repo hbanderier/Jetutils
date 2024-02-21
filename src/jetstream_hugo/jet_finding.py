@@ -2,8 +2,8 @@ from re import S
 from tkinter.ttk import Progressbar
 import warnings
 from pathlib import Path
-from functools import partial
-from typing import Callable, Mapping, Optional, Sequence, Tuple
+from functools import partial, wraps
+from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
 from astropy.utils import masked
 from nptyping import NDArray
 from multiprocessing import Pool
@@ -27,8 +27,10 @@ from sklearn.cluster import AgglomerativeClustering
 from libpysal.weights import DistanceBand
 from tqdm import tqdm
 from numba import njit, jit
+from numba_progress import ProgressBar as NumbaProgress
 
 from jetstream_hugo.definitions import (
+    DATADIR,
     COMPUTE_KWARGS,
     DATERANGEPL_SUMMER,
     DATERANGEPL_EXT_SUMMER,
@@ -39,8 +41,10 @@ from jetstream_hugo.definitions import (
     degcos,
     labels_to_mask,
     slice_1d,
+    save_pickle,
+    load_pickle,
 )
-from jetstream_hugo.data import smooth
+from jetstream_hugo.data import smooth, unpack_levels, open_da
 
 
 def default_preprocess(da: xr.DataArray) -> xr.DataArray:
@@ -574,11 +578,11 @@ def path_from_predecessors(
 
 
 @njit
-def is_in_set_nb(a, b):
+def isin(a, b):
     shape = a.shape
     a = a.ravel()
     n = len(a)
-    result = np.full(n, False)
+    result = np.full(n, False, dtype=np.bool_)
     set_b = set(b)
     for i in range(n):
         if a[i] in set_b:
@@ -733,7 +737,7 @@ class JetFinder(object):
             )
 
 
-def get_jet_width(x, y, s, da) -> Tuple[NDArray, NDArray]:
+def get_jet_width(x: NDArray, y: NDArray, s: NDArray, da: xr.DataArray) -> Tuple[NDArray, NDArray]:
     lat = da.lat.values
     half_peak_mask = (da.loc[:, x] < s[None, :] / 2).values
     half_peak_mask[[0, -1], :] = (
@@ -751,7 +755,8 @@ def get_jet_width(x, y, s, da) -> Tuple[NDArray, NDArray]:
 def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
     props = []
     for jet in jets:
-        x, y, s = jet.T
+        jet_numpy = jet[["lon", "lat", "s"]].to_numpy()
+        x, y, s = jet_numpy.T
         dic = {}
         dic["mean_lon"] = np.average(x, weights=s)
         dic["mean_lat"] = np.average(y, weights=s)
@@ -771,10 +776,10 @@ def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
         except AttributeError:
             pass
         try:
-            dic["int_over_europe"] = jet_integral_haversine(jet[x > -10])
+            dic["int_over_europe"] = jet_integral_haversine(jet_numpy[x > -10])
         except ValueError:
             dic["int_over_europe"] = 0
-        dic["int"] = jet_integral_haversine(jet)
+        dic["int"] = jet_integral_haversine(jet_numpy)
         props.append(dic)
     return props
 
@@ -971,7 +976,6 @@ def overlaps_vert_dists_as_da(
 def all_jets_to_one_array(all_jets: list):
     num_jets = [len(j) for j in all_jets]
     maxnjets = max(num_jets)
-    num_indiv_jets = sum(num_jets)
     where_are_jets = np.full((len(all_jets), maxnjets, 2), fill_value=-1)
     all_jets_one_array = []
     k = 0
@@ -987,28 +991,6 @@ def all_jets_to_one_array(all_jets: list):
     return where_are_jets, all_jets_one_array
 
 
-def one_array_to_all_jets(all_jets_one_array, where_are_jets):
-    all_jets = []
-    for where_are_jet in where_are_jets:
-        all_jets.append([])
-        for k, l in where_are_jet:
-            all_jets[-1].append(all_jets_one_array[k:l])
-    return all_jets
-
-
-@njit
-def isin(a, b):
-    shape = a.shape
-    a = a.ravel()
-    n = len(a)
-    result = np.full(n, False, dtype=np.bool_)
-    set_b = set(b)
-    for i in range(n):
-        if a[i] in set_b:
-            result[i] = True
-    return result.reshape(shape)
-
-
 def track_jets(
     all_jets_one_array, where_are_jets, yearbreaks: int = None, progress_proxy=None
 ):
@@ -1016,8 +998,8 @@ def track_jets(
     if yearbreaks is None:
         yearbreaks = (
             92 if where_are_jets.shape[0] < 10000 else 92 * 4
-        )  # find better later
-    guess_nflags: int = 13000
+        )  # find better later, anyways this is usually wrapped and given externally
+    guess_nflags: int = 20000
     all_jets_over_time = np.full(
         (guess_nflags, yearbreaks, 2), fill_value=len(where_are_jets), dtype=np.int32
     )
@@ -1153,7 +1135,7 @@ def jet_position_as_da(
             enumerate(zip(all_jets, props_as_ds_uncat["is_polar"])), total=len(all_jets)
         ):
             for jet, is_polar in zip(jets, are_polar):
-                x, y, s = jet.T
+                x, y, s = jet[["lon", "lat", "s"]].to_numpy().T
                 x_ = xr.DataArray(x, dims="points")
                 y_ = xr.DataArray(y, dims="points")
                 da_jet_pos.loc[time[it], jet_names[int(is_polar)], y_, x_] += s
@@ -1191,3 +1173,193 @@ def wave_activity_flux(u, v, z, u_c=None, v_c=None, z_c=None):
     )
     # y-component of TN-WAF
     py = (coeff / (RADIUS * RADIUS)) * (((u_c) / cos_lat) * termxv + v_c * termyv)
+    
+    
+def MultiVarExperiment(object):
+    """
+    For now cannot handle anomalies, only raw fields.
+    """
+    def __init__(
+        self,
+        dataset: str,
+        level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
+        varnames: Sequence[str],
+        resolution: str,
+        period: list | tuple | Literal["all"] | int | str = "all",
+        season: list | str = None,
+        minlon: Optional[int | float] = None,
+        maxlon: Optional[int | float] = None,
+        minlat: Optional[int | float] = None,
+        maxlat: Optional[int | float] = None,
+        levels: int | str | tuple | list | Literal["all"] = "all",
+        inner_norm: int = None,
+    ) -> None:
+        self.path = Path(DATADIR, dataset, level_type, "results")
+        self.path.mkdir(exist_ok=True)
+        self.open_da_kwargs = {
+            "dataset": dataset,
+            "level_type": level_type,
+            "resolution": resolution,
+            "period": period,
+            "season": season,
+            "minlon": minlon,
+            "maxlon": maxlon,
+            "minlat": minlat,
+            "maxlat": maxlat,
+            "levels": levels,
+        }
+
+        self.varnames = varnames
+        self.region = (minlon, maxlon, minlat, maxlat)
+        if levels != 'all':
+            self.levels, self.level_names = unpack_levels(levels)
+        else: 
+            self.levels = 'all'
+        self.inner_norm = inner_norm
+
+        self.metadata = {
+            "varnames": varnames,
+            "period": period,
+            "season": season,
+            "region": (minlon, maxlon, minlat, maxlat),
+            "levels": self.levels,
+            "inner_norm": inner_norm,
+        }
+
+        found = False
+        for dir in self.path.iterdir():
+            if not dir.is_dir():
+                continue
+            try:
+                other_mda = load_pickle(dir.joinpath("metadata.pkl"))
+            except FileNotFoundError:
+                continue
+            if self.metadata == other_mda:
+                self.path = self.path.joinpath(dir.name)
+                found = True
+                break
+
+        if not found:
+            seq = [int(dir.name) for dir in self.path.iterdir() if dir.is_dir()]
+            id = max(seq) + 1 if len(seq) != 0 else 1
+            self.path = self.path.joinpath(str(id))
+            self.path.mkdir()
+            save_pickle(self.metadata, self.path.joinpath("metadata.pkl"))
+
+        ds_path = self.path.joinpath("ds.nc")
+        if ds_path.is_file():
+            self.ds = xr.open_dataarray(ds_path).load()
+        else:
+            self.ds = xr.Dataset()
+            for varname in varnames:
+                open_kwargs = self.open_da_args | {"varname": varname}
+                self.ds[varname] = open_da(**open_kwargs)
+            with ProgressBar():
+                self.ds = self.ds.load()
+            self.ds.to_netcdf(ds_path, format="NETCDF4")
+
+        self.samples_dims = {"time": self.ds.time.values}
+        try:
+            self.samples_dims["member"] = self.ds.member.values
+        except AttributeError:
+            pass
+        self.lon, self.lat = self.ds.lon.values, self.ds.lat.values
+        try:
+            self.feature_dims = {"lev": self.ds.lev.values}
+        except AttributeError:
+            self.feature_dims = {}
+        self.feature_dims["lon"] = self.lon
+        self.feature_dims["lat"] = self.lat
+        self.flat_shape = (
+            np.prod([len(dim) for dim in self.samples_dims.values()]),
+            np.prod([len(dim) for dim in self.feature_dims.values()])
+        )
+
+    
+    def _only_windspeed(func):
+        @wraps(func)
+        def wrapper_decorator(self, *args, **kwargs):
+            if "s" not in self.varnames:
+                print("Only valid for absolute wind speed, single pressure level")
+                print(self.varname, self.levels)
+                raise RuntimeError
+            value = func(self, *args, **kwargs)
+
+            return value
+
+        return wrapper_decorator
+
+    @_only_windspeed
+    def find_jets(self, **kwargs) -> Tuple:
+        ofile_aj = self.path.joinpath("all_jets.pkl")
+        ofile_waj = self.path.joinpath("where_are_jets.npy")
+        ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
+
+        if all([ofile.is_file() for ofile in (ofile_aj, ofile_waj, ofile_ajoa)]):
+            all_jets = load_pickle(ofile_aj)
+            where_are_jets = np.load(ofile_waj)
+            all_jets_one_array = np.load(ofile_ajoa)
+            return all_jets, where_are_jets, all_jets_one_array
+        jet_finder = JetFinder(
+            preprocess=preprocess,
+            cluster = cluster_wind_speed,
+            refine_jets=jets_from_mask,
+        )
+        all_jets = jet_finder.call(self.ds, **kwargs)
+        where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
+        save_pickle(all_jets, ofile_aj)
+        np.save(ofile_waj, where_are_jets)
+        np.save(ofile_ajoa, all_jets_one_array)
+        return all_jets, where_are_jets, all_jets_one_array
+
+    @_only_windspeed
+    def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+        all_jets, _, _ = self.find_jets(processes, chunksize)
+        return compute_all_jet_props(all_jets, self.da, processes, chunksize)
+
+    @_only_windspeed
+    def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
+        all_jets, where_are_jets, all_jets_one_array = self.find_jets(
+            processes, chunksize
+        )
+        ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
+        ofile_flags = self.path.joinpath("flags.npy")
+
+        if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]):
+            all_jets_over_time = load_pickle(ofile_ajot)
+            flags = np.load(ofile_flags)
+
+            return (
+                all_jets,
+                where_are_jets,
+                all_jets_one_array,
+                all_jets_over_time,
+                flags,
+            )
+        yearbreaks = np.sum(
+            self.ds.time.dt.year.values == self.ds.time.dt.year.values[0]
+        )
+        with NumbaProgress(total=self.ds.time.shape[0]) as progress:
+            all_jets_over_time, flags = track_jets(
+                all_jets_one_array,
+                where_are_jets,
+                yearbreaks=yearbreaks,
+                progress_proxy=progress,
+            )
+
+        save_pickle(all_jets_over_time, ofile_ajot)
+        np.save(ofile_flags, flags)
+
+        return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
+
+    @_only_windspeed
+    def props_as_ds(
+        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2
+    ) -> xr.Dataset:
+        _, where_are_jets, _, _, flags = self.track_jets()
+        all_props = self.compute_jet_props(processes, chunksize)
+        props_as_ds = props_to_ds(all_props, self.time, where_are_jets.shape[1])
+        props_as_ds = add_persistence_to_props(props_as_ds, flags)
+        if categorize:
+            return categorize_ds_jets(props_as_ds)
+        return props_as_ds
