@@ -490,43 +490,6 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     return ((time_da >= t1) & (time_da < t2)).values
 
 
-def open_pvs(da_template: xr.DataArray, q: float = 0.9) -> Tuple[xr.DataArray]:
-    ofile = Path(f"{DATADIR}/ERA5/plev/pvs/6H")
-    ofile1 = ofile.joinpath("full.nc")
-    ofile2 = ofile.joinpath("anom.nc")
-    ofile3 = ofile.joinpath("anom_normd.nc")
-    try:
-        da_pvs = xr.open_dataarray(ofile1).load()
-        da_pvs_anom = xr.open_dataarray(ofile2).load()
-        da_pvs_anom_normd = xr.open_dataarray(ofile3).load()
-    except FileNotFoundError:
-        print("Events to xarray")
-        events = gpd.read_parquet(f"{DATADIR}/ERA5/RWB_index/era5_pv_streamers_350K_1959-2022.parquet")
-        events = events[events.event_area >= events.event_area.quantile(q)]
-        events = events[np.isin(events.date.dt.month, [6, 7, 8])]
-        mask_anti = events.intensity >= 0
-        mask_cycl = events.intensity < 0
-        mask_tropo = events.mean_var < events.level
-        events["flag"] = events.index
-        events_anti = events[mask_anti & mask_tropo]
-        events_cycl = events[mask_cycl & mask_tropo]
-        from wavebreaking import to_xarray
-        da_template = da_template.sel(time=da_template.time.dt.year>=1959)
-        da_pvs_anti = to_xarray(da_template, events_anti, flag="flag")
-        da_pvs_cycl = to_xarray(da_template, events_cycl, flag="flag")
-        da_pvs = {"anti": da_pvs_anti, "cycl": da_pvs_cycl}
-        da_pvs = xr.Dataset(da_pvs)
-        da_pvs = da_pvs.to_array(dim="type").transpose("time", "type", "lat", "lon").chunk({"lon": 10, "lat": 10})
-        clim = compute_clim(da_pvs, "hourofyear")
-        da_pvs_anom = compute_anom(da_pvs, clim, "hourofyear")
-        da_pvs_anom_normd = compute_anom(da_pvs, clim, "hourofyear", True) 
-        return da_pvs, da_pvs_anom, da_pvs_anom_normd
-    #     da_pvs.astype(int).to_netcdf(ofile1)
-    #     da_pvs_anom.astype(np.float32).to_netcdf(ofile2)
-    #     da_pvs_anom_normd.astype(np.float32).to_netcdf(ofile3)
-    # return da_pvs, da_pvs_anom, da_pvs_anom_normd
-
-
 def get_nao(interp_like: xr.DataArray | xr.Dataset | None = None) -> xr.DataArray:
     df = pd.read_csv(f"{DATADIR}/ERA5/daily_nao.csv", delimiter=",")
     index = pd.to_datetime(df.iloc[:, :3])
@@ -534,3 +497,10 @@ def get_nao(interp_like: xr.DataArray | xr.Dataset | None = None) -> xr.DataArra
     if interp_like is None:
         return series
     return series.interp_like(interp_like)
+
+
+def compute_extreme_climatology(da: xr.DataArray, opath: Path):
+    q = da.quantile(np.arange(60, 100) / 100, dim=["lon", "lat"])
+    q_clim = compute_clim(q, "dayofyear")
+    q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
+    q.to_netcdf(opath)

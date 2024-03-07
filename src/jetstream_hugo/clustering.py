@@ -28,6 +28,7 @@ from sklearn.cluster import KMeans
 from simpsom import SOMNet
 
 from jetstream_hugo.definitions import (
+    revert_zero_one,
     save_pickle,
     load_pickle,
     N_WORKERS,
@@ -35,6 +36,7 @@ from jetstream_hugo.definitions import (
     degcos,
     case_insensitive_equal,
     labels_to_mask,
+    to_zero_one,
 )
 
 from jetstream_hugo.stats import compute_autocorrs
@@ -212,6 +214,7 @@ class Experiment(object):
         clim_smoothing: Mapping = None,
         smoothing: Mapping = None,
         inner_norm: int = None,
+        reduce_da: bool = True,
     ) -> None:
         self.path = data_path(
             dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
@@ -280,6 +283,8 @@ class Experiment(object):
                 self.da = self.da.load()
             self.da.to_netcdf(da_path, format="NETCDF4")
 
+        if reduce_da:
+            self.da = self.da.max("lev")
         self.samples_dims = {"time": self.da.time.values}
         try:
             self.samples_dims["member"] = self.da.member.values
@@ -290,8 +295,8 @@ class Experiment(object):
             self.feature_dims = {"lev": self.da.lev.values}
         except AttributeError:
             self.feature_dims = {}
-        self.feature_dims["lon"] = self.lon
         self.feature_dims["lat"] = self.lat
+        self.feature_dims["lon"] = self.lon
         self.flat_shape = (
             np.prod([len(dim) for dim in self.samples_dims.values()]),
             np.prod([len(dim) for dim in self.feature_dims.values()])
@@ -342,7 +347,7 @@ class Experiment(object):
         logging.debug(f"Computing {n_pcas} pcas")
         X, _ = self.prepare_for_clustering()
         pca_path = self.path.joinpath(f"pca_{n_pcas}.pkl")
-        results = PCA(n_components=n_pcas, whiten=True).fit(X)
+        results = PCA(n_components=n_pcas, whiten=False).fit(X)
         save_pickle(results, pca_path)
         return pca_path
 
@@ -352,10 +357,14 @@ class Experiment(object):
         n_pcas: int = None,
     ) -> NDArray[Shape["*, *"], Float]:
         if not n_pcas:
-            return X
+            X, self.Xmin, self.Xmax = to_zero_one(X)
         pca_path = self.compute_pcas(n_pcas)
         pca_results = load_pickle(pca_path)
+        transformed_file = self.path.joinpath(f"pca_{n_pcas}.npy")
+        if transformed_file.is_file():
+            return np.load(transformed_file)
         X = pca_results.transform(X)[:, :n_pcas]
+        np.save(transformed_file, X)
         return X
 
     def pca_inverse_transform(
@@ -364,7 +373,7 @@ class Experiment(object):
         n_pcas: int = None,
     ) -> NDArray[Shape["*, *"], Float]:
         if not n_pcas:
-            return X
+            return revert_zero_one(X, self.Xmin, self.Xmax)
         pca_path = self.compute_pcas(n_pcas)
         pca_results = load_pickle(pca_path)
         diff_n_pcas = pca_results.n_components - X.shape[1]
@@ -373,7 +382,7 @@ class Experiment(object):
         return X.reshape(X.shape[0], -1) # why reshape ?
     
     def labels_as_da(self, labels: NDArray) -> xr.DataArray:
-        shape = [len(dim) for dim in self.samples_dims]
+        shape = [len(dim) for dim in self.samples_dims.values()]
         labels = labels.reshape(shape)
         return xr.DataArray(labels, coords=self.samples_dims).rename("labels")
     
@@ -385,7 +394,7 @@ class Experiment(object):
         centers = centers_realspace(centers, self.feature_dims)
         norm_path = self.path.joinpath(f"norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
-        if "time" in norm_da:
+        if "time" in norm_da.dims:
             norm_da = norm_da.mean(dim="time")
         return centers / norm_da
     
@@ -415,7 +424,7 @@ class Experiment(object):
             unique, counts = np.unique(labels, return_counts=True)
             counts = counts / float(len(labels))
             labels = self.labels_as_da(labels)
-            centers = self._cluster_output(centers)
+            centers = self._centers_realspace(centers)
             centers = centers.assign_coords({"ratios": ("cluster", counts)})
             
         elif return_type in [ADJUST, ADJUST_TWOSIDED]:
@@ -597,7 +606,7 @@ class Experiment(object):
             X1 = self.opp_transform(X, n_pcas, cutoff=n_clu, type=type)
             X2 = None
 
-        labels = cluster_from_projs(X1, X2, cutoff=n_clu, neg=False, adjust=False)
+        labels = labels_from_projs(X1, X2, cutoff=n_clu, neg=False, adjust=False)
         return self._cluster_output(OPPs, labels, return_type, da, X)
 
     def som_cluster(
@@ -607,6 +616,7 @@ class Experiment(object):
         n_pcas: int = 0,
         PBC: bool = True,
         return_type: int = RAW_REALSPACE,
+        force: bool = False,
         train_kwargs: dict = None,
         **kwargs,
     ) -> Tuple[SOMNet, xr.DataArray, NDArray]:
@@ -619,7 +629,7 @@ class Experiment(object):
         X = self.pca_transform(X, n_pcas=n_pcas)
         
         init = "random" if X.shape[1] > 1000 else "pca"
-        if output_path.is_file():
+        if output_path.is_file() and not force:
             net = SOMNet(nx, ny, X, GPU=False, PBC=PBC, load_file=output_path.as_posix())
         else:
             net = SOMNet(

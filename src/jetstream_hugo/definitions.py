@@ -56,7 +56,7 @@ DATERANGEPL_EXT = pd.date_range("19400101", "20221231")
 YEARSPL_EXT = np.unique(DATERANGEPL_EXT.year)
 DATERANGEPL_EXT_SUMMER = DATERANGEPL_EXT[np.isin(DATERANGEPL_EXT.month, [6, 7, 8])]
 
-DATERANGEPL_EXT_6H = pd.date_range("19400101", "20221231", freq="6h")
+DATERANGEPL_EXT_6H = pd.date_range("19400101", "20230101", freq="6h", inclusive="left")
 DATERANGEPL_EXT_6H_SUMMER = DATERANGEPL_EXT_6H[np.isin(DATERANGEPL_EXT_6H.month, [6, 7, 8])]
 
 DATERANGEML = pd.date_range("19770101", "20211231")
@@ -76,8 +76,9 @@ SMALLNAME = {
 }  # Wind speed
 
 PRETTIER_VARNAME = {
-    "mean_lon": "Avg. Longitude",
-    "mean_lat": "Avg. Latitude",
+    "mean_lon": "Avg. longitude",
+    "mean_lat": "Avg. latitude",
+    "mean_lev": "Avg. level",
     "Lon": "Lon. of max. speed",
     "Lat": "Lat. of max. speed",
     "Spe": "Max. speed",
@@ -91,12 +92,13 @@ PRETTIER_VARNAME = {
     "int_over_europe": "Intd. speed over Eur.",
     "persistence": "Jet lifetime",
     "exists": "Exists",
-    "int_ratio": "Ratio low / high intd. speed",
+    "int_ratio": "Ratio low / high ints",
 }
 
 UNITS = {
     "mean_lon": r"$~^{\circ} \mathrm{E}$",
     "mean_lat": r"$~^{\circ} \mathrm{N}$",
+    "mean_lev": r"$\mathrm{hPa}$",
     "Lon": r"$~^{\circ} \mathrm{E}$",
     "Lat": r"$~^{\circ} \mathrm{N}$",
     "Spe": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
@@ -105,9 +107,9 @@ UNITS = {
     "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
     "sinuosity": r"$~$",
     "width": r"$~^{\circ} \mathrm{N}$",
-    "int": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
-    "int_low": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
-    "int_over_europe": r"$\mathrm{m} \cdot \mathrm{s}^{-1} \cdot ~^{\circ}$",
+    "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
+    "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
+    "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "persistence": r"$\mathrm{day}$",
     "exists": r"$~$",
 }
@@ -115,6 +117,7 @@ UNITS = {
 DEFAULT_VALUES = {
     "mean_lon": 0,
     "mean_lat": 45,
+    "mean_lev": 250,
     "Lon": 0,
     "Lat": 45,
     "Spe": 0,
@@ -133,6 +136,7 @@ DEFAULT_VALUES = {
 LATEXY_VARNAME = {
     "mean_lon": "$\overline{\lambda}$",
     "mean_lat": "$\overline{\phi}$",
+    "mean_lev": "$\overline{p}$",
     "Lon": "$\lambda_{s^*}$",
     "Lat": "$\phi_{s^*}$",
     "Spe": "$s^*$",
@@ -165,6 +169,17 @@ def load_pickle(filename: str | Path) -> Any:
     with open(filename, "rb") as handle:
         to_ret = pkl.load(handle)
     return to_ret
+
+
+def to_zero_one(X):
+    Xmin = X.min(axis=0)
+    Xmax = X.max(axis=0)
+    
+    return (X - Xmin[None, :]) / (Xmax - Xmin)[None, :], Xmin, Xmax
+
+
+def revert_zero_one(X, Xmin, Xmax):
+    return Xmin[None, :] + (Xmax - Xmin)[None, :] * X
 
 
 def save_pickle(to_save: Any, filename: str | Path) -> None:

@@ -23,7 +23,7 @@ def heat_waves_from_t(
 ) -> xr.DataArray | Tuple[list[NDArray]]:
     dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
     months = np.unique(da.time.dt.month.values)
-    months = [str(months[0]).zfill(2), str(months[-1] + 1).zfill(2)]
+    months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
     hot_days = (da > da.quantile(dim='time', q=q))
     if fill_holes:
         holes = rle(~hot_days)
@@ -70,7 +70,7 @@ def mask_from_t(
         da, q, fill_holes, minlen, time_before, time_after, output_type='list'
     )
     months = np.unique(ds.time.dt.month.values)
-    months = [str(months[0]).zfill(2), str(months[-1] + 1).zfill(2)]
+    months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
     lengths = heat_waves[:, 1] - heat_waves[:, 0]
     longest_hotspell = np.argmax(lengths)
     time_around_beg = heat_waves_ts[longest_hotspell] - heat_waves[longest_hotspell, 0]

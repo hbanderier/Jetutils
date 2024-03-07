@@ -91,6 +91,14 @@ def num2tex(x: float, force: bool = False) -> str:
         return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
     else:
         return float_str
+    
+
+def p_to_tex(c1: float, c0: float) -> str:
+    coef1 = num2tex(c1)
+    coef0 = num2tex(c0)
+    sign = "+" if np.sign(c0) else "-"
+    string = f"$y={coef1}\cdot x {sign} {coef0}$"
+    return string
 
 
 def make_boundary_path(
