@@ -1,10 +1,7 @@
-from re import S
-from tkinter.ttk import Progressbar
 import warnings
 from pathlib import Path
 from functools import partial, wraps
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
-from astropy.utils import masked
 from nptyping import NDArray
 from multiprocessing import Pool
 from itertools import combinations
@@ -24,9 +21,9 @@ from scipy.sparse.csgraph import (
 from skimage.filters import frangi, meijering, sato
 from sklearn.metrics import pairwise_distances
 from sklearn.cluster import AgglomerativeClustering, KMeans
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from numba import njit, jit
-from numba_progress import ProgressBar as NumbaProgress
+from windspharm.xarray import VectorWind
 
 from jetstream_hugo.definitions import (
     DATADIR,
@@ -45,7 +42,12 @@ from jetstream_hugo.definitions import (
     to_zero_one,
     revert_zero_one,
 )
-from jetstream_hugo.data import compute_extreme_climatology, smooth, unpack_levels, open_da
+from jetstream_hugo.data import (
+    compute_extreme_climatology,
+    smooth,
+    unpack_levels,
+    open_da,
+)
 from jetstream_hugo.clustering import Experiment
 
 
@@ -77,6 +79,8 @@ def frangi_wrapper(sigmas: list):
 
 
 def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
+    if "lev" not in ds.dims:
+        return ds
     ope = np.argmin if by[0] == "-" else np.argmax
     by = by.lstrip("-")
     if ds["s"].chunks is not None:
@@ -131,10 +135,27 @@ def compute_criterion_mona(ds: xr.Dataset, flatten: bool = True) -> xr.Dataset:
 
 
 def preprocess(ds: xr.Dataset, sigmas=range(3, 6)):
+    if "s" not in ds:
+        ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
     ds = flatten_by(ds, "s")
-    ds["s_smo"] = smooth(ds["s"], smooth_map={"lon+lat": ("fft", 0.2)})
-    filtered = sato(ds["s_smo"] / ds["s_smo"].max(), black_ridges=False, sigmas=sigmas)
-    filtered = filtered / filtered.max()
+    if -180 not in ds.lon.values:
+        ds["s_smo"] = smooth(ds["s"], smooth_map={"lon+lat": ("fft", 0.2)})
+    else:
+        w = VectorWind(ds["u"].fillna(0), ds["v"].fillna(0))
+        ds["u_smo"] = w.truncate(w.u(), truncation=84)
+        ds["v_smo"] = w.truncate(w.v(), truncation=84)
+        ds["s_smo"] = np.sqrt(ds["u_smo"] ** 2 + ds["v_smo"] ** 2)
+    if "time" in ds.dims:
+        filtered = np.zeros_like(ds["s_smo"])
+        for t in trange(len(filtered)):
+            da = ds["s_smo"][t]
+            filtered[t, :, :] = sato(da / da.max(), black_ridges=False, sigmas=sigmas)
+            filtered[t] = filtered[t] / filtered[t].max()
+    else:
+        filtered = sato(
+            ds["s_smo"] / ds["s_smo"].max(), black_ridges=False, sigmas=sigmas
+        )
+        filtered = filtered / filtered.max()
     ds["criterion"] = ds["s_smo"] * filtered
     # ds["s_smo"] = (("lat", "lon"), sato(ds["s_smooth"] / ds["s_smooth"].max(), black_ridges=black_ridges, sigmas=sigmas) * (4 if multiply else 1))
     return ds
@@ -150,18 +171,33 @@ def default_cluster(
 
 
 @njit
-def my_pairwise_3(X: NDArray) -> NDArray:
-    x = X[:, 0]
-    y = X[:, 1]
-    output = np.zeros((len(X), len(X)))
-    for i in range(X.shape[0] - 1):
-        for j in range(i + 1, X.shape[0]):
-            d1 = x[i] - x[j]
-            d1 = np.minimum(d1, 360 - d1)
-            d1_ = d1 / 3
-            d2 = y[i] - y[j]
-            output[i, j] = np.sqrt(d1_**2 + d2**2)
-            output[j, i] = output[i, j]
+def distance(x1: float, x2: float, y1: float, y2: float) -> float:
+    dx = x2 - x1
+    if np.abs(dx) > 180:
+        dx = 360 - np.abs(dx)  # sign is irrelevant
+    dy = y2 - y1
+    return np.sqrt(dx**2 + dy**2)
+
+
+@njit
+def my_pairwise(X: NDArray, Y: Optional[NDArray] = None) -> NDArray:
+    x1 = X[:, 0]
+    y1 = X[:, 1]
+    half = False
+    if Y is None:
+        Y = X
+        half = True
+    x2 = Y[:, 0]
+    y2 = Y[:, 1]
+    output = np.zeros((len(X), len(Y)))
+    for i in range(X.shape[0] - int(half)):
+        if half:
+            for j in range(i + 1, X.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
+                output[j, i] = output[i, j]
+        else:
+            for j in range(Y.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
     return output
 
 
@@ -169,7 +205,7 @@ def cluster_generic(
     criterion: xr.DataArray,
     *append_to_groups: xr.DataArray,
     criterion_threshold: float = 0,
-    distance_function: Callable = pairwise_distances,
+    distance_function: Callable = my_pairwise,
     distance_threshold: float = 1.0,
     min_size: int = 400,
 ) -> Tuple[list, list]:
@@ -186,16 +222,16 @@ def cluster_generic(
     append_to_groups = [atg.values[idxs[0], idxs[1]] for atg in append_to_groups]
     points = np.asarray([lon[idxs[1]], lat[idxs[0]], *append_to_groups]).T
     points = pd.DataFrame(points, columns=["lon", "lat", *append_names])
-    # if "lev" in points:
-    #     dlev = np.diff(np.unique(points["lev"]))
-    #     dlev = np.amin(dlev[dlev > 0])
-    #     to_distance = points[["lon", "lat", "lev"]]
-    #     factors = np.ones(to_distance.shape)
-    #     factors[:, 2] = 2 * dlev
-    #     to_distance = to_distance / pd.DataFrame(factors, columns=["lon", "lat", "lev"])
-    #     distance_matrix = distance_function(to_distance.to_numpy())
-    # else:
-    distance_matrix = distance_function(points[["lon", "lat"]].to_numpy())
+    if "lev" in points:
+        dlev = np.diff(np.unique(points["lev"]))
+        dlev = np.amin(dlev[dlev > 0])
+        to_distance = points[["lon", "lat", "lev"]]
+        factors = np.ones(to_distance.shape)
+        factors[:, 2] = 2 * dlev
+        to_distance = to_distance / pd.DataFrame(factors, columns=["lon", "lat", "lev"])
+        distance_matrix = distance_function(to_distance.to_numpy())
+    else:
+        distance_matrix = distance_function(points[["lon", "lat"]].to_numpy())
     labels = (
         AgglomerativeClustering(
             n_clusters=None,
@@ -216,7 +252,7 @@ def cluster_generic(
 def cluster_wind_speed(
     ds: xr.Dataset,
     criterion_threshold: float = 7.5,
-    distance_function: Callable = pairwise_distances,
+    distance_function: Callable = my_pairwise,
     distance_threshold: float = 1.5,
     min_size: int = 400,
 ) -> Tuple[list, list]:
@@ -240,7 +276,7 @@ def cluster_wind_speed(
 def cluster_criterion_neg(
     ds: xr.Dataset,
     criterion_threshold: float = -60.0,
-    distance_function: Callable = pairwise_distances,
+    distance_function: Callable = my_pairwise,
     distance_threshold: float = 1.0,
     min_size: int = 400,
 ) -> Tuple[list, list]:
@@ -261,12 +297,12 @@ def cluster_criterion_neg(
         distance_threshold=distance_threshold,
         min_size=min_size,
     )
-    
-    
+
+
 def cluster_criterion(
     ds: xr.Dataset,
-    criterion_threshold: float = 7.5,
-    distance_function: Callable = pairwise_distances,
+    criterion_threshold: float = 9,
+    distance_function: Callable = my_pairwise,
     distance_threshold: float = 1.5,
     min_size: int = 400,
 ) -> Tuple[list, list]:
@@ -278,8 +314,8 @@ def cluster_criterion(
         ds["s_smo"],
         ds["criterion"],
         ds["lev"] if "lev" in ds else None,
-        ds["u"],
-        ds["v"],
+        ds["u"] if "u" in ds else None,
+        ds["v"] if "v" in ds else None,
         criterion_threshold=(
             ds["threshold"].item() if "threshold" in ds else criterion_threshold
         ),
@@ -301,33 +337,6 @@ def jet_overlap_flat(jet1: NDArray, jet2: NDArray) -> bool:
         vert_dist = np.mean(np.abs(y1[mask12] - y2[mask21]))
     overlap = max(np.mean(mask21), np.mean(mask12))
     return (overlap > 0.85) and (vert_dist < 5)
-
-
-@njit
-def my_pairwise(X: NDArray, Y: Optional[NDArray] = None) -> NDArray:
-    x1 = X[:, 0]
-    y1 = X[:, 1]
-    if Y is None:
-        Y = X
-        half = True
-    else:
-        x2 = Y[:, 0]
-        y2 = Y[:, 1]
-        half = False
-    output = np.zeros((len(X), len(Y)))
-    for i in range(X.shape[0] - int(half)):
-        if half:
-            for j in range(i + 1, X.shape[0]):
-                d1 = x2[i] - x1[j]
-                d2 = y2[i] - y1[j]
-                output[i, j] = np.sqrt(d1**2 + d2**2)
-                output[j, i] = output[i, j]
-        else:
-            for j in range(Y.shape[0]):
-                d1 = x2[i] - x1[j]
-                d2 = y2[i] - y1[j]
-                output[i, j] = np.sqrt(d1**2 + d2**2)
-    return output
 
 
 @njit
@@ -436,7 +445,7 @@ def compute_weights_gaussian(X: NDArray, is_nei: Optional[NDArray] = None):
             if is_nei is not None and not is_nei[i, j]:
                 continue
             z = 1 - (X[i] + X[j]) / 2
-            output[i, j] = 1 - np.exp(-(z**2) / (2 * 0.5 ** 2))
+            output[i, j] = 1 - np.exp(-(z**2) / (2 * 0.5**2))
             output[j, i] = output[i, j]
     return output
 
@@ -537,7 +546,10 @@ def _compute_weights_direction(
     distance_matrix: NDArray,
     is_nei: Optional[NDArray] = None,
 ) -> NDArray:
-    dx = pairwise_difference(x, is_nei) / distance_matrix
+    dx = pairwise_difference(x, is_nei)
+    wrap_mask = np.abs(dx) > 180
+    dx = np.where(wrap_mask, -np.sign(dx) * (360 - np.abs(dx)), dx)
+    dx = dx / distance_matrix
     dy = pairwise_difference(y, is_nei) / distance_matrix
     u = u / s
     v = v / s
@@ -555,10 +567,14 @@ def compute_weights_direction(
 
 
 def compute_weights(points: pd.DataFrame, distance_matrix: NDArray) -> np.ma.array:
-    is_nei = (distance_matrix > 0) & (distance_matrix < 1)
+    sample = np.random.choice(np.arange(distance_matrix.shape[0]), size=10)
+    sample = distance_matrix[sample]
+    dx = np.amin(sample[sample > 0])
+    is_nei = (distance_matrix > 0) & (distance_matrix < (2 * dx))
     weights_ws = compute_weights_criterion(points, is_nei)
-    weights_dir = compute_weights_direction(points, distance_matrix, is_nei)
-    is_nei = is_nei & (weights_dir < 0.5)
+    if "u" in points and "v" in points:
+        weights_dir = compute_weights_direction(points, distance_matrix, is_nei)
+        is_nei = is_nei & (weights_dir < 0.5)
     masked_weights = np.ma.array(weights_ws, mask=~is_nei)
     return masked_weights
 
@@ -635,7 +651,6 @@ def isin(a, b):
     return result.reshape(shape)
 
 
-@njit
 def jets_from_many_predecessors(
     group: NDArray,
     predecessors: NDArray,  # 2d
@@ -649,9 +664,12 @@ def jets_from_many_predecessors(
     jet = None
     for istart, predecessors_ in enumerate(predecessors):
         if len(ends) > 1:
-            dmat_ratio = (
-                dmat_unweighted[istart, ends] ** 4 / dmat_weighted[istart, ends] ** 0.5
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                dmat_ratio = (
+                    dmat_unweighted[istart, ends] ** 4
+                    / dmat_weighted[istart, ends] ** 0.5
+                )
             dmat_ratio[np.isnan(dmat_ratio)] = -1
             end = ends[np.argmax(dmat_ratio)]
         else:
@@ -692,21 +710,94 @@ def find_jets_in_group(
     return thesejets
 
 
-def find_jets_in_group_v2(
-    graph: csr_matrix, group: pd.DataFrame, dist_mat: NDArray, jet_cutoff: float = 5e7
-):
-    lon, lat, s = group[["lon", "lat", "s"]].to_numpy().T
-    c1, c0 = np.polyfit(lon, lat, w=s, deg=1)
+def determine_start_global(
+    ux: NDArray, lon: NDArray, lat: NDArray, masked_weights: np.ma.masked
+) -> Tuple[NDArray, NDArray]:
+    diffx = np.diff(ux)
+    dx = np.amin(diffx)
+    before = np.argwhere(lon == ux[-1]).flatten()
+    after = np.argwhere(lon == ux[0]).flatten()
+    newmask = masked_weights.mask.copy()
+    newmask[np.ix_(before, after)] = np.ones((len(before), len(after)), dtype=bool)
+    newmask[np.ix_(after, before)] = np.ones((len(after), len(before)), dtype=bool)
+    masked_weights_2 = np.ma.array(masked_weights.data, mask=newmask)
+    graph2 = csgraph_from_masked(masked_weights_2)
+    nco, labels = connected_components(graph2)
+    if nco == 1 and len(ux) == (360 / dx):
+        start = ux[0]
+        end = ux[-1]
+    elif len(ux) == (360 / dx):
+        ulab, counts = np.unique(labels, return_counts=True)
+        importants = last_elements(counts, 2)
+        lon1 = np.unique(lon[labels == ulab[importants[0]]])
+        min1, max1 = min(lon1), max(lon1)
+        lon2 = np.unique(lon[labels == ulab[importants[1]]])
+        min2, max2 = min(lon2), max(lon2)
+        if min2 == -180:
+            end = max2
+            start = min1
+        elif min1 == -180:
+            end = max1
+            start = min2
+    else:
+        maxd = np.argmax(diffx)
+        fakex = lon.copy()
+        fakex[fakex <= ux[maxd]] += 360
+        neworder = np.argsort(fakex)
+        reverse_neworder = np.argsort(neworder)
+        starts, ends = determine_start_poly(fakex[neworder], lat[neworder])
+        starts = reverse_neworder[starts]
+        ends = reverse_neworder[ends]
+        return starts, ends   
+    starts = np.where(lon == start)[0].astype(np.int16)
+    ends = np.where(lon == end)[0].astype(np.int16)
+    return starts, ends
+
+
+def determine_start_poly(lon: NDArray, lat: NDArray) -> Tuple[NDArray, NDArray]:
+    c1, c0 = np.polyfit(lon, lat, deg=1, rcond=1e-10)
     x0 = np.amin(lon)
     y0 = x0 * c1 + c0
     v0 = np.asarray([[x0, y0]])
     c = np.asarray([[1, c1]]) / np.sqrt(1 + c1**2)
-    points = group[["lon", "lat"]].to_numpy() - v0
+    points = np.vstack([lon, lat]).T - v0
     projections = np.sum(c * points, axis=1)
     ncand = projections.shape[0] // 15
     starts = first_elements(projections, ncand).astype(np.int16)
     ncand = projections.shape[0] // 2
     ends = last_elements(projections, ncand).astype(np.int16)
+    return starts, ends
+
+
+def adjust_edges(
+    starts: NDArray, ends: NDArray, lon: NDArray, edges: Optional[Tuple[float]] = None
+) -> Tuple[NDArray, NDArray]:
+    if edges is not None and -180 not in ux:
+        west_border = np.isin(lon, [edges[0], edges[0] + 0.5, edges[0] + 1.0])
+        east_border = np.isin(lon, [edges[1], edges[1] - 0.5, edges[1] - 1.0])
+        if any(west_border):
+            west_border = np.nonzero(west_border)[0]
+            starts = west_border[last_elements(s[west_border], 3)].astype(np.int16)
+        if any(east_border):
+            east_border = np.nonzero(east_border)[0]
+            ends = east_border[last_elements(s[east_border], 3)].astype(np.int16)
+    return starts, ends
+
+
+def find_jets_in_group_v2(
+    graph: csr_matrix,
+    group: pd.DataFrame,
+    masked_weights: NDArray,
+    jet_cutoff: float = 8e7,
+    edges: Optional[Tuple[float]] = None,
+):
+    lon, lat, s = group[["lon", "lat", "s"]].to_numpy().T
+    ux = np.unique(lon)
+    if -180 in ux:
+        starts, ends = determine_start_global(ux, lon, lat, masked_weights)
+    else:
+        starts, ends = determine_start_poly(lon, lat)
+    starts, ends = adjust_edges(starts, ends, lon, edges)
     dmat_weighted, predecessors = shortest_path(
         graph, directed=True, return_predecessors=True, indices=starts
     )
@@ -728,13 +819,14 @@ def find_jets_in_group_v2(
 def jets_from_mask(
     groups: Sequence[pd.DataFrame],
     dist_mats: Sequence[NDArray],
-    jet_cutoff: float = 5e7,
+    jet_cutoff: float = 8e7,
+    edges: Optional[Tuple[float]] = None,
 ) -> Sequence[pd.DataFrame]:
     jets = []
     for group, dist_mat in zip(groups, dist_mats):
         masked_weights = compute_weights(group, dist_mat)
         graph = create_graph(masked_weights, dist_mat)
-        jet = find_jets_in_group_v2(graph, group, dist_mat, jet_cutoff)
+        jet = find_jets_in_group_v2(graph, group, masked_weights, jet_cutoff, edges)
         if jet is not None:
             jets.append(jet)
     return jets
@@ -769,20 +861,33 @@ class JetFinder(object):
             ds["threshold"] = ("time", thresholds)
         try:
             iterable = (ds.sel(time=time_) for time_ in ds.time.values)
+            len_ = len(ds.time.values)
         except AttributeError:
             iterable = (ds.sel(cluster=cluster_) for cluster_ in ds.cluster.values)
+            len_ = len(ds.cluster.values)
         if processes == 1:
-            return list(tqdm(map(self.loop_call, iterable), total=ds["s"].shape[0]))
+            return list(tqdm(map(self.loop_call, iterable), total=len(ds.time)))
         with Pool(processes=processes) as pool:
             return list(
                 tqdm(
                     pool.imap(self.loop_call, iterable, chunksize=chunksize),
-                    total=ds["s"].shape[0],
+                    total=len_,
                 )
             )
 
 
-def get_jet_width(x: NDArray, y: NDArray, s: NDArray, da: xr.DataArray) -> Tuple[NDArray, NDArray]:
+def find_jets(ds: xr.DataArray, **kwargs):
+    jet_finder = JetFinder(
+        preprocess=preprocess,
+        cluster=cluster_criterion,
+        refine_jets=jets_from_mask,
+    )
+    return jet_finder.call(ds, **kwargs)
+
+
+def get_jet_width(
+    x: NDArray, y: NDArray, s: NDArray, da: xr.DataArray
+) -> Tuple[NDArray, NDArray]:
     lat = da.lat.values
     half_peak_mask = (da.loc[:, x] < s[None, :] / 2).values
     half_peak_mask[[0, -1], :] = (
@@ -805,7 +910,8 @@ def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
         dic = {}
         dic["mean_lon"] = np.average(x, weights=s)
         dic["mean_lat"] = np.average(y, weights=s)
-        dic["mean_lev"] = np.average(jet["lev"].to_numpy(), weights=s)
+        if "lev" in jet:
+            dic["mean_lev"] = np.average(jet["lev"].to_numpy(), weights=s)
         dic["is_polar"] = dic["mean_lat"] - 0.4 * dic["mean_lon"] > 40
         maxind = np.argmax(s)
         dic["Lon"] = x[maxind]
@@ -854,13 +960,14 @@ def compute_all_jet_props(
     return all_props
 
 
-def props_to_ds(
-    all_props: list, time: NDArray | xr.DataArray = None
-) -> xr.Dataset:
+def props_to_ds(all_props: list, time: NDArray | xr.DataArray = None) -> xr.Dataset:
     maxnjet = max([len(proplist) for proplist in all_props])
     if time is None:
         time = DATERANGEPL_EXT_SUMMER
-    time_name = "time"
+    try:
+        time_name = time.name
+    except AttributeError:
+        time_name = "time"
     assert len(time) == len(all_props)
     varnames = list(all_props[0][0].keys())
     ds = {}
@@ -927,12 +1034,16 @@ def is_polar_v2(props_as_ds: xr.Dataset) -> xr.Dataset:
     return props_as_ds
 
 
-def extract_features(props_as_ds: xr.Dataset, feature_names: Sequence = None, season: Optional[str] = None) -> Tuple[NDArray, float]:
+def extract_features(
+    props_as_ds: xr.Dataset,
+    feature_names: Sequence = None,
+    season: Optional[str] = None,
+) -> Tuple[NDArray, float]:
     if season is not None:
-        props_as_ds = props_as_ds.sel(time=props_as_ds.time.dt.season==season)        
+        props_as_ds = props_as_ds.sel(time=props_as_ds.time.dt.season == season)
     if feature_names is None:
         feature_names = ["mean_lon", "mean_lat", "int_ratio", "Spe"]
-        
+
     props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
     Lat = props_as_ds["mean_lat"].values
     mask = ~np.isnan(Lat)
@@ -950,14 +1061,16 @@ def is_polar_v3(props_as_ds: xr.Dataset) -> xr.Dataset:
     X, Xmin, Xmax = to_zero_one(X)
     labels = KMeans(2, n_init="auto").fit(X).labels_
     better_is_polar = props_as_ds["mean_lat"].copy()
-    better_is_polar[xr.DataArray(where[0], dims="points"), xr.DataArray(where[1], dims="points")] = labels
+    better_is_polar[
+        xr.DataArray(where[0], dims="points"), xr.DataArray(where[1], dims="points")
+    ] = labels
     props_as_ds["is_polar"] = better_is_polar
-    lats1 = props_as_ds["mean_lat"].where(better_is_polar==1).mean()
-    lats0 = props_as_ds["mean_lat"].where(better_is_polar==0).mean()
+    lats1 = props_as_ds["mean_lat"].where(better_is_polar == 1).mean()
+    lats0 = props_as_ds["mean_lat"].where(better_is_polar == 0).mean()
     if lats0 > lats1:
         props_as_ds["is_polar"] = 1 - props_as_ds["is_polar"]
     return props_as_ds
- 
+
 
 def categorize_ds_jets(props_as_ds: xr.Dataset):
     time_name, time_val = list(props_as_ds.coords.items())[0]
@@ -978,8 +1091,8 @@ def jet_overlap_values(jet1: NDArray, jet2: NDArray) -> Tuple[float, float]:
     _, idx2 = np.unique(jet2[:, 0], return_index=True)
     x1, y1 = jet1[idx1, :2].T
     x2, y2 = jet2[idx2, :2].T
-    mask12 = np.isin(x1, x2)
-    mask21 = np.isin(x2, x1)
+    mask12 = isin(x1, x2)
+    mask21 = isin(x2, x1)
     overlap = (np.mean(mask12) + np.mean(mask21)) / 2
     vert_dist = np.mean(np.abs(y1[mask12] - y2[mask21]))
     return overlap, vert_dist
@@ -1071,9 +1184,8 @@ def all_jets_to_one_array(all_jets: list):
     return where_are_jets, all_jets_one_array
 
 
-@njit
 def track_jets(
-    all_jets_one_array: NDArray, where_are_jets: NDArray, yearbreaks: int = None, progress_proxy=None
+    all_jets_one_array: NDArray, where_are_jets: NDArray, yearbreaks: int = None
 ):
     if yearbreaks is None:
         yearbreaks = (
@@ -1094,7 +1206,9 @@ def track_jets(
     flags = np.full(where_are_jets.shape[:2], fill_value=guess_nflags, dtype=np.int32)
     last_flag = np.sum(where_are_jets[0, 0] >= 0) - 1
     flags[0, : last_flag + 1] = np.arange(last_flag + 1)
-    for t, jet_idxs in enumerate(where_are_jets[1:]):  # can't really parallelize
+    for t, jet_idxs in tqdm(
+        enumerate(where_are_jets[1:]), total=len(where_are_jets[1:])
+    ):  # can't really parallelize
         if np.all(where_are_jets[t + 1] == -1):
             continue
         from_ = max(0, last_flag - 30)
@@ -1106,7 +1220,9 @@ def track_jets(
         timesteps_to_check = np.asarray([t, t - 1, t - 2, t - 3])
         condition = isin(times_to_test, timesteps_to_check)
         if yearbreaks != -1:
-            condition_yearbreaks = (times_to_test // yearbreaks) == ((t + 1) // yearbreaks)
+            condition_yearbreaks = (times_to_test // yearbreaks) == (
+                (t + 1) // yearbreaks
+            )
             condition = condition & condition_yearbreaks
         potentials = from_ + np.where(condition)[0]
         num_valid_jets = np.sum(jet_idxs[:, 0] >= 0)
@@ -1148,19 +1264,16 @@ def track_jets(
                 flags[t + 1, j] = last_flag
                 flagged[j] = True
 
-        if progress_proxy is not None:
-            progress_proxy.update(1)
-
     return all_jets_over_time, flags
 
 
-def extract_props_over_time(jet, all_props):
-    varnames = list(all_props[0][0].keys())
-    props_over_time = {varname: np.zeros(len(jet)) for varname in varnames}
-    for varname in varnames:
-        for ti, (t, j) in enumerate(jet):
-            props_over_time[varname][ti] = all_props[t][j][varname]
-    return props_over_time
+def extract_props_over_time(jet: NDArray, props_as_ds: xr.Dataset):
+    varnames = list(props_as_ds.data_vars)
+    incorrect = len(props_as_ds)
+    jet = jet[jet[0] != incorrect, :]
+    times = xr.DataArray(props_as_ds.time[jet[:, 0]].values, dims="points")
+    jets = xr.DataArray(pjet[:, 1], dims="points")
+    return props_as_ds.loc[times, jets]
 
 
 def add_persistence_to_props(ds_props: xr.Dataset, flags: NDArray):
@@ -1257,12 +1370,13 @@ def wave_activity_flux(u, v, z, u_c=None, v_c=None, z_c=None):
     )
     # y-component of TN-WAF
     py = (coeff / (RADIUS * RADIUS)) * (((u_c) / cos_lat) * termxv + v_c * termyv)
-    
-    
+
+
 class MultiVarExperiment(object):
     """
     For now cannot handle anomalies, only raw fields.
     """
+
     def __init__(
         self,
         dataset: str,
@@ -1278,6 +1392,7 @@ class MultiVarExperiment(object):
         levels: int | str | tuple | list | Literal["all"] = "all",
         inner_norm: int = None,
     ) -> None:
+        varnames.sort()
         self.path = Path(DATADIR, dataset, level_type, "results")
         self.path.mkdir(exist_ok=True)
         self.open_ds_kwargs = {
@@ -1295,10 +1410,10 @@ class MultiVarExperiment(object):
 
         self.varnames = varnames
         self.region = (minlon, maxlon, minlat, maxlat)
-        if levels != 'all':
+        if levels != "all":
             self.levels, self.level_names = unpack_levels(levels)
-        else: 
-            self.levels = 'all'
+        else:
+            self.levels = "all"
         self.inner_norm = inner_norm
 
         self.metadata = {
@@ -1316,6 +1431,7 @@ class MultiVarExperiment(object):
                 continue
             try:
                 other_mda = load_pickle(dir.joinpath("metadata.pkl"))
+                other_mda["varnames"].sort()
             except FileNotFoundError:
                 continue
             if self.metadata == other_mda:
@@ -1356,10 +1472,9 @@ class MultiVarExperiment(object):
         self.feature_dims["lat"] = self.lat
         self.flat_shape = (
             np.prod([len(dim) for dim in self.samples_dims.values()]),
-            np.prod([len(dim) for dim in self.feature_dims.values()])
+            np.prod([len(dim) for dim in self.feature_dims.values()]),
         )
 
-    
     def _only_windspeed(func):
         @wraps(func)
         def wrapper_decorator(self, *args, **kwargs):
@@ -1386,7 +1501,7 @@ class MultiVarExperiment(object):
             return all_jets, where_are_jets, all_jets_one_array
         jet_finder = JetFinder(
             preprocess=preprocess,
-            cluster = cluster_wind_speed,
+            cluster=cluster_criterion,
             refine_jets=jets_from_mask,
         )
         try:
@@ -1402,13 +1517,15 @@ class MultiVarExperiment(object):
 
     @_only_windspeed
     def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        all_jets, _, _ = self.find_jets(processes, chunksize)
-        return compute_all_jet_props(all_jets, self.da, processes, chunksize)
+        all_jets, _, _ = self.find_jets(processes=processes, chunksize=chunksize)
+        return compute_all_jet_props(
+            all_jets, self.ds["s"].max("lev"), processes, chunksize
+        )
 
     @_only_windspeed
     def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
         all_jets, where_are_jets, all_jets_one_array = self.find_jets(
-            processes, chunksize
+            processes=processes, chunksize=chunksize
         )
         ofile_ajot = self.path.joinpath("all_jets_over_time.npy")
         ofile_flags = self.path.joinpath("flags.npy")
@@ -1430,13 +1547,11 @@ class MultiVarExperiment(object):
             )
         else:
             yearbreaks = -1
-        with NumbaProgress(total=self.ds.time.shape[0]) as progress:
-            all_jets_over_time, flags = track_jets(
-                all_jets_one_array,
-                where_are_jets,
-                yearbreaks=yearbreaks,
-                progress_proxy=progress,
-            )
+        all_jets_over_time, flags = track_jets(
+            all_jets_one_array,
+            where_are_jets,
+            yearbreaks=yearbreaks,
+        )
 
         np.save(ofile_ajot, all_jets_over_time)
         np.save(ofile_flags, flags)
@@ -1457,9 +1572,9 @@ class MultiVarExperiment(object):
             props_as_ds = categorize_ds_jets(xr.open_dataset(ofile_padu))
             props_as_ds.to_netcdf(ofile_pad)
             return props_as_ds
-        all_jets, where_are_jets, _, _, flags = self.track_jets()
+        all_jets, _, _, _, flags = self.track_jets()
         all_props = self.compute_jet_props(processes, chunksize)
-        props_as_ds_uncat = props_to_ds(all_props, self.time, where_are_jets.shape[1])
+        props_as_ds_uncat = props_to_ds(all_props, self.samples_dims["time"])
         props_as_ds = add_persistence_to_props(props_as_ds_uncat, flags)
         exp_low = Experiment(
             self.open_ds_kwargs["dataset"],
@@ -1469,7 +1584,7 @@ class MultiVarExperiment(object):
             self.open_ds_kwargs["period"],
             self.open_ds_kwargs["season"],
             *self.region,
-            700
+            700,
         )
         props_as_ds_uncat = compute_int_low(all_jets, props_as_ds_uncat, exp_low.path)
         props_as_ds_uncat = is_polar_v3(props_as_ds_uncat)
