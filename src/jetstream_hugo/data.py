@@ -11,6 +11,7 @@ import flox.xarray
 import xrft
 from tqdm import tqdm
 from dask.diagnostics import ProgressBar, ResourceProfiler
+from spharm import Spharmt
 from jetstream_hugo.definitions import (
     N_WORKERS,
     DEFAULT_VARNAME,
@@ -19,6 +20,12 @@ from jetstream_hugo.definitions import (
     YEARSPL_EXT,
     COMPUTE_KWARGS
 )
+SEASONS = {
+    "DJF": [1, 2, 12],
+    "MAM": [3, 4, 5],
+    "JJA": [6, 7, 8],
+    "SON": [9, 10, 11],
+}
     
     
 def get_land_mask() -> xr.DataArray:
@@ -241,6 +248,14 @@ def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
     return newda
 
 
+def spharm_smoothing(da: xr.DataArray, trunc: int):
+    raise NotImplementedError("Broken for now")
+    spharmt = Spharmt(len(da.lon), len(da.lat))
+    fieldspec = spharmt.grdtospec(da.values, ntrunc=trunc)
+    fieldtrunc = spharmt.spectogrd(fieldspec)
+    return fieldtrunc
+
+
 def smooth(
     da: xr.DataArray,
     smooth_map: Mapping | None,
@@ -257,6 +272,8 @@ def smooth(
             da = fft_smoothing(da, dim, winsize)
         elif smooth_type.lower() in ["win", "window", "window_smoothing"]:
             da = window_smoothing(da, dim, winsize)
+        elif smooth_type.lower() in ["trunc", "spherical", "truncation", "windspharm"]:
+            da = spharm_smoothing(da, winsize)
     return da
 
 
@@ -333,7 +350,7 @@ def open_da(
         period = YEARSPL_EXT
     elif isinstance(period, int | str):
         period = [int(period)]
-
+    
     files_to_load = []
 
     if file_structure == "one_file":
@@ -341,17 +358,31 @@ def open_da(
     elif file_structure == "yearly":
         files_to_load = [path.joinpath(f"{year}.nc") for year in period]
     elif file_structure == "monthly":
-        files_to_load = [
-            path.joinpath(f"{year}{month}.nc")
-            for month in range(1, 13)
-            for year in period
-        ]
+        if season is None:
+            files_to_load = [
+                path.joinpath(f"{year}{month}.nc")
+                for month in range(1, 13)
+                for year in period
+            ]
+        else:
+            if isinstance(season, str):
+                monthlist = SEASONS[season]
+            else:
+                monthlist = np.atleast_1d(season)
+            files_to_load = [
+                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
+                for month in monthlist
+                for year in period
+            ]
+            
 
     files_to_load = [fn for fn in files_to_load if fn.is_file()]
 
     da = _open_dataarray(files_to_load, varname)
     da = da.rename(varname)
     da = rename_coords(da)
+    if "lev" in da.dims and level_type not in ["plev", "thetalev"]:
+        da = da.reset_coords("lev", drop=True)
     if np.diff(da.lat.values)[0] < 0:
         da = da.reindex(lat=da.lat[::-1])
     if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
@@ -395,11 +426,17 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
     except ValueError:
         pass
     try:
-        da = da.chunk({"time": 100, "lon": -1, "lat": -1})
+        da = da.chunk({"time": 500, "lon": -1, "lat": -1})
     except ValueError:
         pass
-    with Client(**COMPUTE_KWARGS), ProgressBar():
-        clim = da.groupby(coord).mean(engine="flox").compute()
+    with Client(**COMPUTE_KWARGS):
+        clim = flox.xarray.xarray_reduce(
+            da,
+            coord,
+            func="mean",
+            method="cohorts",
+            expected_groups=np.unique(coord.values),
+        ).compute()
     return clim
     
 
@@ -407,13 +444,10 @@ def compute_anom(anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normali
     anom, coord = assign_clim_coord(anom, clim_type)
     this_gb = anom.groupby(coord)
     if not normalized:
-        with ProgressBar():
-            anom = (this_gb - clim)
+        anom = (this_gb - clim)
     else:
         anom  = ((this_gb - clim) / anom)
         anom = anom.where((anom != np.nan) & (anom != np.inf) & (anom != -np.inf), 0)
-    with ProgressBar():
-        anom = anom.compute(**COMPUTE_KWARGS)
     return anom.reset_coords(clim_type, drop=True)
     
 
@@ -438,7 +472,7 @@ def compute_all_smoothed_anomalies(
     if dest_clim.is_file() and all([dest_anom.is_file() for dest_anom in dests_anom]):
         return
 
-    sources = [source for source in path.iterdir() if source.is_file()]
+    sources = [source for source in path.iterdir() if source.is_file() and source.suffix == ".nc"]
     
     if clim_type is None:
         for source, dest in tqdm(zip(sources, dests_anom), total=len(dests_anom)):
@@ -448,12 +482,12 @@ def compute_all_smoothed_anomalies(
             anom = smooth(anom, smoothing).compute(**COMPUTE_KWARGS)
             anom.to_netcdf(dest)
         return
-    da = open_da(
-        dataset, level_type, varname, resolution, period="all", levels="all"
-    )
     if dest_clim.is_file():
         clim = xr.open_dataarray(dest_clim)
     else:
+        da = open_da(
+            dataset, level_type, varname, resolution, period="all", levels="all"
+        )
         clim = compute_clim(da, clim_type)
         clim = smooth(clim, clim_smoothing)
         clim.to_netcdf(dest_clim)
@@ -462,15 +496,11 @@ def compute_all_smoothed_anomalies(
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
-        anom = rename_coords(_open_dataarray(source, varname))
+        anom = rename_coords(xr.open_dataarray(source))
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)
-        if len(sources) > 1:
             anom = anom.compute(**COMPUTE_KWARGS)
-        else:
-            with ResourceProfiler(), ProgressBar():
-                anom = anom.compute(**COMPUTE_KWARGS)
         anom.to_netcdf(dest)
 
 
@@ -503,4 +533,4 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
     q = da.quantile(np.arange(60, 100) / 100, dim=["lon", "lat"])
     q_clim = compute_clim(q, "dayofyear")
     q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
-    q.to_netcdf(opath)
+    q_clim.to_netcdf(opath)

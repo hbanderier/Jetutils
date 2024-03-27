@@ -29,8 +29,8 @@ elif pf.find("el7") >= 0:  # find better later
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    N_WORKERS = 8
-    MEMORY_LIMIT = "13GB"
+    N_WORKERS = 6
+    MEMORY_LIMIT = "20GB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
@@ -201,8 +201,8 @@ def case_insensitive_equal(str1: str, str2: str) -> bool:
 
 
 def infer_direction(to_plot: Any) -> int:
-    max_ = np.nanquantile(to_plot, 0.99)
-    min_ = np.nanquantile(to_plot, 0.01)
+    max_ = np.nanmax(to_plot)
+    min_ = np.nanmin(to_plot)
     try:
         max_ = max_.item()
         min_ = min_.item()

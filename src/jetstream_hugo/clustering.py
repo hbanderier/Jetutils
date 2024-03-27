@@ -75,6 +75,11 @@ def centers_realspace(centers: NDArray, feature_dims: Mapping) -> xr.DataArray:
     return xr.DataArray(centers.reshape(shape), coords=coords)
 
 
+def get_sample_dims(da: xr.DataArray) -> Mapping:
+    included = ["time", "member"]
+    return {key: da[key].values for key in da.dims if key in included}
+
+
 def get_feature_dims(da: xr.DataArray) -> Mapping:
     excluded = ["time", "member", "cluster"]
     return {key: da[key].values for key in da.dims if key not in excluded}
@@ -122,13 +127,13 @@ def labels_from_projs(
 
 
 def labels_to_centers(
-    labels: list | NDArray | xr.DataArray, da: xr.DataArray, coord: str = "cluster"
+    labels: list | NDArray | xr.DataArray, da: xr.DataArray | xr.Dataset, coord: str = "cluster"
 ) -> xr.DataArray:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
     unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(len(labels))
-    dims = list(get_feature_dims(da))
+    dims = list(get_sample_dims(da))
     centers = [da.isel(time=(labels == i)).mean(dim=dims) for i in unique_labels]
     centers = xr.concat(centers, dim=coord)
     centers = centers.assign_coords(
@@ -220,6 +225,8 @@ class Experiment(object):
             dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
         ).joinpath("results")
         self.path.mkdir(exist_ok=True)
+        if level_type == "surf":
+            levels = "all"
         self.open_da_args = (
             dataset,
             level_type,
@@ -284,7 +291,10 @@ class Experiment(object):
             self.da.to_netcdf(da_path, format="NETCDF4")
 
         if reduce_da:
-            self.da = self.da.max("lev")
+            try:
+                self.da = self.da.max("lev")
+            except ValueError:
+                pass
         self.samples_dims = {"time": self.da.time.values}
         try:
             self.samples_dims["member"] = self.da.member.values
@@ -293,7 +303,8 @@ class Experiment(object):
         self.lon, self.lat = self.da.lon.values, self.da.lat.values
         try:
             self.feature_dims = {"lev": self.da.lev.values}
-        except AttributeError:
+            len(self.da.lev.values)
+        except (AttributeError, TypeError):
             self.feature_dims = {}
         self.feature_dims["lat"] = self.lat
         self.feature_dims["lon"] = self.lon
