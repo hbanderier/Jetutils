@@ -26,6 +26,10 @@ from matplotlib.colors import (
     Normalize,
     ListedColormap,
     LinearSegmentedColormap,
+    to_rgb,
+    to_hex,
+    rgb_to_hsv,
+    hsv_to_rgb,
 )
 from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
@@ -64,7 +68,27 @@ COLORS10 = [  # https://coolors.co/palette/f94144-f3722c-f8961e-f9844a-f9c74f-90
     "#277DA1",  # Night Blue
 ]
 
-MYPURPLES = LinearSegmentedColormap.from_list("mypruples", ["#FFFFFF", "#8338EC"])
+COLORS = np.append(colormaps.cet_l_bmw([0.2, 0.47])[:, :3], np.asarray([to_rgb("#ff2ec0"), to_rgb("#CE1C66")]), axis=0)
+# Dark Blue
+# Purple
+# Pink
+# Pinkish red
+COLORS_EXT = np.repeat(COLORS, 3, axis=0)
+for i in range(len(COLORS)):
+    for sign in [1, -1]:
+        newcol_hsv = rgb_to_hsv(COLORS[i][:3]) * (1 + sign * np.asarray([0.0, 0.4, -0.4]))
+        newcol_hsv[1] = np.clip(newcol_hsv[1], 0, 1)
+        newcol_hsv[2] = np.clip(newcol_hsv[2], 0, 1)
+        COLORS_EXT[3 * i + 1 + sign, :3] = hsv_to_rgb(newcol_hsv)
+        
+COLORS = [to_hex(c) for c in COLORS]
+COLORS_EXT = [to_hex(c) for c in COLORS_EXT]
+
+MYBLUES = LinearSegmentedColormap.from_list("myblues", [COLORS_EXT[0], COLORS_EXT[1], COLORS_EXT[2]])
+MYPURPLES = LinearSegmentedColormap.from_list("mypurples", [COLORS_EXT[3], COLORS_EXT[4], COLORS_EXT[5]])
+MYPINKS = LinearSegmentedColormap.from_list("mypinks", [COLORS_EXT[6], COLORS_EXT[7], COLORS_EXT[8]])
+MYREDS = LinearSegmentedColormap.from_list("myreds", [COLORS_EXT[9], COLORS_EXT[10], COLORS_EXT[11]])
+PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[1]])
 
 COASTLINE = feat.NaturalEarthFeature(
     "physical", "coastline", "110m", edgecolor="black", facecolor="none"
@@ -78,9 +102,10 @@ BORDERS = feat.NaturalEarthFeature(
 )
 
 COLOR_JETS = colormaps.bold(np.arange(12))
-DEFAULT_COLORMAP = colormaps.apple_r
+DEFAULT_COLORMAP = colormaps.fusion_r
 
-mpl.rcParams["font.size"] = 18
+mpl.rcParams["font.size"] = 13
+mpl.rcParams["text.usetex"] = True
 mpl.rcParams["animation.ffmpeg_path"] = r"~/mambaforge/envs/env11/bin/ffmpeg"
 
 
@@ -210,8 +235,11 @@ def infer_extent(
 ) -> Tuple[int, float, float]:  # I could market this
     
     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
-    lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
-    lmax = int(np.round(np.abs(lmax)))
+    try:
+        lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
+        lmax = int(np.round(lmax))
+    except OverflowError:
+        return (6, 0, 1)
 
     if direction == 0:
         lowbound, highbound = 0, max(np.abs(lowbound), np.abs(highbound))
@@ -233,8 +261,9 @@ def infer_extent(
                 np.ceil(highbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
             )
         extent = max_rounded - min_rounded
-        minnlev = 4 if direction == 0 else 5
-        maxnlev = 8 if direction == 0 else 10
+        minnlev = 4 if direction == 0 else 6
+        maxnlev = 7 if direction == 0 else 9
+        distance = np.abs(highbound - max_rounded)
         for nlev in range(minnlev, maxnlev):
             try:
                 firstlev = np.round(extent / (nlev - 1), decimals=6)
@@ -245,10 +274,11 @@ def infer_extent(
                 cand_nd = 1000
             if cand_nd < num_digits or (
                 cand_nd == num_digits
-                and np.isclose((firstlev * 10 ** (-lmax + 1)) % 5, 0)
+                and distance < winner_dist
             ):
                 winner = (nlev, min_rounded, max_rounded)
                 num_digits = cand_nd
+                winner_dist = distance
     if direction == -1:
         winner = (winner[0], -winner[2], winner[1])
     return winner
@@ -620,7 +650,7 @@ class Clusterplot:
         # da = np.sort(da, axis=0)
         for i in trange(mask.shape[1]):
             significances.append(
-                field_significance(to_test[i], da, 50, q=0.02)[int(FDR)]
+                field_significance(to_test[i], da, 100, q=0.01)[int(FDR)]
             )
 
         for ax, signif in zip(self.axes, significances):
