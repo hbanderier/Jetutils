@@ -25,7 +25,7 @@ elif platform.node()[:4] == "clim":
     DATADIR = "/scratch2/hugo"
     N_WORKERS = 8
     MEMORY_LIMIT = "4GiB"
-elif pf.find("el7") >= 0:  # find better later
+elif (pf.find("el7") >= 0) or (pf.find("el9") >= 0):  # find better later
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
@@ -48,25 +48,9 @@ CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
 FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
-DATERANGEPL = pd.date_range("19590101", "20211231")
-YEARSPL = np.unique(DATERANGEPL.year)
-DATERANGEPL_SUMMER = DATERANGEPL[np.isin(DATERANGEPL.month, [6, 7, 8])]
-
-DATERANGEPL_EXT = pd.date_range("19400101", "20221231")
-YEARSPL_EXT = np.unique(DATERANGEPL_EXT.year)
-DATERANGEPL_EXT_SUMMER = DATERANGEPL_EXT[np.isin(DATERANGEPL_EXT.month, [6, 7, 8])]
-
-DATERANGEPL_EXT_6H = pd.date_range("19400101", "20230101", freq="6h", inclusive="left")
-DATERANGEPL_EXT_6H_SUMMER = DATERANGEPL_EXT_6H[np.isin(DATERANGEPL_EXT_6H.month, [6, 7, 8])]
-
-DATERANGEML = pd.date_range("19770101", "20211231")
-
-WINDBINS = np.arange(0, 25, 0.5)
-LATBINS = np.arange(15, 75.1, 0.5)
-LONBINS = np.arange(-90, 30, 1)
-DEPBINS = np.arange(-25, 25.1, 0.5)
-
-REGIONS = ["S-W", "West", "S-E", "North", "East", "N-E"]
+DATERANGE = pd.date_range("19590101", "20221231")
+YEARS = np.unique(DATERANGE.year)
+DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
 
 SMALLNAME = {
     "Geopotential": "z",
@@ -86,6 +70,7 @@ PRETTIER_VARNAME = {
     "lat_ext": "Extent in lat.",
     "tilt": "Tilt",
     "sinuosity": "Sinuosity",
+    "waviness": "Waviness",
     "width": "Width",
     "int": "Integrated speed",
     "int_low": "Intd. speed low level",
@@ -93,6 +78,8 @@ PRETTIER_VARNAME = {
     "persistence": "Jet lifetime",
     "exists": "Exists",
     "int_ratio": "Ratio low / high ints",
+    "com_speed": "Speed of COM",
+    "double_jet_index": "Double jet index",
 }
 
 UNITS = {
@@ -106,12 +93,15 @@ UNITS = {
     "lat_ext": r"$~^{\circ} \mathrm{N}$",
     "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
     "sinuosity": r"$~$",
+    "waviness": r"$~^{\circ} \mathrm{N}$",
     "width": r"$~^{\circ} \mathrm{N}$",
     "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "persistence": r"$\mathrm{day}$",
     "exists": r"$~$",
+    "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
+    "double_jet_index": "$~$",
 }
 
 DEFAULT_VALUES = {
@@ -125,12 +115,15 @@ DEFAULT_VALUES = {
     "lat_ext": 0,
     "tilt": 0,
     "sinuosity": 0,
+    "waviness": 0, 
     "width": 0,
     "int": 0,
     "int_low": 0,
     "int_over_europe": 0,
     "persistence": 1,
     "exists": 0,
+    "com_speed": 0,
+    "double_jet_index": 0,
 }
 
 LATEXY_VARNAME = {
@@ -143,7 +136,8 @@ LATEXY_VARNAME = {
     "lon_ext": "$\Delta \lambda$",
     "lat_ext": "$\Delta \phi$",
     "tilt": r"$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$",
-    "sinuosity": r"$R^2$",
+    "sinuosity": r"$\sigma$",
+    "waviness": r"$\sigma_f$",
     "width": "$w$",
     "int": "$\int s \mathrm{d}\lambda$",
     "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",

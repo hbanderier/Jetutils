@@ -40,12 +40,25 @@ import cartopy.feature as feat
 
 from jetstream_hugo.definitions import (
     DATADIR,
-    REGIONS,
     PRETTIER_VARNAME,
-    LATBINS,
     infer_direction,
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
+
+TEXTWIDTH_IN = 0.0138889 * 503.61377
+
+mpl.rcParams["font.size"] = 11
+mpl.rcParams["axes.titlesize"] = 11
+mpl.rcParams["axes.labelsize"] = 11
+mpl.rcParams["xtick.labelsize"] = 11
+mpl.rcParams["ytick.labelsize"] = 11
+mpl.rcParams["legend.fontsize"] = 11
+mpl.rcParams["figure.titlesize"] = 11
+mpl.rcParams["figure.dpi"] = 300
+mpl.rcParams["savefig.dpi"] = 300
+mpl.rcParams["savefig.bbox"] = "tight"
+mpl.rcParams["text.usetex"] = True
+mpl.rcParams["animation.ffmpeg_path"] = r"~/mambaforge/envs/env11/bin/ffmpeg"
 
 COLORS5 = [
     "#167e1b",
@@ -68,7 +81,8 @@ COLORS10 = [  # https://coolors.co/palette/f94144-f3722c-f8961e-f9844a-f9c74f-90
     "#277DA1",  # Night Blue
 ]
 
-COLORS = np.append(colormaps.cet_l_bmw([0.2, 0.47])[:, :3], np.asarray([to_rgb("#ff2ec0"), to_rgb("#CE1C66")]), axis=0)
+COLORS = np.asarray([colormaps.cet_l_bmw(0.47)[:3], to_rgb("#7a1cfe"), to_rgb("#ff2ec0"), to_rgb("#CE1C66")])
+# COLORS = np.append(colormaps.cet_l_bmw([0.2, 0.47])[:, :3], np.asarray([to_rgb("#ff2ec0"), to_rgb("#CE1C66")]), axis=0)
 # Dark Blue
 # Purple
 # Pink
@@ -103,10 +117,6 @@ BORDERS = feat.NaturalEarthFeature(
 
 COLOR_JETS = colormaps.bold(np.arange(12))
 DEFAULT_COLORMAP = colormaps.fusion_r
-
-mpl.rcParams["font.size"] = 13
-mpl.rcParams["text.usetex"] = True
-mpl.rcParams["animation.ffmpeg_path"] = r"~/mambaforge/envs/env11/bin/ffmpeg"
 
 
 def num2tex(x: float, force: bool = False) -> str:
@@ -269,7 +279,7 @@ def infer_extent(
                 firstlev = np.round(extent / (nlev - 1), decimals=6)
                 if np.isclose(firstlev, np.round(firstlev, 0)):
                     firstlev = int(np.round(firstlev, 0))
-                cand_nd = len(str(firstlev))
+                cand_nd = len(str(firstlev).rstrip("0"))
             except ZeroDivisionError:
                 cand_nd = 1000
             if cand_nd < num_digits or (
@@ -815,209 +825,3 @@ def cdf(timeseries: Union[DataArray, NDArray]) -> Tuple[NDArray, NDArray]:
     y = np.cumsum(idxs) / np.sum(idxs)
     x = timeseries[idxs]
     return x, y
-
-
-# Create histogram
-def compute_hist(
-    timeseries: DataArray, season: str = None, bins: Union[NDArray, list] = LATBINS
-) -> Tuple[NDArray, NDArray]:
-    """small wrapper for np.histogram that extracts a season out of xr.DataArray
-
-    Args:
-        timeseries (xr.DataArray): _description_
-        season (str): _description_
-        bins (list or npt.NDArray): _description_
-
-    Returns:
-        bins (npt.NDArray): _description_
-        counts (npt.NDArray): _description_
-    """
-    if season is not None and season != "Annual":
-        timeseries = timeseries.isel(time=timeseries.time.dt.season == season)
-    return np.histogram(timeseries, bins=bins)
-
-
-def histogram(
-    timeseries: DataArray,
-    ax: Axes,
-    season: str = None,
-    bins: Union[NDArray, list] = LATBINS,
-    **kwargs,
-) -> BarContainer:
-    """Small wrapper to plot a histogram out of a time series
-
-    Args:
-        timeseries (xr.DataArray): _description_
-        ax (Axes): _description_
-        season (str, optional): _description_. Defaults to None.
-        bins (Union[NDArray, list], optional): _description_. Defaults to LATBINS.
-
-    Returns:
-        BarContainer: _description_
-    """
-    hist = compute_hist(timeseries, season, bins)
-    midpoints = (hist[1][1:] + hist[1][:-1]) / 2
-    bars = ax.bar(midpoints, hist[0], width=hist[1][1] - hist[1][0], **kwargs)
-    return bars
-
-
-def kde(
-    timeseries: DataArray,
-    season: str = None,
-    bins: Union[NDArray, list] = LATBINS,
-    scaled: bool = False,
-    return_x: bool = False,
-    **kwargs,
-) -> Union[NDArray, Tuple[NDArray, NDArray]]:
-    hist = compute_hist(timeseries, season, bins)
-    midpoints = (hist[1][1:] + hist[1][:-1]) / 2
-    norm = (hist[1][1] - hist[1][0]) * np.sum(hist[0])
-    kde: NDArray = gaussian_kde(midpoints, weights=hist[0], **kwargs).evaluate(
-        midpoints
-    )
-    if scaled:
-        kde *= norm
-    if return_x:
-        return midpoints, kde
-    return kde
-
-
-def create_double_composite(
-    ds: Dataset,
-    props_as_ds: Dataset,
-    min_hotspell_length: int = 4,
-    max_hotspell_length: int = 5,
-    subset: list = None,
-    fig_kwargs: dict = None,
-):
-    duncan_mask = np.abs(xr.open_dataarray(f"{DATADIR}/ERA5/cluster_def.nc"))
-    ds_masked = ds.where(ds.hotspell_length >= min_hotspell_length).where(
-        ds.hotspell_length <= max_hotspell_length
-    )
-    lon, lat = duncan_mask.lon.values, duncan_mask.lat.values
-    inverse_landmask = duncan_mask.copy()
-    inverse_landmask[:] = 1
-    inverse_landmask = inverse_landmask.where(duncan_mask.isnull())
-    centers = {}
-    for i, region in enumerate(REGIONS):
-        com = center_of_mass((duncan_mask == i + 1).values)
-        mean_lat = lat[int(com[0])] + (com[0] % 1) * (lat[1] - lat[0])
-        mean_lon = lon[int(com[1])] + (com[1] % 1) * (lon[1] - lon[0])
-        duncan_mask = duncan_mask.where(
-            (duncan_mask != i + 1) | (duncan_mask.lat < mean_lat), duncan_mask + 0.1
-        )
-        centers[region] = [mean_lon, mean_lat]
-    if subset is None:
-        subset = list(props_as_ds.data_vars)
-    if fig_kwargs is None:
-        fig_kwargs = {}
-    default_fig_kwargs = {'nrows': 3, 'ncols': 4, 'figsize': (22, 8)}
-    fig_kwargs = default_fig_kwargs | fig_kwargs
-    fig, axes = plt.subplots(
-        subplot_kw={"projection": ccrs.PlateCarree()}, **fig_kwargs
-    )
-    fig.subplots_adjust(wspace=0.03)
-    axes = axes.ravel()
-    cmap_polar = cmaps.BlueRed
-    cmap_subtropical = cmaps.GreenYellow_r
-    norm = Normalize(-1.1, 1.1)
-    for i, varname in enumerate(subset):
-        da_polar = duncan_mask.copy()
-        da_subtropical = duncan_mask.copy()
-        for ir, region in enumerate(ds_masked.region.values):
-            val_polar = (
-                ds_masked[varname]
-                .sel(jet="polar", region=region, day_after_beg=np.arange(-3, 4))
-                .mean()
-            )
-            val_polar = (
-                val_polar - props_as_ds[varname].sel(jet="polar").mean()
-            ) / props_as_ds[varname].sel(jet="polar").std()
-
-            val_subtropical = (
-                ds_masked[varname]
-                .sel(jet="subtropical", region=region, day_after_beg=np.arange(-3, 4))
-                .mean()
-            )
-            val_subtropical = (
-                val_subtropical - props_as_ds[varname].sel(jet="subtropical").mean()
-            ) / props_as_ds[varname].sel(jet="subtropical").std()
-
-            da_polar = da_polar.where(duncan_mask != ir + 1.1, val_polar)
-            da_polar = da_polar.where(duncan_mask != ir + 1, np.nan)
-            da_subtropical = da_subtropical.where(
-                duncan_mask != ir + 1, val_subtropical
-            )
-            da_subtropical = da_subtropical.where(duncan_mask != ir + 1.1, np.nan)
-        im_polar = axes[i].pcolormesh(
-            lon,
-            lat,
-            da_polar.values,
-            shading="nearest",
-            transform=ccrs.PlateCarree(),
-            norm=norm,
-            cmap=cmap_polar,
-        )
-        im_subtropical = axes[i].pcolormesh(
-            lon,
-            lat,
-            da_subtropical.values,
-            shading="nearest",
-            transform=ccrs.PlateCarree(),
-            norm=norm,
-            cmap=cmap_subtropical,
-        )
-        axes[i].pcolormesh(
-            lon,
-            lat,
-            inverse_landmask,
-            shading="nearest",
-            transform=ccrs.PlateCarree(),
-            cmap="Greys",
-            vmin=0.95,
-            vmax=1.05,
-        )
-        axes[i].contour(
-            lon,
-            lat,
-            duncan_mask.values / 6,
-            levels=7,
-            colors="black",
-            lw=0.1,
-        )
-        axes[i].set_title(PRETTIER_VARNAME[varname], fontsize=30)
-        axes[i].axis("off")
-    if fig_kwargs['ncols'] * fig_kwargs['nrows'] > len(subset):
-        N = 6
-        cmap2 = LinearSegmentedColormap.from_list(
-            "hehe", cmaps.agsunset(np.linspace(1 / N, 1 - 1 / N, N))
-        )
-        axes[-1].pcolormesh(
-            lon,
-            lat,
-            duncan_mask.values / N,
-            shading="nearest",
-            transform=ccrs.PlateCarree(),
-            cmap=cmap2,
-        )
-
-        for i, region in enumerate(REGIONS):
-            axes[-1].text(
-                *centers[region],
-                region,
-                transform=ccrs.PlateCarree(),
-                va="bottom" if region == "Arctic" else "center",
-                ha="center",
-            )
-        axes[-1].axis("off")
-
-    cbar_polar = fig.colorbar(im_polar, ax=fig.axes, pad=0.015, fraction=0.04)
-    cbar_polar.ax.set_ylabel("Norm. anomaly (polar jet)", fontsize=27)
-    cbar_polar.ax.yaxis.set_label_position("left")
-    cbar_polar.ax.set_yticks(np.linspace(-1, 1, 9), [""] * 9)
-    cbar_polar.ax.yaxis.set_ticks_position("left")
-    cbar_subtropical = fig.colorbar(
-        im_subtropical, ax=fig.axes, pad=0.007, fraction=0.04
-    )
-    cbar_subtropical.ax.set_ylabel("Norm. anomaly (subtropical jet)", fontsize=27)
-    return fig, axes, cbar_polar, cbar_subtropical

@@ -16,8 +16,6 @@ except ImportError:
 import pandas as pd
 import xarray as xr
 from dask.diagnostics import ProgressBar
-from numba_progress import ProgressBar as NumbaProgress
-from kmedoids import KMedoids
 import scipy.linalg as linalg
 from scipy.optimize import minimize
 from scipy.spatial.distance import squareform
@@ -134,7 +132,11 @@ def labels_to_centers(
     unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(len(labels))
     dims = list(get_sample_dims(da))
+    extra_dims = [coord for coord in da.coords if coord not in da.dims]
     centers = [da.isel(time=(labels == i)).mean(dim=dims) for i in unique_labels]
+    for extra_dim in extra_dims:
+        for i, center in enumerate(centers):
+            centers[i] = center.assign_coords({extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)})
     centers = xr.concat(centers, dim=coord)
     centers = centers.assign_coords(
         {"ratio": (coord, counts), "label": (coord, unique_labels)}
@@ -292,7 +294,7 @@ class Experiment(object):
 
         if reduce_da:
             try:
-                self.da = self.da.max("lev")
+                self.da = self.da.isel(lev=self.da.argmax("lev"))
             except ValueError:
                 pass
         self.samples_dims = {"time": self.da.time.values}
@@ -301,13 +303,19 @@ class Experiment(object):
         except AttributeError:
             pass
         self.lon, self.lat = self.da.lon.values, self.da.lat.values
-        try:
+        if "lev" in self.da.dims:
             self.feature_dims = {"lev": self.da.lev.values}
             len(self.da.lev.values)
-        except (AttributeError, TypeError):
+        else:
             self.feature_dims = {}
         self.feature_dims["lat"] = self.lat
         self.feature_dims["lon"] = self.lon
+        self.extra_dims = {}
+        for coordname, coord in self.da.coords.items():
+            if coordname not in self.da.dims:
+                self.extra_dims[coordname] = coord.values
+        if "lev" in self.da.dims and "lev":
+            self.extra_dims = {"lev": self.da.lev.values}
         self.flat_shape = (
             np.prod([len(dim) for dim in self.samples_dims.values()]),
             np.prod([len(dim) for dim in self.feature_dims.values()])
@@ -402,7 +410,7 @@ class Experiment(object):
         pca_path = self._pca_file(n_pcas_tentative)
         if pca_path is not None:
             centers = self.pca_inverse_transform(centers, n_pcas_tentative)
-        centers = centers_realspace(centers, self.feature_dims)
+        centers = centers_realspace(centers, self.feature_dims, self.extra_dims)
         norm_path = self.path.joinpath(f"norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:
@@ -432,11 +440,7 @@ class Experiment(object):
             centers = centers.assign_coords({"ratios": ("cluster", counts)})
         
         elif return_type == RAW_REALSPACE:
-            unique, counts = np.unique(labels, return_counts=True)
-            counts = counts / float(len(labels))
-            labels = self.labels_as_da(labels)
-            centers = self._centers_realspace(centers)
-            centers = centers.assign_coords({"ratios": ("cluster", counts)})
+            centers = labels_to_centers(labels, self.da, coord="cluster")
             
         elif return_type in [ADJUST, ADJUST_TWOSIDED]:
             projection = np.tensordot(X, centers.T, axes=X.ndim - 1)
@@ -450,31 +454,21 @@ class Experiment(object):
 
         return centers, labels
 
-    def cluster(
+    def do_kmeans(
         self,
         n_clu: int,
         n_pcas: int,
-        kind: str = "kmeans",
         return_type: int = RAW_REALSPACE,
     ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
         X, da = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
-        if case_insensitive_equal(kind, "kmeans"):
-            results = KMeans(n_clu)
-            suffix = ""
-        elif case_insensitive_equal(kind, "kmedoids"):
-            results = KMedoids(n_clu)
-            suffix = "med"
-        else:
-            raise NotImplementedError(
-                f"{kind} clustering not implemented. Options are kmeans and kmedoids"
-            )
+        results = KMeans(n_clu)
 
-        results_path = self.path.joinpath(f"k{suffix}_{n_clu}_{n_pcas}.pkl")
+        results_path = self.path.joinpath(f"k_{n_clu}_{n_pcas}.pkl")
         if results_path.is_file():
             results = load_pickle(results_path)
         else:
-            logging.debug(f"Fitting {kind} clustering with {n_clu} clusters")
+            logging.debug(f"Fitting KMeans clustering with {n_clu} clusters")
             results = results.fit(X)
             save_pickle(results, results_path)
             

@@ -5,19 +5,15 @@ from pathlib import Path
 import warnings
 import numpy as np
 import pandas as pd
-import geopandas as gpd
 import xarray as xr
 import flox.xarray
 import xrft
 from tqdm import tqdm
-from dask.diagnostics import ProgressBar, ResourceProfiler
-from spharm import Spharmt
+# from spharm import Spharmt
 from jetstream_hugo.definitions import (
-    N_WORKERS,
     DEFAULT_VARNAME,
     DATADIR,
-    CLIMSTOR,
-    YEARSPL_EXT,
+    YEARS,
     COMPUTE_KWARGS
 )
 SEASONS = {
@@ -29,7 +25,7 @@ SEASONS = {
     
     
 def get_land_mask() -> xr.DataArray:
-    mask = xr.open_dataarray(f"{DATADIR}/ERA5/land_sea.nc")
+    mask = xr.open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
     mask = mask.squeeze().rename(longitude="lon", latitude="lat").reset_coords("time", drop=True)
     return mask.astype(bool)
     
@@ -37,9 +33,9 @@ def get_land_mask() -> xr.DataArray:
 def determine_file_structure(path: Path) -> str:
     if path.joinpath("full.nc").is_file():
         return "one_file"
-    if any([path.joinpath(f"{year}.nc").is_file() for year in YEARSPL_EXT]):
+    if any([path.joinpath(f"{year}.nc").is_file() for year in YEARS]):
         return "yearly"
-    if any([path.joinpath(f"{year}01.nc").is_file() for year in YEARSPL_EXT]):
+    if any([path.joinpath(f"{year}01.nc").is_file() for year in YEARS]):
         return "monthly"
     print("Could not determine file structure")
     raise RuntimeError
@@ -207,7 +203,7 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     return dim == "dayofyear"
 
 
-def _window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
+def _window_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
     if dim != "hourofyear":
         return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
     groups = da.groupby(da.hourofyear % 24)
@@ -216,7 +212,7 @@ def _window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=Tru
     if "time" in da.dims:
         dim = "time"
     for group in groups.groups.values():
-        to_concat.append(da[group].rolling({dim: winsize // 4}, center=center, min_periods=1).mean())
+        to_concat.append(da.loc[{dim: da.hourofyear[group]}].rolling({dim: winsize // 4}, center=center, min_periods=1).mean())
     return xr.concat(to_concat, dim=dim).sortby(dim)
 
 
@@ -235,6 +231,12 @@ def window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True
 def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
     name = da.name
     dim = dim.split("+")
+    extra_dims = [coord for coord in da.coords if coord not in da.dims]
+    extra_coords = []
+    for extra_dim in extra_dims:
+        extra_coords.append(da[extra_dim])
+        da = da.reset_coords(extra_dim, drop=True)
+    da = da.where(~da.isnull(), 0)
     ft = xrft.fft(da, dim=dim)
     mask = 0
     for dim_ in dim:
@@ -245,19 +247,21 @@ def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
         warnings.simplefilter("ignore", category=FutureWarning)
         newda = xrft.ifft(ft, dim=[f"freq_{dim_}" for dim_ in dim]).real.assign_coords(da.coords).rename(name)
     newda.attrs = da.attrs
+    for i, extra_dim in enumerate(extra_dims):
+        newda.assign_coords({extra_dim: extra_coords[i]})
     return newda
 
 
 def spharm_smoothing(da: xr.DataArray, trunc: int):
     raise NotImplementedError("Broken for now")
-    spharmt = Spharmt(len(da.lon), len(da.lat))
-    fieldspec = spharmt.grdtospec(da.values, ntrunc=trunc)
-    fieldtrunc = spharmt.spectogrd(fieldspec)
-    return fieldtrunc
+    # spharmt = Spharmt(len(da.lon), len(da.lat))
+    # fieldspec = spharmt.grdtospec(da.values, ntrunc=trunc)
+    # fieldtrunc = spharmt.spectogrd(fieldspec)
+    # return fieldtrunc
 
 
 def smooth(
-    da: xr.DataArray,
+    da: xr.DataArray | xr.Dataset,
     smooth_map: Mapping | None,
 ) -> xr.DataArray:
     if smooth_map is None:
@@ -347,7 +351,7 @@ def open_da(
     elif isinstance(period, list):
         period = np.asarray(period).astype(int)
     elif period == "all":
-        period = YEARSPL_EXT
+        period = YEARS
     elif isinstance(period, int | str):
         period = [int(period)]
     
@@ -360,7 +364,7 @@ def open_da(
     elif file_structure == "monthly":
         if season is None:
             files_to_load = [
-                path.joinpath(f"{year}{month}.nc")
+                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
                 for month in range(1, 13)
                 for year in period
             ]
@@ -446,7 +450,14 @@ def compute_anom(anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normali
     if not normalized:
         anom = (this_gb - clim)
     else:
-        anom  = ((this_gb - clim) / anom)
+        variab = flox.xarray.xarray_reduce(
+            anom,
+            coord,
+            func="std",
+            method="cohorts",
+            expected_groups=np.unique(coord.values),
+        )
+        anom = ((this_gb - clim).groupby(coord) / variab).reset_coords("hourofyear", drop=True)
         anom = anom.where((anom != np.nan) & (anom != np.inf) & (anom != -np.inf), 0)
     return anom.reset_coords(clim_type, drop=True)
     
@@ -534,3 +545,27 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
     q_clim = compute_clim(q, "dayofyear")
     q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
     q_clim.to_netcdf(opath)
+    
+    
+def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = False) -> xr.Dataset:
+    ds, coord = assign_clim_coord(ds, clim_type)
+    clim = flox.xarray.xarray_reduce(
+        ds,
+        coord,
+        func="mean",
+        method="cohorts",
+        expected_groups=np.unique(coord.values),
+    )
+    clim = smooth(clim, {clim_type: ("win", 61)})
+    this_gb = ds.groupby(coord)
+    if not normalized:
+        return (this_gb - clim).reset_coords(clim_type, drop=True)
+    variab = flox.xarray.xarray_reduce(
+        ds,
+        coord,
+        func="std",
+        method="cohorts",
+        expected_groups=np.unique(coord.values),
+    )
+    variab = smooth(variab, {clim_type: ("win", 61)})
+    return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)

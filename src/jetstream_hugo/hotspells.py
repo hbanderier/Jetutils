@@ -1,15 +1,11 @@
 from typing import Union, Tuple, Iterable, Literal
 from nptyping import NDArray
+import warnings
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from xclim.indices.run_length import rle, run_bounds
-from jetstream_hugo.definitions import (
-    DATADIR,
-    REGIONS,
-    DATERANGEPL,
-)
 
 
 def heat_waves_from_t(
@@ -32,7 +28,9 @@ def heat_waves_from_t(
     heat_waves = run_bounds(hot_days)
     mask = (heat_waves[0].dt.year == heat_waves[1].dt.year).values
     heat_waves = heat_waves[:, mask]
-    mask = heat_waves.astype('datetime64[h]').values
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        mask = heat_waves.astype('datetime64[h]').values
     mask = (mask[1] - mask[0]) >= minlen
     heat_waves = heat_waves[:, mask].T
     heat_waves_ts = []
@@ -47,7 +45,9 @@ def heat_waves_from_t(
         this_hw = pd.date_range(first_time, last_time, freq='6h')
         heat_waves_ts.append(this_hw)
         lengths.append(np.full(len(this_hw), hw_len.astype(int)))
-    heat_waves = heat_waves.astype('datetime64[h]').values
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        heat_waves = heat_waves.astype('datetime64[h]').values
     if output_type == "list":
         return heat_waves_ts, heat_waves
     da_hs = da.copy(data=np.zeros(da.shape, dtype=int))
@@ -57,18 +57,7 @@ def heat_waves_from_t(
     return heat_waves_ts, heat_waves, da_hs
 
 
-def mask_from_t(
-    da: xr.DataArray,
-    ds: xr.Dataset,
-    q: float = 0.95,
-    fill_holes: bool = False,
-    minlen: np.timedelta64 = np.timedelta64(3, 'D'),
-    time_before: pd.Timedelta = pd.Timedelta(0, 'D'),
-    time_after: pd.Timedelta = pd.Timedelta(0, 'D'),
-) -> xr.Dataset:
-    heat_waves_ts, heat_waves = heat_waves_from_t(
-        da, q, fill_holes, minlen, time_before, time_after, output_type='list'
-    )
+def mask_from_heat_waves(da: xr.DataArray, ds: xr.Dataset, heat_waves_ts, heat_waves, time_before: pd.Timedelta = pd.Timedelta(0, 'D')) -> xr.Dataset:
     months = np.unique(ds.time.dt.month.values)
     months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
     lengths = heat_waves[:, 1] - heat_waves[:, 0]
@@ -85,7 +74,9 @@ def mask_from_t(
     dims = list(ds_masked.sizes.values())[:2]
     dummy_da = np.zeros(dims) + np.nan
     ds_masked = ds_masked.assign_coords(temperature=(['heat_wave', 'time_around_beg'], dummy_da))
-    ds_masked = ds_masked.assign_coords(absolute_time=(['heat_wave', 'time_around_beg'], dummy_da.astype('datetime64[h]')))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        ds_masked = ds_masked.assign_coords(absolute_time=(['heat_wave', 'time_around_beg'], dummy_da.astype('datetime64[h]')))
     for i, heat_wave in enumerate(heat_waves_ts):
         unexpected_offset = time_before - (heat_waves[i][0] - heat_wave[0])
         this_tab = time_around_beg[:len(heat_wave)] + unexpected_offset
@@ -95,4 +86,20 @@ def mask_from_t(
         ds_masked.temperature.loc[accessor_dict] = da.loc[dict(time=heat_wave)].values
         ds_masked.absolute_time.loc[accessor_dict] = heat_wave
     return ds_masked
+
+
+def mask_from_t(
+    da: xr.DataArray,
+    ds: xr.Dataset,
+    q: float = 0.95,
+    fill_holes: bool = False,
+    minlen: np.timedelta64 = np.timedelta64(3, 'D'),
+    time_before: pd.Timedelta = pd.Timedelta(0, 'D'),
+    time_after: pd.Timedelta = pd.Timedelta(0, 'D'),
+) -> xr.Dataset:
+    heat_waves_ts, heat_waves = heat_waves_from_t(
+        da, q, fill_holes, minlen, time_before, time_after, output_type='list'
+    )
+    return mask_from_heat_waves(da, ds, heat_waves_ts, heat_waves, time_before)
+    
 
