@@ -205,6 +205,7 @@ def jet_integral_flat(jet: NDArray) -> float:
 
 def find_jets(ds: xr.Dataset):
     ds = preprocess(ds)
+    dx = (ds.lon[1] - ds.lon[0]).item()
     contours = find_contours(ds["sigma_smo"].values, level=0, positive_orientation="high")
     groups = []
     for contour in contours:
@@ -899,16 +900,12 @@ class MultiVarExperiment(object):
             where_are_jets = np.load(ofile_waj)
             all_jets_one_array = np.load(ofile_ajoa)
             return all_jets, where_are_jets, all_jets_one_array
-        jet_finder = JetFinder(
-            preprocess=preprocess,
-            cluster=cluster_criterion,
-            refine_jets=jets_from_mask,
-        )
+        
         try:
             self.ds = self.ds.load()
         except AttributeError:
             pass
-        all_jets = jet_finder.call(self.ds, **kwargs)
+        all_jets = find_all_jets(self.ds, **kwargs)
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
         save_pickle(all_jets, ofile_aj)
         np.save(ofile_waj, where_are_jets)
