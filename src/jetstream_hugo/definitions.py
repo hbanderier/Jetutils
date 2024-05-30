@@ -237,6 +237,43 @@ def slice_1d(da: xr.DataArray | xr.Dataset, indexers: list, dim: str = "points")
     return da.loc[tuple(
         [xr.DataArray(indexer, dims=dim) for indexer in indexers]
     )]
+    
+    
+def slice_from_df(
+    da: xr.DataArray | xr.Dataset, indexer: pd.DataFrame, dim: str = "point"
+) -> xr.DataArray | xr.Dataset:
+    cols = [col for col in ["lev", "lon", "lat"] if col in indexer and col in da.dims]
+    indexer = {col: xr.DataArray(indexer[col].to_numpy(), dims=dim) for col in cols}
+    return da.loc[indexer]
+
+
+def first_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray:
+    ndim = arr.ndim
+    if ndim > 1 and sort:
+        print("sorting output not supported for arrays with ndim > 1")
+        sort = False
+        raise RuntimeWarning
+    idxs = np.argpartition(arr.ravel(), n_elements)[:n_elements]
+    if ndim > 1:
+        return np.unravel_index(idxs, arr.shape)
+    if sort:
+        return idxs[np.argsort(arr[idxs])]
+    return idxs
+
+
+def last_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray:
+    arr = np.nan_to_num(arr, posinf=0)
+    ndim = arr.ndim
+    if ndim > 1 and sort:
+        print("sorting output not supported for arrays with ndim > 1")
+        sort = False
+        raise RuntimeWarning
+    idxs = np.argpartition(arr.ravel(), -n_elements)[-n_elements:]
+    if ndim > 1:
+        return np.unravel_index(idxs, arr.shape)
+    if sort:
+        return idxs[np.argsort(arr[idxs])]
+    return idxs
 
 
 class TimerError(Exception):
