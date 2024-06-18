@@ -8,11 +8,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-
-try:
-    import cupy as cp
-except ImportError:
-    pass
 import pandas as pd
 import xarray as xr
 from dask.diagnostics import ProgressBar
@@ -26,6 +21,7 @@ from sklearn.cluster import KMeans
 from simpsom import SOMNet
 
 from jetstream_hugo.definitions import (
+    coarsen_da,
     revert_zero_one,
     save_pickle,
     load_pickle,
@@ -347,7 +343,7 @@ class Experiment(object):
 
         da_weighted = self.da * norm_da
         X = da_weighted.values.reshape(self.flat_shape)
-        return X, self.da
+        return X, da_weighted
     
     def _pca_file(self, n_pcas: int) -> str | None:
         potential_paths = list(self.path.glob("pca_*.pkl"))
@@ -422,7 +418,6 @@ class Experiment(object):
         centers: NDArray,
         labels: NDArray,
         return_type: int = RAW_REALSPACE,
-        da: xr.DataArray = None,
         X: NDArray = None,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
@@ -460,7 +455,7 @@ class Experiment(object):
         n_pcas: int,
         return_type: int = RAW_REALSPACE,
     ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
-        X, da = self.prepare_for_clustering()
+        X, _ = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
         results = KMeans(n_clu)
 
@@ -475,7 +470,7 @@ class Experiment(object):
         centers = results.cluster_centers_
         labels = results.labels_
         
-        return self._cluster_output(centers, labels, return_type, X, da)
+        return self._cluster_output(centers, labels, return_type, X)
     
     def _compute_opps_T1(
         self,
@@ -570,7 +565,7 @@ class Experiment(object):
     ) -> Tuple[Path, dict]:
         if type not in [1, 2]:
             raise ValueError(f"Wrong OPP type, pick 1 or 2")
-        X, da = self.prepare_for_clustering()
+        X, _ = self.prepare_for_clustering()
         if n_pcas:
             X = self.pca_transform(X, n_pcas)
         X = X.reshape((X.shape[0], -1))
@@ -597,7 +592,7 @@ class Experiment(object):
         type: int = 1,
         return_type: int = RAW_REALSPACE,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
-        X, da = self.prepare_for_clustering()
+        X, _ = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
 
         if type == 3:
@@ -612,7 +607,7 @@ class Experiment(object):
             X2 = None
 
         labels = labels_from_projs(X1, X2, cutoff=n_clu, neg=False, adjust=False)
-        return self._cluster_output(OPPs, labels, return_type, da, X)
+        return self._cluster_output(OPPs, labels, return_type, X)
 
     def som_cluster(
         self,
@@ -620,28 +615,34 @@ class Experiment(object):
         ny: int,
         n_pcas: int = 0,
         PBC: bool = True,
+        metric: str = "ssim",
         return_type: int = RAW_REALSPACE,
         force: bool = False,
         train_kwargs: dict = None,
         **kwargs,
     ) -> Tuple[SOMNet, xr.DataArray, NDArray]:
         pbc_flag = "_pbc" if PBC else ""
-        output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.npy")
 
         if train_kwargs is None:
             train_kwargs = {}
-        X, da = self.prepare_for_clustering()
-        X = self.pca_transform(X, n_pcas=n_pcas)
-        
-        init = "random" if X.shape[1] > 1000 else "pca"
+        X, da_weighted = self.prepare_for_clustering()
+        if metric in ["ssim", "euclidean"]:
+            da_weighted = coarsen_da(da_weighted, 1.5)
+            X, Xmin, Xmax = to_zero_one(da_weighted.values)
+            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{metric}.npy")
+        else:
+            X = self.pca_transform(X, n_pcas)
+            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.npy")
+        init = "random" if np.prod(X.shape[1:]) > 1000 else "pca"
         if output_path.is_file() and not force:
-            net = SOMNet(nx, ny, X, GPU=False, PBC=PBC, load_file=output_path.as_posix())
+            net = SOMNet(nx, ny, X, metric=metric, PBC=PBC, load_file=output_path.as_posix())
         else:
             net = SOMNet(
                 nx,
                 ny,
                 X,
                 PBC=PBC,
+                metric=metric,
                 init=init,
                 **kwargs,
             )
@@ -649,8 +650,12 @@ class Experiment(object):
             net.save_map(output_path.as_posix())
 
         labels = net.bmus
+        if metric in ["euclidean", "ssim"]: 
+            weights = revert_zero_one(net.weights, Xmin, Xmax)
+        else:
+            weights = net.weights
 
-        return net, *self._cluster_output(net.weights, labels, return_type, da, X)
+        return net, *self._cluster_output(weights, labels, return_type)
 
 
     def _only_temp(func):

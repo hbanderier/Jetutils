@@ -54,7 +54,7 @@ mpl.rcParams["xtick.labelsize"] = 11
 mpl.rcParams["ytick.labelsize"] = 11
 mpl.rcParams["legend.fontsize"] = 11
 mpl.rcParams["figure.titlesize"] = 11
-mpl.rcParams["figure.dpi"] = 300
+mpl.rcParams["figure.dpi"] = 100
 mpl.rcParams["savefig.dpi"] = 300
 mpl.rcParams["savefig.bbox"] = "tight"
 mpl.rcParams["text.usetex"] = True
@@ -98,10 +98,10 @@ for i in range(len(COLORS)):
 COLORS = [to_hex(c) for c in COLORS]
 COLORS_EXT = [to_hex(c) for c in COLORS_EXT]
 
-MYBLUES = LinearSegmentedColormap.from_list("myblues", [COLORS_EXT[0], COLORS_EXT[1], COLORS_EXT[2]])
-MYPURPLES = LinearSegmentedColormap.from_list("mypurples", [COLORS_EXT[3], COLORS_EXT[4], COLORS_EXT[5]])
-MYPINKS = LinearSegmentedColormap.from_list("mypinks", [COLORS_EXT[6], COLORS_EXT[7], COLORS_EXT[8]])
-MYREDS = LinearSegmentedColormap.from_list("myreds", [COLORS_EXT[9], COLORS_EXT[10], COLORS_EXT[11]])
+MYBLUES = LinearSegmentedColormap.from_list("myblues", ["#ffffff", COLORS_EXT[2]])
+MYPURPLES = LinearSegmentedColormap.from_list("mypurples", ["#ffffff", COLORS_EXT[5]])
+MYPINKS = LinearSegmentedColormap.from_list("mypinks", ["#ffffff", COLORS_EXT[8]])
+MYREDS = LinearSegmentedColormap.from_list("myreds", ["#ffffff", COLORS_EXT[11]])
 PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[1]])
 
 COASTLINE = feat.NaturalEarthFeature(
@@ -128,13 +128,13 @@ def num2tex(x: float, force: bool = False) -> str:
         return float_str
     
 
-def p_to_tex(c1: float, c0: float) -> str:
+def p_to_tex(c1: float, c0: float, no_intercept: bool=True) -> str:
     coef1 = num2tex(c1)
+    if no_intercept:
+        return f"$y\sim {coef1}\cdot x$"
     coef0 = num2tex(c0)
     sign = "+" if np.sign(c0) else "-"
-    string = f"$y={coef1}\cdot x {sign} {coef0}$"
-    return string
-
+    return f"$y={coef1}\cdot x {sign} {coef0}$"
 
 def make_boundary_path(
     minlon: float, maxlon: float, minlat: float, maxlat: float, n: int = 50

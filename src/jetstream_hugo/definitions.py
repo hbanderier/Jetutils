@@ -18,19 +18,19 @@ pf = platform.platform()
 if pf.find("cray") >= 0:
     NODE = "DAINT"
     DATADIR = "/scratch/snx3000/hbanderi/data/persistent"
-    N_WORKERS = 8
+    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = "8GiB"
 elif platform.node()[:4] == "clim":
     NODE = "CLIM"
     DATADIR = "/scratch2/hugo"
-    N_WORKERS = 8
+    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = "4GiB"
 elif (pf.find("el7") >= 0) or (pf.find("el9") >= 0):  # find better later
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    N_WORKERS = 6
-    MEMORY_LIMIT = "20GB"
+    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
+    MEMORY_LIMIT = "10GB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
@@ -49,6 +49,7 @@ FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGE = pd.date_range("19590101", "20221231")
+TIMERANGE = pd.date_range("19590101", "20230101", freq="6h", inclusive="left")
 YEARS = np.unique(DATERANGE.year)
 DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
 
@@ -59,18 +60,28 @@ SMALLNAME = {
     "Precipitation": "tp",
 }  # Wind speed
 
+SHORTHAND = {
+    "subtropical": "sub",
+    "polar": "extra",
+}
+
 PRETTIER_VARNAME = {
     "mean_lon": "Avg. longitude",
     "mean_lat": "Avg. latitude",
-    "mean_lev": "Avg. level",
+    "mean_lev": "Avg. p. level",
+    "mean_P": "Avg. p. level",
+    "mean_theta": "Avg. theta level",
     "Lon": "Lon. of max. speed",
     "Lat": "Lat. of max. speed",
     "Spe": "Max. speed",
     "lon_ext": "Extent in lon.",
     "lat_ext": "Extent in lat.",
     "tilt": "Tilt",
-    "sinuosity": "Sinuosity",
-    "waviness": "Waviness",
+    "sinuosity1": "Linear waviness",
+    "sinuosity2": "Flat waviness",
+    "sinuosity3": "R16 waviness",
+    "sinuosity4": "DC16 waviness",
+    "sinuosity5": "FV15 waviness",
     "width": "Width",
     "int": "Integrated speed",
     "int_low": "Intd. speed low level",
@@ -92,8 +103,11 @@ UNITS = {
     "lon_ext": r"$~^{\circ} \mathrm{E}$",
     "lat_ext": r"$~^{\circ} \mathrm{N}$",
     "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
-    "sinuosity": r"$~$",
-    "waviness": r"$~^{\circ} \mathrm{N}$",
+    "sinuosity1": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+    "sinuosity2": r"$~^{\circ} \mathrm{N}$",
+    "sinuosity3": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+    "sinuosity4": "$~$",
+    "sinuosity5": "$~$",
     "width": r"$~^{\circ} \mathrm{N}$",
     "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
@@ -114,8 +128,11 @@ DEFAULT_VALUES = {
     "lon_ext": 0,
     "lat_ext": 0,
     "tilt": 0,
-    "sinuosity": 0,
-    "waviness": 0, 
+    "sinuosity1": 0,
+    "sinuosity2": 0,
+    "sinuosity3": 0,
+    "sinuosity4": 0,
+    "sinuosity5": 0,
     "width": 0,
     "int": 0,
     "int_low": 0,
@@ -136,8 +153,11 @@ LATEXY_VARNAME = {
     "lon_ext": "$\Delta \lambda$",
     "lat_ext": "$\Delta \phi$",
     "tilt": r"$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$",
-    "sinuosity": r"$\sigma$",
-    "waviness": r"$\sigma_f$",
+    "sinuosity1": "$s_1$",
+    "sinuosity2": "$s_2$",
+    "sinuosity3": "$s_3$",
+    "sinuosity4": "$s_4$",
+    "sinuosity5": "$s_5$",
     "width": "$w$",
     "int": "$\int s \mathrm{d}\lambda$",
     "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",
@@ -166,9 +186,9 @@ def load_pickle(filename: str | Path) -> Any:
 
 
 def to_zero_one(X):
-    Xmin = X.min(axis=0)
-    Xmax = X.max(axis=0)
-    
+    Xmin = np.nanmin(X, axis=0)
+    Xmax = np.nanmax(X, axis=0)
+
     return (X - Xmin[None, :]) / (Xmax - Xmin)[None, :], Xmin, Xmax
 
 
@@ -202,11 +222,11 @@ def infer_direction(to_plot: Any) -> int:
         min_ = min_.item()
     except AttributeError:
         pass
-    sym = np.sign(max_) == - np.sign(min_)
+    sym = np.sign(max_) == -np.sign(min_)
     sym = sym and np.abs(np.log10(np.abs(max_)) - np.log10(np.abs(min_))) <= 2
     if sym:
         return 0
-    return 1 if np.abs(max_) > np.abs(min_) else -1    
+    return 1 if np.abs(max_) > np.abs(min_) else -1
 
 
 def labels_to_mask(labels: xr.DataArray | NDArray) -> NDArray:
@@ -231,14 +251,16 @@ def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
             da.latitude.min().item(),
             da.latitude.max().item(),
         )
-        
-        
-def slice_1d(da: xr.DataArray | xr.Dataset, indexers: list, dim: str = "points"):
-    return da.loc[tuple(
-        [xr.DataArray(indexer, dims=dim) for indexer in indexers]
-    )]
-    
-    
+
+
+def slice_1d(da: xr.DataArray | xr.Dataset, indexers: dict, dim: str = "points"):
+    return da.interp(
+        {key: xr.DataArray(indexer, dims=dim) for key, indexer in indexers.items()},
+        method="linear",
+        kwargs=dict(fill_value=None),
+    )
+
+
 def slice_from_df(
     da: xr.DataArray | xr.Dataset, indexer: pd.DataFrame, dim: str = "point"
 ) -> xr.DataArray | xr.Dataset:
@@ -276,8 +298,17 @@ def last_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray:
     return idxs
 
 
+def coarsen_da(
+    da: xr.Dataset | xr.DataArray, target_dx: float
+) -> xr.Dataset | xr.DataArray:
+    dx = (da.lon[1] - da.lon[0]).item()
+    coarsening = int(np.round(target_dx / dx))
+    return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
+
+
 class TimerError(Exception):
     """A custom exception used to report errors in use of Timer class"""
+
 
 @dataclass
 class Timer:
@@ -315,7 +346,7 @@ class Timer:
             self.timers[self.name] += elapsed_time
 
         return elapsed_time
-    
+
     def __enter__(self):
         """Start a new timer as a context manager"""
         self.start()

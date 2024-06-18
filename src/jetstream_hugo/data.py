@@ -217,13 +217,15 @@ def _window_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int, cen
 
 
 def window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
-    if pad_wrap(da, dim):
-        halfwinsize = int(np.ceil(winsize / 2))
-        da = da.pad({dim: halfwinsize}, mode="wrap")
-        newda = _window_smoothing(da, dim, halfwinsize, center)
-        newda = newda.isel({dim: slice(halfwinsize, -halfwinsize)})
-    else:
-        newda = _window_smoothing(da, dim, winsize, center)
+    dims = dim.split("+")
+    for dim in dims:
+        if pad_wrap(da, dim):
+            halfwinsize = int(np.ceil(winsize / 2))
+            da = da.pad({dim: halfwinsize}, mode="wrap")
+            newda = _window_smoothing(da, dim, halfwinsize, center)
+            newda = newda.isel({dim: slice(halfwinsize, -halfwinsize)})
+        else:
+            newda = _window_smoothing(da, dim, winsize, center)
     newda.attrs = da.attrs
     return newda
 
@@ -304,7 +306,7 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
 
 def open_da(
     dataset: str,
-    level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
+    level_type: Literal["plev"] | Literal["thetalev"] | Literal["2PVU"] | Literal["surf"],
     varname: str,
     resolution: str,
     period: list | tuple | Literal["all"] | int | str = "all",

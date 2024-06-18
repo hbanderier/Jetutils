@@ -4,16 +4,19 @@ from functools import partial, wraps
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
 from nptyping import NDArray
 from multiprocessing import Pool
-from itertools import combinations
+from itertools import combinations, groupby
 
 import numpy as np
 import pandas as pd
 from dask.diagnostics import ProgressBar
 import xarray as xr
 from scipy.stats import linregress
-from skimage.measure import find_contours
-from itertools import groupby
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from scipy.ndimage import distance_transform_edt
+from skimage.filters import *
+from contourpy import contour_generator
+from sklearn.cluster import AgglomerativeClustering, Birch
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import pairwise_distances
 from tqdm import tqdm, trange
 from numba import njit, prange
 
@@ -24,13 +27,15 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     OMEGA,
     RADIUS,
+    coarsen_da,
     degsin,
     degcos,
     labels_to_mask,
     save_pickle,
     load_pickle,
     to_zero_one,
-    revert_zero_one,
+    slice_1d,
+    Timer,
 )
 from jetstream_hugo.data import (
     compute_extreme_climatology,
@@ -41,7 +46,7 @@ from jetstream_hugo.data import (
 from jetstream_hugo.clustering import Experiment
 
 
-DIRECTION_THRESHOLD=0.33
+DIRECTION_THRESHOLD = 0.33
 SMOOTHING = 0.15
 
 
@@ -70,12 +75,12 @@ def distance(x1: float, x2: float, y1: float, y2: float) -> float:
 @njit(parallel=False)
 def my_pairwise(X: NDArray, Y: Optional[NDArray] = None) -> NDArray:
     x1 = X[:, 0]
-    y1 = X[:, 1] # confusing
+    y1 = X[:, 1]  # confusing
     half = False
     if Y is None:
         Y = X
         half = True
-    x2 = Y[:, 0] # confusing
+    x2 = Y[:, 0]  # confusing
     y2 = Y[:, 1]
     output = np.zeros((len(X), len(Y)))
     for i in prange(X.shape[0] - int(half)):
@@ -89,33 +94,43 @@ def my_pairwise(X: NDArray, Y: Optional[NDArray] = None) -> NDArray:
     return output
 
 
-def get_runs(mask):
+def get_runs(mask, cyclic: bool = True):
     start = 0
     runs = []
-    for key, run in groupby(np.tile(mask, 2)):
-        if start >= len(mask):
-            break
+    if cyclic:
+        for key, run in groupby(np.tile(mask, 2)):
+            if start >= len(mask):
+                break
+            length = sum(1 for _ in run)
+            runs.append((key, start, start + length - 1))
+            start += length
+        return runs
+    for key, run in groupby(mask):
         length = sum(1 for _ in run)
         runs.append((key, start, start + length - 1))
         start += length
     return runs
 
 
-def get_runs_fill_holes(mask):
-    runs = get_runs(mask)
+def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
+    runs = get_runs(mask, cyclic=cyclic)
     for run in runs:
         key, start, end = run
         leng = end - start + 1
-        if key or leng > 5:
+        if key or leng > hole_size:  # I want negative short spans
+            continue
+        if start == 0 and (not mask[-1] or not cyclic):
+            continue
+        if end == len(mask) - 1 and (not mask[0] or not cyclic):
             continue
         end_ = min(len(mask), end + 1)
         mask[start:end_] = ~mask[start:end_]
-    runs = get_runs(mask)
+    runs = get_runs(mask, cyclic=cyclic)
     indices = []
     for run in runs:
         key, start, end = run
         leng = end - start + 1
-        if leng > 20 and key:
+        if leng > 10 and key:
             indices.append(np.arange(start, end + 1) % len(mask))
     if len(indices) == 0:
         _, start, end = max(runs, key=lambda x: (x[2] - x[1]) * int(x[0]))
@@ -124,16 +139,11 @@ def get_runs_fill_holes(mask):
 
 
 def preprocess(ds: xr.Dataset, smooth_s: float = None) -> xr.Dataset:
+    ds = flatten_by(ds, "s")
+    ds = coarsen_da(ds, 1.5)
     if smooth_s is not None:
-        ds["s_smo"] = smooth(ds["s"], smooth_map={"lon+lat": ("fft", smooth_s)})
-        ds = flatten_by(ds, "s_smo")
-    else:
-        ds = flatten_by(ds, "s_smo")
-    ds = ds.coarsen(dict(lon=3, lat=3), boundary="trim").mean()
-    varnames = {
-        varname: (f"{varname}_smo" if f"{varname}_smo" in ds else varname)
-        for varname in ["s", "u", "v"]
-    }
+        for var in ["u", "v", "s"]:
+            ds[var] = smooth(ds[var], smooth_map={"lon+lat": ("fft", smooth_s)})
     ds = ds.assign_coords(
         {
             "x": np.radians(ds["lon"]) * RADIUS,
@@ -146,22 +156,43 @@ def preprocess(ds: xr.Dataset, smooth_s: float = None) -> xr.Dataset:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         ds["sigma"] = (
-            ds[varnames["u"]] * ds[varnames["s"]].differentiate("y")
-            - ds[varnames["v"]] * ds[varnames["s"]].differentiate("x")
-        ) / ds[varnames["s"]]
-    ds["sigma_smo"] = smooth(ds["sigma"], smooth_map={"lon+lat": ("fft", 0.2)})
-    return ds
+            ds["u"] * ds["s"].differentiate("y") - ds["v"] * ds["s"].differentiate("x")
+        ) / ds["s"]
+    fft_smoothing = 1.0 if ds["sigma"].min() < -0.0001 else 0.8
+    ds["sigma"] = smooth(ds["sigma"], smooth_map={"lon+lat": ("fft", fft_smoothing)})
+    return ds.reset_coords(["x", "y"], drop=True)
+
+
+# def interp_xy_ds(ds: xr.Dataset, xy: NDArray) -> xr.Dataset:
+#     lon, lat = ds.lon, ds.lat
+#     ds = ds.assign_coords({"lon": ("lon_index", np.arange(len(ds.lon))), "lat": ("lat_index", np.arange(len(ds.lat)))})
+#     ds["lon_values"] = ("lon", lon.values)
+#     ds["lat_values"] = ("lat", lat.values)
+#     x_ = xr.DataArray(np.clip(xy[:, 0], 0, len(lon) - 1), dims="points") # inverted in countours from skimage
+#     y_ = xr.DataArray(np.clip(xy[:, 1], 0, len(lat) - 1), dims="points")
+#     group = ds.interp(lon=x_, lat=y_, kwargs={"fill_value": None})[["lon_values", "lat_values", "lev", "u", "v", "s"]]
+#     if group["lat_values"].isnull().any().item():
+#         print("NaNs")
+#     group = group.reset_coords(["lon", "lat"], drop=True)
+#     group = group.rename({"lon_values": "lon", "lat_values": "lat"})
+#     return group
 
 
 def interp_xy_ds(ds: xr.Dataset, xy: NDArray) -> xr.Dataset:
-    lon, lat = ds.lon, ds.lat
-    lon = lon.assign_coords({"lon": np.arange(len(lon))})
-    lat = lat.assign_coords({"lat": np.arange(len(lat))})
-    la = lat.interp(lat=xy[:, 0]).values
-    lo = lon.interp(lon=xy[:, 1]).values
-    lo = xr.DataArray(lo, dims="points")
-    la = xr.DataArray(la, dims="points")
-    group = ds.interp(lon=lo, lat=la)[["lon", "lat", "u", "v", "s"]].reset_coords(["lon", "lat"])
+    take_from = ["lon", "lat"]
+    for optional_ in ["lev", "theta", "P"]:
+        if optional_ in ds:
+            take_from.append(optional_)
+    take_from.extend(["u", "v", "s"])
+    lon, lat = ds.lon.values, ds.lat.values
+    indexers = {
+        "lon": np.clip(xy[:, 0], lon.min(), lon.max()),
+        "lat": np.clip(xy[:, 1], lat.min(), lat.max()),
+    }
+    group = slice_1d(ds, indexers)
+    group = group.reset_coords(["lon", "lat"])
+    if group["lat"].isnull().any().item():
+        print("NaNs")
     return group
 
 
@@ -170,7 +201,7 @@ def compute_alignment(group: xr.Dataset) -> xr.Dataset:
     dgdp["ds"] = np.sqrt(dgdp["lon"] ** 2 + dgdp["lat"] ** 2)
     dgdp["align_x"] = group["u"] / group["s"] * dgdp["lon"] / dgdp["ds"]
     dgdp["align_y"] = group["v"] / group["s"] * dgdp["lat"] / dgdp["ds"]
-    group["alignment"] = (dgdp["align_x"] + dgdp["align_y"]) / 2
+    group["alignment"] = dgdp["align_x"] + dgdp["align_y"]
     return group
 
 
@@ -185,17 +216,17 @@ def haversine(lon1: NDArray, lat1: NDArray, lon2: NDArray, lat2: NDArray) -> NDA
 
 
 @njit
-def jet_integral_haversine(jet: NDArray):
+def jet_integral_haversine(jet: NDArray, x_is_one: bool = False):
     X = jet[:, :2]
     ds = haversine(X[:-1, 0], X[:-1, 1], X[1:, 0], X[1:, 1])
     ds = np.append([0], ds)
+    if x_is_one:
+        return np.trapz(np.ones(len(ds)), x=np.cumsum(ds))
     return np.trapz(jet[:, 2], x=np.cumsum(ds))
 
 
 def jet_integral_lon(jet: NDArray) -> float:
-    return np.trapz(
-        jet[:, 2], dx=np.mean(np.abs(np.diff(jet[:, 0])))
-    )  
+    return np.trapz(jet[:, 2], dx=np.mean(np.abs(np.diff(jet[:, 0]))))
 
 
 def jet_integral_flat(jet: NDArray) -> float:
@@ -203,39 +234,65 @@ def jet_integral_flat(jet: NDArray) -> float:
     return np.trapz(jet[:, 2], x=np.cumsum(path))
 
 
-def find_jets(ds: xr.Dataset):
-    ds = preprocess(ds)
-    dx = (ds.lon[1] - ds.lon[0]).item()
-    contours = find_contours(ds["sigma_smo"].values, level=0, positive_orientation="high")
+def find_jets(
+    ds: xr.Dataset,
+    wind_threshold: float = 23,
+    jet_threshold: float = 1.0e8,
+    alignment_threshold: float = 0.3,
+    mean_alignment_threshold: float = 0.7,
+):
+    if "threshold" in ds:
+        wind_threshold = ds["threshold"].item()
+        jet_threshold = jet_threshold * ds["threshold_ratio"].item()
+    ds = preprocess(ds, smooth_s=0.3)
+    lon, lat = ds.lon.values, ds.lat.values
+    dx = lon[1] - lon[0]
+    contours, types = contour_generator(
+        x=lon, y=lat, z=ds["sigma"].values, line_type="SeparateCode", quad_as_tri=False
+    ).lines(0.0)
     groups = []
-    for contour in contours:
+    for contour, types_ in zip(contours, types):
         if len(contour) < 15:
             continue
-        group = interp_xy_ds(ds, contour)
+        cyclic: bool = 79 in types_
+        group = interp_xy_ds(ds, contour[::-1])
         group = compute_alignment(group)
-        mask = (group["alignment"] > -0.4) & (group["s"].values > 30)
+        mask = (group["alignment"] > alignment_threshold) & (
+            group["s"].values > wind_threshold
+        )
         mask = mask.values
-        indicess = get_runs_fill_holes(mask)
+        indicess = get_runs_fill_holes(mask, hole_size=1, cyclic=cyclic)
         for indices in indicess:
             indices = np.unique(indices)
             if len(indices) < 5:
                 continue
-            group_df = group.to_dataframe()[["lon", "lat", "u", "v", "s"]].iloc[indices] # remove time
+            try:
+                group_df = group.to_dataframe().drop(columns="time").iloc[indices]
+            except KeyError:
+                group_df = (
+                    group.to_dataframe().drop(columns=["ratio", "label"]).iloc[indices]
+                )
             group_ = group_df[["lon", "lat"]].values.astype(np.float32)
-            labels = AgglomerativeClustering(n_clusters=None, distance_threshold=dx * 1.9, linkage="single").fit(group_).labels_
+            labels = (
+                AgglomerativeClustering(
+                    n_clusters=None, distance_threshold=dx * 1.9, linkage="single"
+                )
+                .fit(group_)
+                .labels_
+            )
             masks = labels_to_mask(labels)
             for mask in masks.T:
                 groups.append(group_df.iloc[mask])
     jets = []
     for group_df in groups:
-        bigjump = np.diff(group_df["lon"]) < -10
+        bigjump = np.diff(group_df["lon"]) < -3 * dx
         if any(bigjump):
             here = np.where(bigjump)[0][0] + 1
             group_df = group_df.apply(np.roll, args=(-here,), raw=True)
         group_ = group_df[["lon", "lat", "s"]].values.astype(np.float32)
         jet_int = jet_integral_haversine(group_)
         mean_alignment = np.mean(group_df["alignment"].values)
-        if jet_int > 2.3e8 and mean_alignment > .3:
+        if jet_int > jet_threshold and mean_alignment > mean_alignment_threshold:
             jets.append(group_df)
     return jets
 
@@ -243,165 +300,194 @@ def find_jets(ds: xr.Dataset):
 def find_all_jets(
     ds: xr.Dataset,
     processes: int = N_WORKERS,
-    chunksize: int = 2,
+    chunksize: int = 100,
+    thresholds_da: xr.Dataset = None,
+    **kwargs,
 ) -> list:
     try:
+        if thresholds_da is not None:
+            thresholds_da = thresholds_da.loc[
+                getattr(ds.time.dt, thresholds_da.dims[0])
+            ].values
+            ds["threshold"] = ("time", thresholds_da)
+            ds["threshold_ratio"] = ds["threshold"] / ds["threshold"].max().item()
+            kwargs.pop("wind_threshold", 0)
+            kwargs.pop("jet_threshold", 0)
         iterable = (ds.sel(time=time_) for time_ in ds.time.values)
         len_ = len(ds.time.values)
+
     except AttributeError:
         iterable = (ds.sel(cluster=cluster_) for cluster_ in ds.cluster.values)
         len_ = len(ds.cluster.values)
+    find_jets_ = partial(find_jets, **kwargs)
+    print("Finding all jets")
     if processes == 1:
-        return list(tqdm(map(find_jets, iterable), total=len_))
+        return list(tqdm(map(find_jets_, iterable), total=len_))
     with Pool(processes=processes) as pool:
         return list(
             tqdm(
-                pool.imap(find_jets, iterable, chunksize=chunksize),
+                pool.imap(find_jets_, iterable, chunksize=chunksize),
                 total=len_,
             )
         )
 
 
-def get_jet_width(
-    x: NDArray, y: NDArray, s: NDArray, da: xr.DataArray
-) -> Tuple[NDArray, NDArray]:
-    lat = da.lat.values
-    half_peak_mask = (da.loc[:, x] < s[None, :] / 2).values
-    half_peak_mask[[0, -1], :] = (
-        True  # worst case i clip the width at the top of the image
-    )
-    below_mask = lat[:, None] <= y[None, :]
-    above_mask = lat[:, None] >= y[None, :]
-    below = (
-        y - lat[len(lat) - np.argmax((half_peak_mask & below_mask)[::-1], axis=0) - 1]
-    )
-    above = lat[np.argmax(half_peak_mask & above_mask, axis=0)] - y
-    return below, above
+def round_half(x):
+    return np.round(x * 2) / 2
 
 
-def compute_jet_props(jets: list, da: xr.DataArray = None) -> list:
+# def get_jet_width(
+#     x: NDArray, y: NDArray, s: NDArray, da: xr.DataArray
+# ) -> Tuple[NDArray, NDArray]:
+#     lat = da.lat.values
+#     x = round_half(x)
+#     y = round_half(y)
+#     half_peak_mask = (da.sel(lon=x) < s[None, :] / 2).values
+#     half_peak_mask[[0, -1], :] = (
+#         True  # worst case i clip the width at the top of the image
+#     )
+#     below_mask = lat[:, None] <= y[None, :]
+#     above_mask = lat[:, None] >= y[None, :]
+#     below = (
+#         y - lat[len(lat) - np.argmax((half_peak_mask & below_mask)[::-1], axis=0) - 1]
+#     )
+#     above = lat[np.argmax(half_peak_mask & above_mask, axis=0)] - y
+#     return below, above
+
+
+def compute_gwdt_da(da: xr.DataArray) -> xr.DataArray:
+    img = da.values
+    thresh = threshold_sauvola(img)
+    img = img > thresh
+    return da.copy(data=distance_transform_edt(img))
+
+
+def get_jet_width(jet: pd.DataFrame, gwdt_da: xr.DataArray) -> xr.DataArray:
+    indexers = {key: jet[key] for key in ["lon", "lat"]}
+    widths = slice_1d(gwdt_da * 4, indexers)
+    return widths
+
+
+def compute_jet_props(jet: pd.DataFrame, gwdt_da: xr.DataArray = None) -> dict:
+    jet_numpy = jet[["lon", "lat", "s"]].to_numpy()
+    x, y, s = jet_numpy.T
+    dic = {}
+    dic["mean_lon"] = np.average(x, weights=s)
+    dic["mean_lat"] = np.average(y, weights=s)
+    for optional_ in ["lev", "P", "theta"]:
+        if optional_ in jet:
+            dic[f"mean_{optional_}"] = np.average(jet[optional_].to_numpy(), weights=s)
+    dic["is_polar"] = dic["mean_lat"] - 0.4 * dic["mean_lon"] > 40
+    maxind = np.argmax(s)
+    dic["Lon"] = x[maxind]
+    dic["Lat"] = y[maxind]
+    dic["Spe"] = s[maxind]
+    dic["lon_ext"] = np.amax(x) - np.amin(x)
+    dic["lat_ext"] = np.amax(y) - np.amin(y)
+    slope, _, r_value, _, _ = linregress(x, y)
+    dic["tilt"] = slope
+    dic["sinuosity1"] = 1 - r_value**2
+    dic["sinuosity2"] = np.sum((y - dic["mean_lat"]) ** 2)
+    sorted_order = np.argsort(x)
+    dic["sinuosity3"] = np.sum(np.abs(np.diff(y[sorted_order]))) / np.sum(
+        np.abs(np.diff(x[sorted_order]))
+    )
+    dic["sinuosity4"] = (
+        jet_integral_haversine(jet_numpy, x_is_one=True)
+        / RADIUS
+        * degcos(dic["mean_lat"])
+        * np.radians(dic["lon_ext"])
+    )
+    dic["sinuosity5"] = np.mean(jet["v"] * np.abs(jet["v"]) / jet["s"] / jet["s"])
+    widths = get_jet_width(jet, gwdt_da)
+    dic["width"] = np.average(widths.values, weights=s)
+    try:
+        dic["int_over_europe"] = jet_integral_haversine(jet_numpy[x > -10])
+    except ValueError:
+        dic["int_over_europe"] = 0
+    dic["int"] = jet_integral_haversine(jet_numpy)
+    return dic
+
+
+def compute_jet_props_wrapper(args: Tuple) -> list:
+    da, (_, jets) = args
+    jets = jets.droplevel(level=0)
     props = []
-    for jet in jets:
-        jet_numpy = jet[["lon", "lat", "s"]].to_numpy()
-        x, y, s = jet_numpy.T
-        dic = {}
-        dic["mean_lon"] = np.average(x, weights=s)
-        dic["mean_lat"] = np.average(y, weights=s)
-        if "lev" in jet:
-            dic["mean_lev"] = np.average(jet["lev"].to_numpy(), weights=s)
-        dic["is_polar"] = dic["mean_lat"] - 0.4 * dic["mean_lon"] > 40
-        maxind = np.argmax(s)
-        dic["Lon"] = x[maxind]
-        dic["Lat"] = y[maxind]
-        dic["Spe"] = s[maxind]
-        dic["lon_ext"] = np.amax(x) - np.amin(x)
-        dic["lat_ext"] = np.amax(y) - np.amin(y)
-        slope, _, r_value, _, _ = linregress(x, y)
-        dic["tilt"] = slope
-        dic["sinuosity1"] = 1 - r_value**2
-        dic["sinuosity2"] = np.sum((y - dic["mean_lat"]) ** 2)
-        sorted_order = np.argsort(x)
-        dic["sinuosity3"] = np.sum(np.abs(np.diff(y[sorted_order]))) / np.sum(np.abs(np.diff(x[sorted_order])))
-        try:
-            above, below = get_jet_width(x, y, s, da)
-            dic["width"] = np.mean(above + below + 1)
-        except AttributeError:
-            pass
-        try:
-            dic["int_over_europe"] = jet_integral_haversine(jet_numpy[x > -10])
-        except ValueError:
-            dic["int_over_europe"] = 0
-        dic["int"] = jet_integral_haversine(jet_numpy)
-        props.append(dic)
-    return props
-
-
-def unpack_compute_jet_props(args):  # No such thing as starimap
-    return compute_jet_props(*args)
+    gwdt_da = compute_gwdt_da(da)
+    for _, jet in jets.groupby(level=0):
+        jet = jet.droplevel(level=0)
+        props.append(compute_jet_props(jet, gwdt_da))
+    return pd.DataFrame.from_dict(props)
 
 
 def compute_all_jet_props(
-    all_jets: list,
-    da: xr.DataArray = None,
+    all_jets_one_df: pd.DataFrame,
+    da: xr.DataArray,
     processes: int = N_WORKERS,
-    chunksize: int = 10,
-) -> list:
-    if da is None:
-        da = [None] * len(all_jets)
-    with Pool(processes=processes) as pool:
-        all_props = list(
-            tqdm(
-                pool.imap(
-                    unpack_compute_jet_props, zip(all_jets, da), chunksize=chunksize
-                ),
-                total=len(all_jets),
-            )
+    chunksize: int = 100,
+) -> xr.Dataset:
+    index: pd.MultiIndex = all_jets_one_df.index
+    times = index.levels[0]
+    time_name = da.dims[0]
+    all_props_dfs = []
+
+    iterable = zip(da.sel({time_name: times}), all_jets_one_df.groupby(level=0))
+    print("Computing jet properties")
+    if processes == 1:
+        all_props_dfs = list(
+            tqdm(map(compute_jet_props_wrapper, iterable), total=len(times))
         )
-    return all_props
+    else:
+        with Pool(processes=processes) as pool:
+            all_props_dfs = list(
+                tqdm(
+                    pool.imap(compute_jet_props_wrapper, iterable, chunksize=chunksize),
+                    total=len(times),
+                )
+            )
+    all_props_df = pd.concat(all_props_dfs, keys=times, names=[time_name, "jet"])
+    return xr.Dataset.from_dataframe(all_props_df)
 
 
-def props_to_ds(all_props: list, time: NDArray | xr.DataArray = None) -> xr.Dataset:
-    maxnjet = max([len(proplist) for proplist in all_props])
-    if time is None:
-        time = DATERANGE_SUMMER
-    try:
-        time_name = time.name
-    except AttributeError:
-        time_name = "time"
-    assert len(time) == len(all_props)
-    varnames = list(all_props[0][0].keys())
-    ds = {}
-    for varname in varnames:
-        ds[varname] = ((time_name, "jet"), np.zeros((len(time), maxnjet)))
-        ds[varname][1][:] = np.nan
-        for t in range(len(all_props)):
-            for i in range(maxnjet):
-                try:
-                    props = all_props[t][i]
-                except IndexError:
-                    break
-                ds[varname][1][t, i] = props[varname]
-    if isinstance(time, xr.DataArray | pd.Series):
-        time = time.values
-    ds = xr.Dataset(ds, coords={time_name: time, "jet": np.arange(maxnjet)})
-    return ds
-
-
-def props_to_np(props_as_ds: xr.Dataset) -> NDArray:
-    props_as_ds_interpolated = props_as_ds.interpolate_na(
-        dim="time", method="linear", fill_value="extrapolate"
-    )
-    props_as_np = np.zeros(
-        (len(props_as_ds.time), len(props_as_ds.jet) * len(props_as_ds.data_vars))
-    )
-    i = 0
-    for varname in props_as_ds.data_vars:
-        for jet in props_as_ds.jet:
-            props_as_np[:, i] = props_as_ds_interpolated[varname].sel(jet=jet).values
-            i = i + 1
-    return props_as_np
+def do_one_int_low(args):
+    da_low_, (time, jets) = args
+    jets = jets.droplevel(0)
+    ints = []
+    for j, (jet_name, jet) in enumerate(jets.groupby(level=0)):
+        x, y = round_half(jet[["lon", "lat"]].to_numpy().T)
+        x_ = xr.DataArray(x, dims="points")
+        y_ = xr.DataArray(y, dims="points")
+        s_low = da_low_.sel(lon=x_, lat=y_).values
+        jet_low = np.asarray([x, y, s_low]).T
+        ints.append(jet_integral_haversine(jet_low))
+    return xr.DataArray(ints, coords={"jet": np.arange(len(ints))})
 
 
 def compute_int_low(
-    all_jets: list, props_as_ds: xr.Dataset, exp_low_path: Path
+    all_jets_one_df: pd.DataFrame, props_as_ds: xr.Dataset, exp_low_path: Path
 ) -> xr.Dataset:
     this_path = exp_low_path.joinpath("int_low.nc")
     if this_path.is_file():
         props_as_ds["int_low"] = xr.open_dataarray(this_path)
+        props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
         return props_as_ds
     print("computing int low")
     da_low = xr.open_dataarray(exp_low_path.joinpath("da.nc"))
     props_as_ds["int_low"] = props_as_ds["mean_lon"].copy()
-    for it, (jets, mean_lats) in tqdm(
-        enumerate(zip(all_jets, props_as_ds["mean_lat"])), total=len(all_jets)
-    ):
-        for j, (jet, mean_lat) in enumerate(zip(jets, mean_lats.values)):
-            x, y = jet[["lon", "lat"]].to_numpy().T
-            x_ = xr.DataArray(x, dims="points")
-            y_ = xr.DataArray(y, dims="points")
-            s_low = da_low[it].sel(lon=x_, lat=y_).values
-            jet_low = np.asarray([x, y, s_low]).T
-            props_as_ds["int_low"][it, j] = jet_integral_haversine(jet_low)
+    times = all_jets_one_df.index.levels[0]
+    iterable = all_jets_one_df.groupby(level=0)
+    iterable = zip(da_low.loc[times], iterable)
+    with Pool(processes=15) as pool:
+        all_jet_ints = list(
+            tqdm(
+                pool.imap(do_one_int_low, iterable, chunksize=10000),
+                total=len(times),
+            )
+        )
+    props_as_ds["int_low"] = xr.concat(all_jet_ints, dim="time").assign_coords(
+        time=times
+    )
+    props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
 
     props_as_ds["int_low"].to_netcdf(exp_low_path.joinpath("int_low.nc"))
     return props_as_ds
@@ -419,17 +505,22 @@ def is_polar_v2(props_as_ds: xr.Dataset) -> xr.Dataset:
 def extract_features(
     props_as_ds: xr.Dataset,
     feature_names: Sequence = None,
-    season: Optional[str] = None,
+    season: Optional[str] | Optional[list] | Optional[int] = None,
 ) -> Tuple[NDArray, float]:
     if season is not None:
-        props_as_ds = props_as_ds.sel(time=props_as_ds.time.dt.season == season)
+        if isinstance(season, str):
+            props_as_ds = props_as_ds.sel(time=props_as_ds.time.dt.season == season)
+        elif isinstance(season, list):
+            props_as_ds = props_as_ds.sel(
+                time=np.isin(props_as_ds.time.dt.month, season)
+            )
+        elif isinstance(season, int):
+            props_as_ds = props_as_ds.sel(time=props_as_ds.time.dt.month == season)
     if feature_names is None:
-        feature_names = ["mean_lon", "mean_lat", "int_ratio", "Spe"]
+        feature_names = ["mean_lon", "mean_lat", "Spe"]
 
-    props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
     Lat = props_as_ds["mean_lat"].values
     mask = ~np.isnan(Lat)
-    Lat = Lat[mask]
     X = []
     for feature_name in feature_names:
         X.append(props_as_ds[feature_name].values[mask])
@@ -437,15 +528,56 @@ def extract_features(
     return X, np.where(mask)
 
 
-def is_polar_v3(props_as_ds: xr.Dataset) -> xr.Dataset:
-    feature_names = ["mean_lat", "int_ratio", "Spe"]
-    X, where = extract_features(props_as_ds, feature_names, None)
-    X, Xmin, Xmax = to_zero_one(X)
-    labels = KMeans(2, n_init="auto").fit(X).labels_
+def one_gmix(X):
+    X, _, _ = to_zero_one(X)
+    model = GaussianMixture(n_components=2)
+    # labels = model.fit_predict(X)
+    model = model.fit(X)
+    polar = model.means_[:, 0].argmax()
+    weights = np.ones(2, dtype=float)
+    weights[polar] = 0.6
+    labels = np.argmin(
+        pairwise_distances(model.means_, X, n_jobs=19) * weights[:, None], axis=0
+    )
+    ml1 = X[labels.astype(bool), 0].mean()
+    ml2 = X[(1 - labels).astype(bool), 0].mean()
+    if ml2 > ml1:
+        labels = (1 - labels).astype(bool)
+    else:
+        labels = labels.astype(bool)
+    return labels
+
+
+def is_polar_gmix(
+    props_as_ds: xr.Dataset,
+    feature_names: list,
+    mode: Literal["year"] | Literal["season"] | Literal["month"] = "year",
+) -> xr.Dataset:
     better_is_polar = props_as_ds["mean_lat"].copy()
-    better_is_polar[
-        xr.DataArray(where[0], dims="points"), xr.DataArray(where[1], dims="points")
-    ] = labels
+    if mode == "year":
+        X, where = extract_features(props_as_ds, feature_names, None)
+        labels = one_gmix(X)
+        better_is_polar[
+            xr.DataArray(where[0], dims="points"), xr.DataArray(where[1], dims="points")
+        ] = labels
+    elif mode == "season":
+        for season in ["DJF", "MAM", "JJA", "SON"]:
+            X, where = extract_features(props_as_ds, feature_names, season)
+            season_indices = np.where(better_is_polar.time.dt.season == season)[0]
+            labels = one_gmix(X)
+            better_is_polar[
+                xr.DataArray(season_indices[where[0]], dims="points"),
+                xr.DataArray(where[1], dims="points"),
+            ] = labels
+    elif mode == "month":
+        for month in range(1, 13):
+            X, where = extract_features(props_as_ds, feature_names, month)
+            month_indices = np.where(better_is_polar.time.dt.month == month)[0]
+            labels = one_gmix(X)
+            better_is_polar[
+                xr.DataArray(month_indices[where[0]], dims="points"),
+                xr.DataArray(where[1], dims="points"),
+            ] = labels
     props_as_ds["is_polar"] = better_is_polar
     lats1 = props_as_ds["mean_lat"].where(better_is_polar == 1).mean()
     lats0 = props_as_ds["mean_lat"].where(better_is_polar == 0).mean()
@@ -455,19 +587,34 @@ def is_polar_v3(props_as_ds: xr.Dataset) -> xr.Dataset:
 
 
 def categorize_ds_jets(props_as_ds: xr.Dataset):
-    time_name, time_val = list(props_as_ds.coords.items())[0]
+    time_name, time_val = [
+        (cooname, coo)
+        for (cooname, coo) in props_as_ds.coords.items()
+        if cooname != "jet"
+    ][
+        0
+    ]  # ugh
     ds = xr.Dataset(coords={time_name: time_val, "jet": ["subtropical", "polar"]})
     cond = props_as_ds["is_polar"]
-    subtropical_weights = props_as_ds["int"].where(1 - cond)
-    polar_weights = props_as_ds["int"].where(cond)
+    subtropical_weights = props_as_ds["int"].where(1 - cond).fillna(0)
+    polar_weights = props_as_ds["int"].where(cond).fillna(0)
     for varname in props_as_ds.data_vars:
         if varname == "is_polar":
             continue
         values = np.zeros((len(time_val), 2))
         subtropical_values = props_as_ds[varname].where(1 - cond)
         polar_values = props_as_ds[varname].where(cond)
-        values[:, 0] = subtropical_values.weighted(subtropical_weights).mean(dim="jet").values
-        values[:, 1] = polar_values.weighted(polar_weights).mean(dim="jet").values
+        if varname in ["lon_ext", "lat_ext"]:
+            values[:, 0] = subtropical_values.sum(dim="jet").values
+            values[:, 1] = polar_values.sum(dim="jet").values
+        elif varname == "Spe":
+            values[:, 0] = subtropical_values.max(dim="jet").values
+            values[:, 1] = polar_values.max(dim="jet").values
+        else:
+            values[:, 0] = (
+                subtropical_values.weighted(subtropical_weights).mean(dim="jet").values
+            )
+            values[:, 1] = polar_values.weighted(polar_weights).mean(dim="jet").values
         ds[varname] = ((time_name, "jet"), values)
     return ds
 
@@ -570,6 +717,23 @@ def all_jets_to_one_array(all_jets: list):
     return where_are_jets, all_jets_one_array
 
 
+def all_jets_to_one_df(all_jets: list, time: NDArray, time_name: str = "time"):
+    daily = []
+    times = []
+    names = ["jet ID", "orig_points"]
+    print("all jets to one df")
+
+    for j, jets in tqdm(enumerate(all_jets), total=len(all_jets)):
+        jets = [jet.reset_index() for jet in jets]
+        keys = [f"j{i}" for i in range(len(jets))]
+        if len(jets) > 0:
+            daily.append(pd.concat(jets, keys=keys, names=names))
+            times.append(j)
+    times = time[times]
+    all_jets_one_df = pd.concat(daily, keys=times, names=[time_name])
+    return all_jets_one_df
+
+
 @njit
 def isin(a, b):
     shape = a.shape
@@ -586,11 +750,13 @@ def isin(a, b):
 def track_jets(
     all_jets_one_array: NDArray, where_are_jets: NDArray, yearbreaks: int = None
 ):
+    print("Tracking jets")
+    all_jets_one_array = round_half(all_jets_one_array)
     if yearbreaks is None:
         yearbreaks = (
             92 if where_are_jets.shape[0] < 10000 else 92 * 4
         )  # find better later, anyways this is usually wrapped and given externally
-    guess_nflags: int = len(where_are_jets) // 2
+    guess_nflags: int = len(where_are_jets)
     if yearbreaks == -1:
         guess_maxlen = 300
     else:
@@ -699,46 +865,74 @@ def compute_prop_anomalies(ds_props: xr.Dataset) -> xr.Dataset:
         prop_anomalies[varname] = prop_anomalies[varname] / ds_props[varname].std(
             dim="time"
         )
-
     return prop_anomalies
+
+
+def jet_position_as_da_wrapper(args: Tuple):
+    (time, jets), are_polar, da_template = args
+    jets = jets.droplevel(0)
+    jet_names = da_template.jet.values
+    for j, (_, jet) in enumerate(jets.groupby(level=0)):
+        jet = jet.droplevel(0)
+        is_polar = are_polar.sel(jet=j)
+        x, y, s = jet[["lon", "lat", "s"]].to_numpy().T
+        x_ = xr.DataArray(round_half(x), dims="points")
+        y_ = xr.DataArray(round_half(y), dims="points")
+        try:
+            is_polar = int(is_polar)
+        except ValueError:
+            continue
+        da_template.loc[jet_names[int(is_polar)], y_, x_] += s
+    return da_template
 
 
 def jet_position_as_da(
     da_s: xr.DataArray,
-    props_as_ds: xr.Dataset,
     props_as_ds_uncat: xr.Dataset,
-    all_jets: list,
+    all_jets_one_df: pd.DataFrame,
     basepath: Path,
+    processes: int = N_WORKERS,
+    chunksize: int = 100,
 ) -> xr.DataArray:
     ofile = basepath.joinpath("jet_pos.nc")
     if ofile.is_file():
-        da_jet_pos = xr.open_dataarray(ofile).load()
-    else:
-        time, jet_names, lat, lon = (
-            da_s.time.values,
-            props_as_ds.jet.values,
-            da_s.lat.values,
-            da_s.lon.values,
-        )
-        coords = {"time": time, "jet": jet_names, "lat": lat, "lon": lon}
-        da_jet_pos = xr.DataArray(
-            np.zeros([len(val) for val in coords.values()], dtype=np.float32),
-            coords=coords,
-        )
+        return xr.open_dataarray(ofile).load()
 
-        for it, (jets, are_polar) in tqdm(
-            enumerate(zip(all_jets, props_as_ds_uncat["is_polar"])), total=len(all_jets)
-        ):
-            for jet, is_polar in zip(jets, are_polar):
-                x, y, s = jet[["lon", "lat", "s"]].to_numpy().T
-                x_ = xr.DataArray(x, dims="points")
-                y_ = xr.DataArray(y, dims="points")
-                try:
-                    is_polar = int(is_polar)
-                except ValueError:
-                    continue
-                da_jet_pos.loc[time[it], jet_names[int(is_polar)], y_, x_] += s
-        da_jet_pos.to_netcdf(ofile)
+    jet_names = np.asarray(["subtropical", "polar"])
+    time, lat, lon = (
+        da_s.time.values,
+        da_s.lat.values,
+        da_s.lon.values,
+    )
+
+    times = all_jets_one_df.index.levels[0]
+    coords = {"time": time, "jet": jet_names, "lat": lat, "lon": lon}
+    da_jet_pos = xr.DataArray(
+        np.zeros([len(val) for val in coords.values()], dtype=np.float32),
+        coords=coords,
+    )
+    iterable = zip(
+        all_jets_one_df.groupby(level=0),
+        props_as_ds_uncat["is_polar"].sel(time=times),
+        da_jet_pos.sel(time=times),
+    )
+    print("Jet position as da")
+    if processes == 1:
+        da_jet_pos = list(
+            tqdm(map(jet_position_as_da_wrapper, iterable), total=len(times))
+        )
+    else:
+        with Pool(processes=processes) as pool:
+            da_jet_pos = list(
+                tqdm(
+                    pool.imap(
+                        jet_position_as_da_wrapper, iterable, chunksize=chunksize
+                    ),
+                    total=len(times),
+                )
+            )
+    da_jet_pos = xr.concat(da_jet_pos, dim="time")
+    da_jet_pos.to_netcdf(ofile)
     return da_jet_pos
 
 
@@ -816,6 +1010,7 @@ class MultiVarExperiment(object):
             self.levels, self.level_names = unpack_levels(levels)
         else:
             self.levels = "all"
+        self.level_type = level_type
         self.inner_norm = inner_norm
 
         self.metadata = {
@@ -854,11 +1049,13 @@ class MultiVarExperiment(object):
             for varname in self.varnames:
                 open_kwargs = self.open_ds_kwargs | {"varname": varname}
                 self.ds[varname] = open_da(**open_kwargs)
+            if level_type == "plev":
+                self.ds = flatten_by(self.ds, "s")
             with ProgressBar():
                 self.ds = self.ds.load()
             self.ds.to_netcdf(ds_path, format="NETCDF4")
         else:
-            self.ds = xr.open_dataset(ds_path)
+            self.ds = xr.load_dataset(ds_path)
 
         self.samples_dims = {"time": self.ds.time.values}
         try:
@@ -891,37 +1088,44 @@ class MultiVarExperiment(object):
         return wrapper_decorator
 
     def find_jets(self, **kwargs) -> Tuple:
-        ofile_aj = self.path.joinpath("all_jets.pkl")
+        ofile_ajdf = self.path.joinpath("all_jets_one_df.pkl")
         ofile_waj = self.path.joinpath("where_are_jets.npy")
         ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
 
-        if all([ofile.is_file() for ofile in (ofile_aj, ofile_waj, ofile_ajoa)]):
-            all_jets = load_pickle(ofile_aj)
+        if all([ofile.is_file() for ofile in (ofile_ajdf, ofile_waj, ofile_ajoa)]):
+            all_jets_one_df = pd.read_pickle(ofile_ajdf)
             where_are_jets = np.load(ofile_waj)
             all_jets_one_array = np.load(ofile_ajoa)
-            return all_jets, where_are_jets, all_jets_one_array
-        
-        try:
-            self.ds = self.ds.load()
-        except AttributeError:
-            pass
+            return all_jets_one_df, where_are_jets, all_jets_one_array
+
+        # qs_path = self.path.parent.joinpath("s_q_clim.nc")
+        # qs = xr.open_dataarray(qs_path)[1]
+        # kwargs["thresholds_da"] = qs
         all_jets = find_all_jets(self.ds, **kwargs)
+        all_jets_one_df = all_jets_to_one_df(all_jets, self.samples_dims["time"])
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
-        save_pickle(all_jets, ofile_aj)
+        all_jets_one_df.to_pickle(ofile_ajdf)
         np.save(ofile_waj, where_are_jets)
         np.save(ofile_ajoa, all_jets_one_array)
-        return all_jets, where_are_jets, all_jets_one_array
+        return all_jets_one_df, where_are_jets, all_jets_one_array
 
     @_only_windspeed
-    def compute_jet_props(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        all_jets, _, _ = self.find_jets(processes=processes, chunksize=chunksize)
-        return compute_all_jet_props(
-            all_jets, self.ds["s"].max("lev"), processes, chunksize
+    def compute_jet_props(
+        self, processes: int = N_WORKERS, chunksize=100
+    ) -> xr.Dataset:
+        jet_props_incomplete_path = self.path.joinpath("props_as_ds_uncat_raw.nc")
+        if jet_props_incomplete_path.is_file():
+            return xr.open_dataset(jet_props_incomplete_path)
+        all_jets_one_df, _, _ = self.find_jets(processes=processes, chunksize=chunksize)
+        props_as_ds_uncat = compute_all_jet_props(
+            all_jets_one_df, self.ds["s"], processes=processes, chunksize=chunksize
         )
+        props_as_ds_uncat.to_netcdf("props_as_ds_uncat_raw.nc")
+        return props_as_ds_uncat
 
     @_only_windspeed
-    def track_jets(self, processes: int = N_WORKERS, chunksize=2) -> Tuple:
-        all_jets, where_are_jets, all_jets_one_array = self.find_jets(
+    def track_jets(self, processes: int = N_WORKERS, chunksize=100) -> Tuple:
+        all_jets_one_df, where_are_jets, all_jets_one_array = self.find_jets(
             processes=processes, chunksize=chunksize
         )
         ofile_ajot = self.path.joinpath("all_jets_over_time.npy")
@@ -932,7 +1136,7 @@ class MultiVarExperiment(object):
             flags = np.load(ofile_flags)
 
             return (
-                all_jets,
+                all_jets_one_df,
                 where_are_jets,
                 all_jets_one_array,
                 all_jets_over_time,
@@ -953,11 +1157,17 @@ class MultiVarExperiment(object):
         np.save(ofile_ajot, all_jets_over_time)
         np.save(ofile_flags, flags)
 
-        return all_jets, where_are_jets, all_jets_one_array, all_jets_over_time, flags
+        return (
+            all_jets_one_df,
+            where_are_jets,
+            all_jets_one_array,
+            all_jets_over_time,
+            flags,
+        )
 
     @_only_windspeed
     def props_as_ds(
-        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=2
+        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=100
     ) -> xr.Dataset:
         ofile_padu = self.path.joinpath("props_as_ds_uncat.nc")
         ofile_pad = self.path.joinpath("props_as_ds.nc")
@@ -969,22 +1179,24 @@ class MultiVarExperiment(object):
             props_as_ds = categorize_ds_jets(xr.open_dataset(ofile_padu))
             props_as_ds.to_netcdf(ofile_pad)
             return props_as_ds
-        all_jets, _, _, all_jets_over_time, flags = self.track_jets()
-        all_props = self.compute_jet_props(processes, chunksize)
-        props_as_ds_uncat = props_to_ds(all_props, self.samples_dims["time"])
-        props_as_ds = add_persistence_to_props(props_as_ds_uncat, flags)
-        exp_low = Experiment(
-            self.open_ds_kwargs["dataset"],
-            self.open_ds_kwargs["level_type"],
-            "s",
-            self.open_ds_kwargs["resolution"],
-            self.open_ds_kwargs["period"],
-            self.open_ds_kwargs["season"],
-            *self.region,
-            700,
-        )
-        props_as_ds_uncat = compute_int_low(all_jets, props_as_ds_uncat, exp_low.path)
-        props_as_ds_uncat = is_polar_v3(props_as_ds_uncat)
+        all_jets_one_df, _, _, all_jets_over_time, flags = self.track_jets()
+        props_as_ds_uncat = self.compute_jet_props(processes, chunksize)
+
+        if self.level_type == "plev":
+
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat = is_polar_gmix(
+                props_as_ds_uncat, feature_names=["mean_lat", "mean_lev"]
+            )
+        elif self.level_type in ["2PVU_red", "2PVU"]:
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat = is_polar_gmix(
+                props_as_ds_uncat, feature_names=["mean_lat", "mean_P"]
+            )
+        else:
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat["is_polar"] = props_as_ds_uncat["mean_lat"] > 40.0
+        props_as_ds_uncat = add_persistence_to_props(props_as_ds_uncat, flags)
         props_as_ds_uncat = self.add_com_speed(all_jets_over_time, props_as_ds_uncat)
         props_as_ds_uncat.to_netcdf(ofile_padu)
         props_as_ds = categorize_ds_jets(props_as_ds_uncat)
@@ -992,9 +1204,13 @@ class MultiVarExperiment(object):
         if categorize:
             props_as_ds
         return props_as_ds_uncat
-    
+
     @_only_windspeed
-    def props_over_time(self, all_jets_over_time: list | None = None, props_as_ds_uncat: xr.Dataset | None = None) -> xr.Dataset:
+    def props_over_time(
+        self,
+        all_jets_over_time: list | None = None,
+        props_as_ds_uncat: xr.Dataset | None = None,
+    ) -> xr.Dataset:
         if all_jets_over_time is None:
             _, _, _, all_jets_over_time, _ = self.track_jets()
         if props_as_ds_uncat is None:
@@ -1007,20 +1223,30 @@ class MultiVarExperiment(object):
         this_ajot = all_jets_over_time[all_jets_over_time[:, 0, 0] != incorrect]
         for i, jot in tqdm(enumerate(this_ajot), total=len(this_ajot)):
             jot = jot[jot[:, 0] != incorrect, :]
-            props_over_time = extract_props_over_time(jot, props_as_ds_uncat).reset_coords(["time", "jet_index"], drop=False)
-            props_over_time = props_over_time.assign_coords(point=np.arange(props_over_time.point.shape[0]))
+            props_over_time = extract_props_over_time(
+                jot, props_as_ds_uncat
+            ).reset_coords(["time", "jet_index"], drop=False)
+            props_over_time = props_over_time.assign_coords(
+                point=np.arange(props_over_time.point.shape[0])
+            )
             all_props_over_time.append(props_over_time)
-    
+
         all_props_over_time = xr.concat(all_props_over_time, dim="jet")
         all_props_over_time.to_netcdf(out_path)
         return all_props_over_time
-    
+
     def add_com_speed(self, all_jets_over_time, props_as_ds_uncat):
-        all_props_over_time = self.props_over_time(all_jets_over_time, props_as_ds_uncat)
+        all_props_over_time = self.props_over_time(
+            all_jets_over_time, props_as_ds_uncat
+        )
         dall_props_over_time = all_props_over_time.differentiate("point")
-        all_props_over_time["com_speed"] = np.sqrt(dall_props_over_time["mean_lon"] ** 2 + dall_props_over_time["mean_lat"] ** 2)
+        all_props_over_time["com_speed"] = np.sqrt(
+            dall_props_over_time["mean_lon"] ** 2
+            + dall_props_over_time["mean_lat"] ** 2
+        )
         to_update = ["com_speed"]
         for varname in to_update:
+            print(f"computing {varname}")
             props_as_ds_uncat[varname] = props_as_ds_uncat["mean_lat"].copy()
             for jet_over_time in trange(all_props_over_time.jet.shape[0]):
                 this_pot = all_props_over_time.loc[{"jet": jet_over_time}]
@@ -1028,7 +1254,7 @@ class MultiVarExperiment(object):
                 times = this_pot["time"][:valid]
                 jet_indices = this_pot["jet_index"][:valid]
                 values = this_pot[varname].values[:valid]
-                props_as_ds_uncat[varname].loc[times, jet_indices.astype(int)] = values 
+                props_as_ds_uncat[varname].loc[times, jet_indices.astype(int)] = values
         return props_as_ds_uncat
 
     def compute_extreme_clim(self, varname: str, subsample: int = 1):
@@ -1038,3 +1264,27 @@ class MultiVarExperiment(object):
         mask = np.isin(years, np.unique(years)[::subsample])
         opath = self.path.joinpath(f"q{varname}_clim_{subsample}.nc")
         compute_extreme_climatology(da.isel(time=mask), opath)
+
+
+def compute_dx_dy(ds):
+    lon = ds.lon.values
+    lat = ds.lat.values
+    lon_ = lon[None, :] * np.ones(len(lat))[:, None]
+    lat_ = lat[:, None] * np.ones(len(lon))[None, :]
+
+    dx_forward = haversine(lon_[:, 1:], lat_[:, 1:], lon_[:, :-1], lat_[:, :-1])
+    dx_backwards = haversine(lon_[:, :-1], lat_[:, :-1], lon_[:, 1:], lat_[:, 1:])
+
+    dy_forward = haversine(lon_[1:, :], lat_[1:, :], lon_[:-1, :], lat_[:-1, :])
+    dy_backwards = haversine(lon_[:-1, :], lat_[:-1, :], lon_[1:, :], lat_[1:, :])
+
+    dx = np.zeros(ds["s"].shape[1:])
+    dx[:, 0] = dx_backwards[:, 0]
+    dx[:, -1] = dx_forward[:, -1]
+    dx[:, 1:-1] = (dx_forward[:, :-1] + dx_backwards[:, 1:]) / 2
+
+    dy = np.zeros(ds["s"].shape[1:])
+    dy[0, :] = dy_backwards[0, :]
+    dy[-1, :] = dy_forward[-1, :]
+    dy[1:-1, :] = (dy_forward[:-1, :] + dy_backwards[1:, :]) / 2
+    return dx, dy
