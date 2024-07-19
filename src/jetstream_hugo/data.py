@@ -549,7 +549,7 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
     q_clim.to_netcdf(opath)
     
     
-def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = False) -> xr.Dataset:
+def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False) -> xr.Dataset:
     ds, coord = assign_clim_coord(ds, clim_type)
     clim = flox.xarray.xarray_reduce(
         ds,
@@ -561,6 +561,8 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
     clim = smooth(clim, {clim_type: ("win", 61)})
     this_gb = ds.groupby(coord)
     if not normalized:
+        if return_clim:
+            return (this_gb - clim).reset_coords(clim_type, drop=True), clim
         return (this_gb - clim).reset_coords(clim_type, drop=True)
     variab = flox.xarray.xarray_reduce(
         ds,
@@ -570,4 +572,6 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
         expected_groups=np.unique(coord.values),
     )
     variab = smooth(variab, {clim_type: ("win", 61)})
+    if return_clim:
+        return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True), clim
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)

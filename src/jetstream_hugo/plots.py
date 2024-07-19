@@ -34,7 +34,6 @@ from matplotlib.colors import (
 from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
 import colormaps
-import seaborn as sns
 import cartopy.crs as ccrs
 import cartopy.feature as feat
 
@@ -50,6 +49,7 @@ TEXTWIDTH_IN = 0.0138889 * 503.61377
 mpl.rcParams["font.size"] = 11
 mpl.rcParams["axes.titlesize"] = 11
 mpl.rcParams["axes.labelsize"] = 11
+mpl.rcParams["axes.titlepad"] = 2
 mpl.rcParams["xtick.labelsize"] = 11
 mpl.rcParams["ytick.labelsize"] = 11
 mpl.rcParams["legend.fontsize"] = 11
@@ -98,10 +98,10 @@ for i in range(len(COLORS)):
 COLORS = [to_hex(c) for c in COLORS]
 COLORS_EXT = [to_hex(c) for c in COLORS_EXT]
 
-MYBLUES = LinearSegmentedColormap.from_list("myblues", ["#ffffff", COLORS_EXT[2]])
-MYPURPLES = LinearSegmentedColormap.from_list("mypurples", ["#ffffff", COLORS_EXT[5]])
-MYPINKS = LinearSegmentedColormap.from_list("mypinks", ["#ffffff", COLORS_EXT[8]])
-MYREDS = LinearSegmentedColormap.from_list("myreds", ["#ffffff", COLORS_EXT[11]])
+MYBLUES = LinearSegmentedColormap.from_list("myblues", ["#f2f2f2", COLORS[0], COLORS_EXT[2]])
+MYPURPLES = LinearSegmentedColormap.from_list("mypurples", ["#f2f2f2", COLORS[1], COLORS_EXT[5]])
+MYPINKS = LinearSegmentedColormap.from_list("mypinks", ["#f2f2f2", COLORS[2], COLORS_EXT[8]])
+MYREDS = LinearSegmentedColormap.from_list("myreds", ["#f2f2f2", COLORS[3], COLORS_EXT[11]])
 PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[1]])
 
 COASTLINE = feat.NaturalEarthFeature(
@@ -242,7 +242,7 @@ def make_transparent(
 
 def infer_extent(
     to_plot: list, direction: int, q: float=0.99
-) -> Tuple[int, float, float]:  # I could market this
+) -> Tuple[int, float, float]:  # A worse MaxNLocator
     
     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
     try:
@@ -360,6 +360,12 @@ def setup_lon_lat(
     return lon, lat
 
 
+def to_prettier_order(n: int, width: int = 6, height: int = 4):
+    col, row = divmod(n, height)
+    row = height - 1 - row
+    return 1 + width * row + col
+
+
 class Clusterplot:
     def __init__(
         self,
@@ -368,6 +374,7 @@ class Clusterplot:
         region: NDArray | list | tuple = None,
         lambert_projection: bool = False,
         honeycomb: bool = False,
+        numbering: bool = False,
     ) -> None:
         self.nrow = nrow
         self.ncol = ncol
@@ -415,6 +422,11 @@ class Clusterplot:
                 )
             ax.add_feature(COASTLINE)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
+        if numbering:
+            plt.draw()
+            for i, ax in enumerate(self.axes):
+                j = to_prettier_order(i, ncol, nrow)
+                ax.annotate(str(j), (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
 
     def _add_gridlines(self, step: int | tuple = None) -> None:
         for ax in self.axes:
