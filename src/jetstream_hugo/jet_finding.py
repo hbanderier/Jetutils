@@ -490,6 +490,113 @@ def compute_all_jet_props(
     return xr.Dataset.from_dataframe(all_props_df)
 
 
+def compute_one_wb_props(jet: pd.DataFrame, da_pvs: xr.DataArray, every: int = 5) -> dict:
+    jet = jet.iloc[::every]
+    lo, la = jet[["lon", "lat"]].to_numpy().T
+    lon, lat = da_pvs.lon.values, da_pvs.lat.values
+    dxds = np.gradient(lo)
+    dyds = np.gradient(la)
+    theta = np.arctan2(dyds, dxds)
+
+    distances = np.full((len(jet), 2), fill_value=-1)
+    intensities = np.zeros((len(jet), 2))
+    jet_pvs = slice_1d(
+        da_pvs, {"lon": lo, "lat": la}
+    ).values.T
+    up_or_down = np.argmax(np.abs(jet_pvs), axis=1)
+    jet_pvs = np.take_along_axis(jet_pvs, up_or_down[:, None], axis=1).flatten()
+    distances[np.where(jet_pvs)[0], :] = 0.
+    intensities[np.where(jet_pvs)[0], :] = jet_pvs[np.where(jet_pvs)[0], None]
+
+    dn = 2
+    t_ = np.arange(dn, 20 + dn, dn)
+
+    for k in range(len(jet)):
+        if any(distances[k] != -1):
+            continue 
+        for l, side in enumerate([-1, 1]):
+            t = side * t_
+            normallons = np.cos(theta[k] + np.pi / 2) * t + lo[k]
+            normallats = np.sin(theta[k] + np.pi / 2) * t + la[k]
+            mask_valid = (
+                (normallons >= lon.min())
+                & (normallons <= lon.max())
+                & (normallats >= lat.min())
+                & (normallats <= lat.max())
+            )
+            if np.sum(mask_valid) == 0:
+                continue
+            normallons = normallons[mask_valid]
+            normallats = normallats[mask_valid]
+            normal_pvs = slice_1d(
+                da_pvs, {"lon": normallons, "lat": normallats}
+            ).values
+            for type_ in [0, 1]:
+                if not any(normal_pvs[type_]):
+                    continue
+                imin = np.argmax(normal_pvs[type_] != 0)
+                distance = haversine(lo[k], la[k], normallons[imin], normallats[imin])
+                reject_new = (distance >= distances[k, l]) and (distances[k, l] != -1)
+                if reject_new:
+                    continue
+                distances[k, l] = distance
+                intensities[k, l] = normal_pvs[type_][imin]
+            
+    props = {}
+    props["above"] = (np.sum(np.abs(intensities[k, 0])) < np.sum(np.abs(intensities[k, 1]))).astype(np.float32)
+    dists_good_direction = distances[:, int(props["above"])]
+    props["affected_from"] = np.argmax(dists_good_direction != -1)
+    props["affected_until"] = len(jet) - np.argmax(dists_good_direction[::-1] != -1) - 1
+    slice_ = slice(props["affected_from"], props["affected_until"] + 1)
+    props["mean_int"] = np.mean(intensities[slice_, int(props["above"])]).astype(np.float32)
+    props["mean_dist"] = np.mean(dists_good_direction[slice_]).astype(np.float32)
+    props["affected_from"] = props["affected_from"].astype(np.float32) * every
+    props["affected_until"] = props["affected_until"].astype(np.float32) * every
+    return props
+
+
+def compute_wb_props_wrapper(args: Tuple) -> list:
+    (_, jets), da_pvs, mask = args
+    jets = jets.droplevel(0)
+    if not mask:
+        keys = ["above", "affected_from", "affected_until", "mean_int", "mean_dist"]
+        props = [{key: 0. for key in keys} for _ in jets.groupby(level=0)]
+    else:
+        props = []
+        for _, (_, jet) in enumerate(jets.groupby(level=0)):
+            props.append(compute_one_wb_props(jet, da_pvs, every=4))
+    return pd.DataFrame.from_dict(props, dtype=np.float32)
+
+
+def compute_all_wb_props(
+    all_jets_one_df: pd.DataFrame,
+    da_pvs: xr.DataArray,
+    event_mask: NDArray,
+    processes: int = N_WORKERS,
+    chunksize: int = 100,
+) -> xr.Dataset:
+    index: pd.MultiIndex = all_jets_one_df.index
+    times = index.levels[0]
+    time_name = da_pvs.dims[0]
+
+    iterable = zip(all_jets_one_df.groupby(level=0), da_pvs.sel({time_name: times}), event_mask)
+    print("Computing wb properties")
+    if processes == 1:
+        all_props_dfs = list(
+            tqdm(map(compute_wb_props_wrapper, iterable), total=len(times))
+        )
+    else:
+        with Pool(processes=processes) as pool:
+            all_props_dfs = list(
+                tqdm(
+                    pool.imap(compute_wb_props_wrapper, iterable, chunksize=chunksize),
+                    total=len(times),
+                )
+            )
+    all_props_df = pd.concat(all_props_dfs, keys=times, names=[time_name, "jet"])
+    return xr.Dataset.from_dataframe(all_props_df)
+
+
 def do_one_int_low(args):
     da_low_, (time, jets) = args
     jets = jets.droplevel(0)
@@ -518,10 +625,10 @@ def compute_int_low(
     times = all_jets_one_df.index.levels[0]
     iterable = all_jets_one_df.groupby(level=0)
     iterable = zip(da_low.loc[times], iterable)
-    with Pool(processes=15) as pool:
+    with Pool(processes=N_WORKERS) as pool:
         all_jet_ints = list(
             tqdm(
-                pool.imap(do_one_int_low, iterable, chunksize=10000),
+                pool.imap(do_one_int_low, iterable, chunksize=1000),
                 total=len(times),
             )
         )
