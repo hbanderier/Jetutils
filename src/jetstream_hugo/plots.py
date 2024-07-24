@@ -33,6 +33,7 @@ from matplotlib.colors import (
 )
 from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MaxNLocator
 import colormaps
 import cartopy.crs as ccrs
 import cartopy.feature as feat
@@ -240,93 +241,89 @@ def make_transparent(
 
 
 
-def infer_extent(
-    to_plot: list, direction: int, q: float=0.99
-) -> Tuple[int, float, float]:  # A worse MaxNLocator
+# def infer_extent(
+#     to_plot: list, direction: int, q: float=0.99
+# ) -> Tuple[int, float, float]:  # A worse MaxNLocator
     
-    lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
-    try:
-        lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
-        lmax = int(np.round(lmax))
-    except OverflowError:
-        return (6, 0, 1)
+#     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
+#     try:
+#         lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
+#         lmax = int(np.round(lmax))
+#     except OverflowError:
+#         return (6, 0, 1)
 
-    if direction == 0:
-        lowbound, highbound = 0, max(np.abs(lowbound), np.abs(highbound))
-        lowbound = 0
-    elif direction == -1:
-        lowbound, highbound = 0, np.abs(lowbound)
+#     if direction == 0:
+#         lowbound, highbound = 0, max(np.abs(lowbound), np.abs(highbound))
+#         lowbound = 0
+#     elif direction == -1:
+#         lowbound, highbound = 0, np.abs(lowbound)
 
-    num_digits = 1000
-    for minus in [0.5, 1, 1.5, 2]:
-        if minus == int(minus) and direction == 0:
-            max_rounded = np.ceil(highbound * 10 ** (-lmax + minus)) * 10 ** (lmax - minus)
-            min_rounded = 0
-        else:
-            minus = int(np.ceil(minus))
-            min_rounded = (
-                np.floor(lowbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
-            )
-            max_rounded = (
-                np.ceil(highbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
-            )
-        extent = max_rounded - min_rounded
-        minnlev = 4 if direction == 0 else 6
-        maxnlev = 7 if direction == 0 else 9
-        distance = np.abs(highbound - max_rounded)
-        for nlev in range(minnlev, maxnlev):
-            try:
-                firstlev = np.round(extent / (nlev - 1), decimals=6)
-                if np.isclose(firstlev, np.round(firstlev, 0)):
-                    firstlev = int(np.round(firstlev, 0))
-                cand_nd = len(str(firstlev).rstrip("0"))
-            except ZeroDivisionError:
-                cand_nd = 1000
-            if cand_nd < num_digits or (
-                cand_nd == num_digits
-                and distance < winner_dist
-            ):
-                winner = (nlev, min_rounded, max_rounded)
-                num_digits = cand_nd
-                winner_dist = distance
-    if direction == -1:
-        winner = (winner[0], -winner[2], winner[1])
-    return winner
+#     num_digits = 1000
+#     for minus in [0.5, 1, 1.5, 2]:
+#         if minus == int(minus) and direction == 0:
+#             max_rounded = np.ceil(highbound * 10 ** (-lmax + minus)) * 10 ** (lmax - minus)
+#             min_rounded = 0
+#         else:
+#             minus = int(np.ceil(minus))
+#             min_rounded = (
+#                 np.floor(lowbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
+#             )
+#             max_rounded = (
+#                 np.ceil(highbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
+#             )
+#         extent = max_rounded - min_rounded
+#         minnlev = 4 if direction == 0 else 6
+#         maxnlev = 7 if direction == 0 else 9
+#         distance = np.abs(highbound - max_rounded)
+#         for nlev in range(minnlev, maxnlev):
+#             try:
+#                 firstlev = np.round(extent / (nlev - 1), decimals=6)
+#                 if np.isclose(firstlev, np.round(firstlev, 0)):
+#                     firstlev = int(np.round(firstlev, 0))
+#                 cand_nd = len(str(firstlev).rstrip("0"))
+#             except ZeroDivisionError:
+#                 cand_nd = 1000
+#             if cand_nd < num_digits or (
+#                 cand_nd == num_digits
+#                 and distance < winner_dist
+#             ):
+#                 winner = (nlev, min_rounded, max_rounded)
+#                 num_digits = cand_nd
+#                 winner_dist = distance
+#     if direction == -1:
+#         winner = (winner[0], -winner[2], winner[1])
+#     return winner
 
 
 def create_levels(
-    to_plot: list, nlevels: int = None, q: float=0.99
+    to_plot: list, levels: int | Sequence | None = None, q: float = 0.99
 ) -> Tuple[NDArray, NDArray, str, int]:
     if to_plot[0].dtype == bool:
-        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', False
-    
+        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', 1
+    extend = {-1: "min", 0: "both", 1: "max"}
     direction = infer_direction(to_plot)
-
-    nlevels_cand, min_rounded, max_rounded = infer_extent(to_plot, direction, q=q)
-
-    if nlevels is None:
-        nlevels = nlevels_cand
-
+    extend = extend[direction] if q < 1 else "neither"
+    if isinstance(levels, Sequence):
+        levelsc = np.asarray(levelsc)
+        if direction == 0:
+            levelscf = np.delete(levelsc, len(levelsc) // 2)
+        else:
+            levelscf = levelsc
+        return levelsc, levelscf, extend, direction
+    
+    if levels is None:
+        levels = 7 if direction is None else 4
+        
+    lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
+    lowbound = 0 if direction == 1 else lowbound
+    highbound = 0 if direction == -1 else highbound
+    levelsc = MaxNLocator(levels).tick_values(lowbound, highbound)
     if direction == 0:
-        levels0 = np.delete(
-            np.append(
-                np.linspace(-max_rounded, 0, nlevels),
-                np.linspace(0, max_rounded, nlevels),
-            ),
-            nlevels - 1,
-        )
-        levels = np.delete(levels0, nlevels - 1)
-        extend = "both"
-    elif direction == 1:
-        levels0 = np.linspace(min_rounded, max_rounded, nlevels)
-        levels = levels0
-        extend = "max"
-    elif direction == -1:
-        levels0 = np.linspace(min_rounded, max_rounded, nlevels)
-        levels = levels0
-        extend = "min"
-    return levels0, levels, extend, direction
-
+        levelscf = np.delete(levelsc, len(levelsc) // 2)
+    else:
+        levelscf = levelsc
+    return levelsc, levelscf, extend, direction
+    
 
 def doubleit(thing: list | str | None, length: int, default: str) -> list:
     if isinstance(thing, str):
@@ -375,6 +372,7 @@ class Clusterplot:
         lambert_projection: bool = False,
         honeycomb: bool = False,
         numbering: bool = False,
+        coastline: bool = True,
     ) -> None:
         self.nrow = nrow
         self.ncol = ncol
@@ -420,7 +418,8 @@ class Clusterplot:
                     [self.minlon, self.maxlon, self.minlat, self.maxlat],
                     crs=ccrs.PlateCarree(),
                 )
-            ax.add_feature(COASTLINE)
+            if coastline:    
+                ax.add_feature(COASTLINE)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
         if numbering:
             plt.draw()
@@ -444,20 +443,20 @@ class Clusterplot:
             gl.ylocator = mticker.FixedLocator(
                 np.arange(self.minlat, self.maxlat + 1, step[1])
             )
-            gl.xlines = (False,)
-            gl.ylines = False
+            # gl.xlines = (False,)
+            # gl.ylines = False
             plt.draw()
-            for ea in gl.label_artists:
-                current_pos = ea.get_position()
-                if ea.get_text()[-1] in ["N", "S"]:
-                    ea.set_visible(True)
-                    continue
-                if current_pos[1] > 4000000:
-                    ea.set_visible(False)
-                    continue
-                ea.set_visible(True)
-                ea.set_rotation(0)
-                ea.set_position([current_pos[0], current_pos[1] - 200000])
+            # for ea in gl.label_artists:
+            #     current_pos = ea.get_position()
+            #     if ea.get_text()[-1] in ["N", "S"]:
+            #         ea.set_visible(True)
+            #         continue
+            #     if current_pos[1] > 4000000:
+            #         ea.set_visible(False)
+            #         continue
+            #     ea.set_visible(True)
+            #     ea.set_rotation(0)
+            #     ea.set_position([current_pos[0], current_pos[1] - 200000])
 
     def _add_titles(self, titles: Iterable) -> None:
         if len(titles) > len(self.axes):
@@ -478,7 +477,7 @@ class Clusterplot:
         to_plot: list,
         lon: NDArray = None,
         lat: NDArray = None,
-        nlevels: int = None,
+        levels: int | Sequence | None = None,
         clabels: Union[bool, list] = False,
         draw_gridlines: bool = False,
         titles: Iterable = None,
@@ -487,11 +486,9 @@ class Clusterplot:
         q: float=0.99,
         **kwargs,
     ) -> None:
-        assert len(to_plot) <= len(self.axes)
-
         lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
 
-        levelsc, levelscf, _, direction = create_levels(to_plot, nlevels, q=q)
+        levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q)
 
         if direction == 0 and linestyles is None:
             linestyles = ["dashed", "solid"]
@@ -537,7 +534,7 @@ class Clusterplot:
     def setup_contourf(
         self,
         to_plot: list,
-        nlevels: int = None,
+        levels: int | Sequence | None = None,
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
@@ -547,7 +544,7 @@ class Clusterplot:
         q: float=0.99,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, NDArray]:
-        levelsc, levelscf, extend, direction = create_levels(to_plot, nlevels, q=q)
+        levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q)
 
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
@@ -573,7 +570,7 @@ class Clusterplot:
         im = ScalarMappable(norm=norm, cmap=cmap)
 
         if contours or clabels is not None:
-            self.add_contour(to_plot, nlevels, clabels)
+            self.add_contour(to_plot, levels, clabels)
 
         return (
             dict(
@@ -594,7 +591,7 @@ class Clusterplot:
         to_plot: list,
         lon: NDArray = None,
         lat: NDArray = None,
-        nlevels: int = None,
+        levels: int | Sequence | None = None,
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
@@ -607,13 +604,11 @@ class Clusterplot:
         q: float=0.99,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
-        assert len(to_plot) <= len(self.axes)
-
         lon, lat = setup_lon_lat(to_plot, lon, lat)
 
         kwargs, cbar_kwargs, im, levelsc = self.setup_contourf(
             to_plot,
-            nlevels,
+            levels,
             cmap,
             transparify,
             contours,
@@ -698,11 +693,12 @@ class Clusterplot:
         **kwargs,
     ) -> ScalarMappable | None:
         to_plot = []
+        time_name = "time" if "time" in da.dims else da.dims[0]
         for mas in tqdm(mask.T, total=mask.shape[1]):
             if np.sum(mas) < 1:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
                 continue
-            to_plot.append(da.isel(time=mas).mean(dim="time"))
+            to_plot.append(da.isel({time_name: mas}).mean(dim=time_name))
             
         if type == "contourf":
             im = self.add_contourf(
