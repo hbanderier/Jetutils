@@ -30,7 +30,8 @@ elif (pf.find("el7") >= 0) or (pf.find("el9") >= 0):  # find better later
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = "10GB"
+    MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "150000")) // N_WORKERS
+    MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8

@@ -554,7 +554,7 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
     clim = flox.xarray.xarray_reduce(
         ds,
         coord,
-        func="mean",
+        func="nanmean",
         method="cohorts",
         expected_groups=np.unique(coord.values),
     )
@@ -567,7 +567,7 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
     variab = flox.xarray.xarray_reduce(
         ds,
         coord,
-        func="std",
+        func="nanstd",
         method="cohorts",
         expected_groups=np.unique(coord.values),
     )
