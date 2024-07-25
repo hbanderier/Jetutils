@@ -41,6 +41,8 @@ from jetstream_hugo.data import (
     smooth,
     unpack_levels,
     open_da,
+    DataHandler,
+    find_spot,
 )
 from jetstream_hugo.clustering import Experiment
 
@@ -1119,117 +1121,57 @@ class MultiVarExperiment(object):
 
     def __init__(
         self,
-        dataset: str,
-        level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
-        varnames: Sequence[str],
-        resolution: str,
-        period: list | tuple | Literal["all"] | int | str = "all",
-        season: list | str = None,
-        minlon: Optional[int | float] = None,
-        maxlon: Optional[int | float] = None,
-        minlat: Optional[int | float] = None,
-        maxlat: Optional[int | float] = None,
-        levels: int | str | tuple | list | Literal["all"] = "all",
-        inner_norm: int = None,
+        data_handlers: Sequence[DataHandler],
+        flatten_ds: bool = True,
     ) -> None:
-        varnames.sort()
+        self.varnames = [dh.varname for dh in data_handlers]
+        self.varnames.sort()
+        dataset = data_handlers[0].open_da_args[0]
+        level_type = data_handlers[0].open_da_args[1]
         self.path = Path(DATADIR, dataset, level_type, "results")
         self.path.mkdir(exist_ok=True)
-        self.open_ds_kwargs = {
-            "dataset": dataset,
-            "level_type": level_type,
-            "resolution": resolution,
-            "period": period,
-            "season": season,
-            "minlon": minlon,
-            "maxlon": maxlon,
-            "minlat": minlat,
-            "maxlat": maxlat,
-            "levels": levels,
-        }
-
-        self.varnames = varnames
-        self.region = (minlon, maxlon, minlat, maxlat)
-        if levels != "all":
-            self.levels, self.level_names = unpack_levels(levels)
-        else:
-            self.levels = "all"
-        self.level_type = level_type
-        self.inner_norm = inner_norm
+        
+        first_mda = data_handlers[0].metadata
+        assert all([dh.metadata == first_mda for dh in data_handlers])
 
         self.metadata = {
-            "varnames": varnames,
-            "period": period,
-            "season": season,
-            "region": (minlon, maxlon, minlat, maxlat),
-            "levels": self.levels,
-            "inner_norm": inner_norm,
-        }
+            "varnames": self.varnames,
+        } | data_handlers[0].metadata
 
-        found = False
-        for dir in self.path.iterdir():
-            if not dir.is_dir():
-                continue
-            try:
-                other_mda = load_pickle(dir.joinpath("metadata.pkl"))
-                other_mda["varnames"].sort()
-            except FileNotFoundError:
-                continue
-            if self.metadata == other_mda:
-                self.path = self.path.joinpath(dir.name)
-                found = True
-                break
-
-        if not found:
-            seq = [int(dir.name) for dir in self.path.iterdir() if dir.is_dir()]
-            id = max(seq) + 1 if len(seq) != 0 else 1
-            self.path = self.path.joinpath(str(id))
-            self.path.mkdir()
-            save_pickle(self.metadata, self.path.joinpath("metadata.pkl"))
-
-        ds_path = self.path.joinpath("ds.nc")
-        if not ds_path.is_file():
-            self.ds = xr.Dataset()
-            for varname in self.varnames:
-                open_kwargs = self.open_ds_kwargs | {"varname": varname}
-                self.ds[varname] = open_da(**open_kwargs)
-            if level_type == "plev":
-                self.ds = flatten_by(self.ds, "s")
-            with ProgressBar():
-                self.ds = self.ds.load()
-            self.ds.to_netcdf(ds_path, format="NETCDF4")
-        else:
-            self.ds = xr.load_dataset(ds_path)
-
-        self.samples_dims = {"time": self.ds.time.values}
-        try:
-            self.samples_dims["member"] = self.ds.member.values
-        except AttributeError:
-            pass
-        self.lon, self.lat = self.ds.lon.values, self.ds.lat.values
-        try:
-            self.feature_dims = {"lev": self.ds.lev.values}
-        except AttributeError:
-            self.feature_dims = {}
-        self.feature_dims["lon"] = self.lon
-        self.feature_dims["lat"] = self.lat
-        self.flat_shape = (
-            np.prod([len(dim) for dim in self.samples_dims.values()]),
-            np.prod([len(dim) for dim in self.feature_dims.values()]),
-        )
+        self.path = find_spot(self.path, self.metadata)
+        
+        dspath = self.path.joinpath("ds.nc")
+        if dspath.is_file():
+            self.ds = xr.open_dataset(dspath, chunks="auto")
+            return
+        
+        ds = {}
+        for dh in data_handlers:
+            ds[dh.varname] = dh.da
+        self.ds = xr.Dataset(ds)
+        with ProgressBar():
+            self.ds = self.ds.load(**COMPUTE_KWARGS)
+        self.ds = flatten_by(self.ds, "s")
+        self.ds.to_netcdf(dspath)
 
     def _only_windspeed(func):
         @wraps(func)
         def wrapper_decorator(self, *args, **kwargs):
             if "s" not in self.varnames:
-                print("Only valid for absolute wind speed, single pressure level")
-                print(self.varname, self.levels)
+                print("Only valid for absolute wind speed")
+                print(self.varnames)
                 raise RuntimeError
             value = func(self, *args, **kwargs)
 
             return value
 
         return wrapper_decorator
+    
+    def load_ds(self):
+        try:
+            self.ds = self.ds.load()
+        except AttributeError:
+            pass
 
     def find_jets(self, **kwargs) -> Tuple:
         ofile_ajdf = self.path.joinpath("all_jets_one_df.pkl")
@@ -1245,6 +1187,7 @@ class MultiVarExperiment(object):
         qs_path = self.path.parent.joinpath("s_q_clim.nc")
         qs = xr.open_dataarray(qs_path)[2]
         kwargs["thresholds_da"] = qs
+        self.load_ds()
         all_jets = find_all_jets(self.ds, **kwargs)
         all_jets_one_df = all_jets_to_one_df(all_jets, self.samples_dims["time"])
         where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
@@ -1261,6 +1204,7 @@ class MultiVarExperiment(object):
         if jet_props_incomplete_path.is_file():
             return xr.open_dataset(jet_props_incomplete_path)
         all_jets_one_df, _, _ = self.find_jets(processes=processes, chunksize=chunksize)
+        self.load_ds()
         props_as_ds_uncat = compute_all_jet_props(
             all_jets_one_df, self.ds["s"], processes=processes, chunksize=chunksize
         )
@@ -1325,20 +1269,21 @@ class MultiVarExperiment(object):
             return props_as_ds
         all_jets_one_df, _, _, all_jets_over_time, flags = self.track_jets()
         props_as_ds_uncat = self.compute_jet_props(processes, chunksize)
+        self.load_ds()
 
         if self.level_type == "plev":
 
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
             props_as_ds_uncat = is_polar_gmix(
                 props_as_ds_uncat, ["mean_lat", "mean_lon", "mean_lev"], mode="month"
             )
         elif self.level_type in ["2PVU_red", "2PVU"]:
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
             props_as_ds_uncat = is_polar_gmix(
                 props_as_ds_uncat, ["mean_lat", "mean_lon", "mean_P"], mode="month"
             )
         else:
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
             props_as_ds_uncat["is_polar"] = props_as_ds_uncat["mean_lat"] > 40.0
         props_as_ds_uncat = add_persistence_to_props(props_as_ds_uncat, flags)
         props_as_ds_uncat = self.add_com_speed(all_jets_over_time, props_as_ds_uncat)
@@ -1367,6 +1312,7 @@ class MultiVarExperiment(object):
         if out_path.is_file():
             return xr.open_dataset(out_path)
         print("Props over time")
+        self.load_ds()
         all_props_over_time = []
         this_ajot = all_jets_over_time[all_jets_over_time[:, 0, 0] != incorrect]
         extract_props_over_time_wrapper = partial(
@@ -1425,7 +1371,7 @@ class MultiVarExperiment(object):
 
     def compute_extreme_clim(self, varname: str, subsample: int = 1):
         da = self.ds[varname]
-        time = pd.Series(self.samples_dims["time"])
+        time = pd.Series(self.da_handlers[0].samples_dims["time"])
         years = time.dt.year.values
         mask = np.isin(years, np.unique(years)[::subsample])
         opath = self.path.joinpath(f"q{varname}_clim_{subsample}.nc")

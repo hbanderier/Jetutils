@@ -1,5 +1,6 @@
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from dask.distributed import Client
+from dask.diagnostics import ProgressBar
 from nptyping import NDArray
 from pathlib import Path
 import warnings
@@ -9,12 +10,14 @@ import xarray as xr
 import flox.xarray
 import xrft
 from tqdm import tqdm
-# from spharm import Spharmt
+
 from jetstream_hugo.definitions import (
     DEFAULT_VARNAME,
     DATADIR,
     YEARS,
-    COMPUTE_KWARGS
+    COMPUTE_KWARGS,
+    save_pickle,
+    load_pickle,
 )
 SEASONS = {
     "DJF": [1, 2, 12],
@@ -427,22 +430,14 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
 
 def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
     da, coord = assign_clim_coord(da, clim_type)
-    try:
-        da = da.chunk({"lev": 1})
-    except ValueError:
-        pass
-    try:
-        da = da.chunk({"time": 500, "lon": -1, "lat": -1})
-    except ValueError:
-        pass
-    with Client(**COMPUTE_KWARGS):
+    with ProgressBar():
         clim = flox.xarray.xarray_reduce(
             da,
             coord,
             func="mean",
             method="cohorts",
             expected_groups=np.unique(coord.values),
-        ).compute()
+        ).compute(**COMPUTE_KWARGS)
     return clim
     
 
@@ -469,7 +464,7 @@ def compute_all_smoothed_anomalies(
     level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
     varname: str,
     resolution: str,
-    clim_type: str = None,
+    clim_type: str | None = None,
     clim_smoothing: Mapping = None,
     smoothing: Mapping = None,
 ) -> None:
@@ -575,3 +570,127 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
     if return_clim:
         return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True), clim
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)
+
+
+def find_spot(basepath: Path, metadata: Mapping) -> Path:
+    found = False
+    for dir in basepath.iterdir():
+        if not dir.is_dir():
+            continue
+        try:
+            other_mda = load_pickle(dir.joinpath("metadata.pkl"))
+            if "varnames" in other_mda:
+                other_mda["varnames"].sort()
+        except FileNotFoundError:
+            continue
+        if metadata == other_mda:
+            newpath = basepath.joinpath(dir.name)
+            found = True
+            break
+
+    if not found:
+        seq = [int(dir.name) for dir in basepath.iterdir() if dir.is_dir()]
+        id = max(seq) + 1 if len(seq) != 0 else 1
+        newpath = basepath.joinpath(str(id))
+        newpath.mkdir()
+        save_pickle(metadata, newpath.joinpath("metadata.pkl"))
+    return newpath
+    
+
+
+class DataHandler(object):
+    def __init__(
+        self,
+        dataset: str,
+        level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
+        varname: str,
+        resolution: str,
+        period: list | tuple | Literal["all"] | int | str = "all",
+        season: list | str = None,
+        minlon: Optional[int | float] = None,
+        maxlon: Optional[int | float] = None,
+        minlat: Optional[int | float] = None,
+        maxlat: Optional[int | float] = None,
+        levels: int | str | tuple | list | Literal["all"] = "all",
+        clim_type: str = None,
+        clim_smoothing: Mapping = None,
+        smoothing: Mapping = None,
+        reduce_da: bool = True,
+    ) -> None:
+        self.path = data_path(
+            dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
+        ).joinpath("results")
+        self.path.mkdir(exist_ok=True)
+        if level_type == "surf":
+            levels = "all"
+        self.open_da_args = (
+            dataset,
+            level_type,
+            varname,
+            resolution,
+            period,
+            season,
+            minlon,
+            maxlon,
+            minlat,
+            maxlat,
+            levels,
+            clim_type,
+            clim_smoothing,
+            smoothing,
+        )
+
+        self.varname = varname
+        self.region = (minlon, maxlon, minlat, maxlat)
+        self.clim_type = clim_type
+        if levels != 'all':
+            self.levels, self.level_names = unpack_levels(levels)
+        else: 
+            self.levels = 'all'
+
+        self.metadata = {
+            "period": period,
+            "season": season,
+            "region": (minlon, maxlon, minlat, maxlat),
+            "levels": self.levels,
+        }
+        
+        self.path = find_spot(self.path, self.metadata)
+
+        da_path = self.path.joinpath("da.nc")
+        if da_path.is_file():
+            self.da = xr.open_dataarray(da_path, chunks="auto")
+        else:
+            self.da = open_da(*self.open_da_args)
+            with ProgressBar():
+                self.da = self.da.load()
+            self.da.to_netcdf(da_path, format="NETCDF4")
+
+        if reduce_da:
+            try:
+                self.da = self.da.isel(lev=self.da.argmax("lev"))
+            except ValueError:
+                pass
+        self.samples_dims = {"time": self.da.time.values}
+        try:
+            self.samples_dims["member"] = self.da.member.values
+        except AttributeError:
+            pass
+        self.lon, self.lat = self.da.lon.values, self.da.lat.values
+        if "lev" in self.da.dims:
+            self.feature_dims = {"lev": self.da.lev.values}
+            len(self.da.lev.values)
+        else:
+            self.feature_dims = {}
+        self.feature_dims["lat"] = self.lat
+        self.feature_dims["lon"] = self.lon
+        self.extra_dims = {}
+        for coordname, coord in self.da.coords.items():
+            if coordname not in self.da.dims:
+                self.extra_dims[coordname] = coord.values
+        if "lev" in self.da.dims and "lev":
+            self.extra_dims = {"lev": self.da.lev.values}
+        self.flat_shape = (
+            np.prod([len(dim) for dim in self.samples_dims.values()]),
+            np.prod([len(dim) for dim in self.feature_dims.values()])
+        )

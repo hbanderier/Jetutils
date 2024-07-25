@@ -40,6 +40,7 @@ from jetstream_hugo.data import (
     unpack_levels,
     get_land_mask,
     extract_season,
+    DataHandler,
 )
 
 RAW_REALSPACE: int = 0
@@ -202,122 +203,19 @@ def select_cluster(
 class Experiment(object):
     def __init__(
         self,
-        dataset: str,
-        level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
-        varname: str,
-        resolution: str,
-        period: list | tuple | Literal["all"] | int | str = "all",
-        season: list | str = None,
-        minlon: Optional[int | float] = None,
-        maxlon: Optional[int | float] = None,
-        minlat: Optional[int | float] = None,
-        maxlat: Optional[int | float] = None,
-        levels: int | str | tuple | list | Literal["all"] = "all",
-        clim_type: str = None,
-        clim_smoothing: Mapping = None,
-        smoothing: Mapping = None,
-        inner_norm: int = None,
-        reduce_da: bool = True,
+        data_handler: DataHandler,
+        inner_norm: str = None,
     ) -> None:
-        self.path = data_path(
-            dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
-        ).joinpath("results")
-        self.path.mkdir(exist_ok=True)
-        if level_type == "surf":
-            levels = "all"
-        self.open_da_args = (
-            dataset,
-            level_type,
-            varname,
-            resolution,
-            period,
-            season,
-            minlon,
-            maxlon,
-            minlat,
-            maxlat,
-            levels,
-            clim_type,
-            clim_smoothing,
-            smoothing,
-        )
-
-        self.varname = varname
-        self.region = (minlon, maxlon, minlat, maxlat)
-        self.clim_type = clim_type
-        if levels != 'all':
-            self.levels, self.level_names = unpack_levels(levels)
-        else: 
-            self.levels = 'all'
+        self.data_handler = data_handler
         self.inner_norm = inner_norm
-
-        self.metadata = {
-            "period": period,
-            "season": season,
-            "region": (minlon, maxlon, minlat, maxlat),
-            "levels": self.levels,
-            "inner_norm": inner_norm,
-        }
-
-        found = False
-        for dir in self.path.iterdir():
-            if not dir.is_dir():
-                continue
-            try:
-                other_mda = load_pickle(dir.joinpath("metadata.pkl"))
-            except FileNotFoundError:
-                continue
-            if self.metadata == other_mda:
-                self.path = self.path.joinpath(dir.name)
-                found = True
-                break
-
-        if not found:
-            seq = [int(dir.name) for dir in self.path.iterdir() if dir.is_dir()]
-            id = max(seq) + 1 if len(seq) != 0 else 1
-            self.path = self.path.joinpath(str(id))
-            self.path.mkdir()
-            save_pickle(self.metadata, self.path.joinpath("metadata.pkl"))
-
-        da_path = self.path.joinpath("da.nc")
-        if da_path.is_file():
-            self.da = xr.open_dataarray(da_path).load()
-        else:
-            self.da = open_da(*self.open_da_args)
-            with ProgressBar():
-                self.da = self.da.load()
-            self.da.to_netcdf(da_path, format="NETCDF4")
-
-        if reduce_da:
-            try:
-                self.da = self.da.isel(lev=self.da.argmax("lev"))
-            except ValueError:
-                pass
-        self.samples_dims = {"time": self.da.time.values}
-        try:
-            self.samples_dims["member"] = self.da.member.values
-        except AttributeError:
-            pass
-        self.lon, self.lat = self.da.lon.values, self.da.lat.values
-        if "lev" in self.da.dims:
-            self.feature_dims = {"lev": self.da.lev.values}
-            len(self.da.lev.values)
-        else:
-            self.feature_dims = {}
-        self.feature_dims["lat"] = self.lat
-        self.feature_dims["lon"] = self.lon
-        self.extra_dims = {}
-        for coordname, coord in self.da.coords.items():
-            if coordname not in self.da.dims:
-                self.extra_dims[coordname] = coord.values
-        if "lev" in self.da.dims and "lev":
-            self.extra_dims = {"lev": self.da.lev.values}
-        self.flat_shape = (
-            np.prod([len(dim) for dim in self.samples_dims.values()]),
-            np.prod([len(dim) for dim in self.feature_dims.values()])
-        )
+        self.da = self.data_handler.da
+        self.path = self.data_handler.path
 
     def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
+        try:
+            self.da = self.da.load()
+        except AttributeError:
+            pass
         norm_path = self.path.joinpath(f"norm.nc")
         if norm_path.is_file():
             norm_da = xr.open_dataarray(norm_path)
@@ -397,16 +295,16 @@ class Experiment(object):
         return X.reshape(X.shape[0], -1) # why reshape ?
     
     def labels_as_da(self, labels: NDArray) -> xr.DataArray:
-        shape = [len(dim) for dim in self.samples_dims.values()]
+        shape = [len(dim) for dim in self.data_handler.samples_dims.values()]
         labels = labels.reshape(shape)
-        return xr.DataArray(labels, coords=self.samples_dims).rename("labels")
+        return xr.DataArray(labels, coords=self.data_handler.samples_dims).rename("labels")
     
     def _centers_realspace(self, centers: NDArray):
         n_pcas_tentative = centers.shape[1]
         pca_path = self._pca_file(n_pcas_tentative)
         if pca_path is not None:
             centers = self.pca_inverse_transform(centers, n_pcas_tentative)
-        centers = centers_realspace(centers, self.feature_dims, self.extra_dims)
+        centers = centers_realspace(centers, self.data_handler.feature_dims, self.data_handler.extra_dims)
         norm_path = self.path.joinpath(f"norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:
@@ -661,9 +559,9 @@ class Experiment(object):
     def _only_temp(func):
         @wraps(func)
         def wrapper_decorator(self, *args, **kwargs):
-            if self.varname != "t":
+            if self.data_handler.varname != "t":
                 print("Only valid for temperature, single pressure level")
-                print(self.varname, self.clim_type, self.levels)
+                print(self.data_handler.varname, self.data_handler.clim_type, self.data_handler.levels)
                 raise RuntimeError
             value = func(self, *args, **kwargs)
 
@@ -677,6 +575,7 @@ class Experiment(object):
         mask: xr.DataArray | Literal["land"] | None = None,
         season: str | list | None = "JJA",
         metric: str = "jaccard",
+        n_clu: int | None = None,
     ):
         distance_path = self.path.joinpath("distances.npy")
         try:
@@ -686,15 +585,29 @@ class Experiment(object):
                 self.da, condition_function, mask, season=season, metric=metric
             )
             np.save(distance_path, distances)
-        return linkage(squareform(distances), method="average")
+        Z = linkage(squareform(distances), method="average") 
+        if n_clu is None:
+            return Z
+        mask = get_land_mask()
+        lon, lat = self.da.lon.values, self.da.lat.values
+        mask = mask.sel(lon=lon, lat=lat)
+        stack_dims = {'lat_lon': ('lat', 'lon')}
+        mask_flat = mask.stack(stack_dims)
+        clusters = cut_tree(Z, n_clusters=n_clu)[:, 0]
+        clusters_da = np.zeros(mask_flat.shape, dtype=float)
+        clusters_da[:] = np.nan
+        clusters_da = mask_flat.copy(data=clusters_da)
+        clusters_da[mask_flat] = clusters
+        clusters_da = clusters_da.unstack()  
+        return clusters_da     
 
     @_only_temp
-    def heat_wave_linkage(self):
+    def heat_wave_linkage(self, n_clu: int | None = None):
         condition_function = partial(quantile_exceedence, q=0.95, dim="time")
         mask = "land"
         season = [7, 8]
         metric = "jaccard"
-        return self.linkage(condition_function, mask, season, metric)
+        return self.linkage(condition_function, mask, season, metric, n_clu)
 
     @_only_temp
     def select_heat_wave_cluster(self, n_clusters: int = 9, i_cluster: int = 5):
