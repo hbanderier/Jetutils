@@ -1,8 +1,5 @@
-import warnings
-from functools import wraps, partial
 from typing import Sequence, Tuple, Literal, Mapping, Optional, Callable
 
-from sklearn.inspection import partial_dependence
 from nptyping import NDArray, Float, Shape
 import logging
 from pathlib import Path
@@ -13,9 +10,6 @@ import xarray as xr
 from dask.diagnostics import ProgressBar
 import scipy.linalg as linalg
 from scipy.optimize import minimize
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage, cut_tree
-from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from simpsom import SOMNet
@@ -25,23 +19,14 @@ from jetstream_hugo.definitions import (
     revert_zero_one,
     save_pickle,
     load_pickle,
-    N_WORKERS,
     COMPUTE_KWARGS,
     degcos,
-    case_insensitive_equal,
     labels_to_mask,
     to_zero_one,
 )
 
 from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import (
-    data_path,
-    open_da,
-    unpack_levels,
-    get_land_mask,
-    extract_season,
-    DataHandler,
-)
+from jetstream_hugo.data import DataHandler
 
 RAW_REALSPACE: int = 0
 RAW_PCSPACE: int = 1
@@ -86,8 +71,8 @@ def centers_realspace_from_da(centers: NDArray, da: xr.DataArray) -> xr.DataArra
 
 def labels_from_projs(
     X1: NDArray,
-    X2: NDArray = None,
-    cutoff: int = None,
+    X2: NDArray | None = None,
+    cutoff: int | None = None,
     neg: bool = True,
     adjust: bool = True,
 ) -> NDArray:
@@ -149,62 +134,11 @@ def timeseries_on_map(timeseries: NDArray, labels: list | NDArray):
     )
 
 
-def quantile_exceedence(
-    da: xr.DataArray, q: float = 0.95, dim: str = "time"
-) -> xr.DataArray:
-    return da > da.quantile(q, dim=dim)
-
-
-def spatial_agglomerative_clustering(
-    da: xr.DataArray,
-    condition_function: Callable = lambda x: x,
-    mask: xr.DataArray | Literal["land"] | None = None,
-    season: str | list | None = "JJA",
-    metric: str = "jaccard",
-) -> NDArray:
-    lon, lat = da.lon.values, da.lat.values
-    if mask and mask == "land":
-        mask = get_land_mask()
-    if mask is not None:
-        mask = mask.sel(lon=lon, lat=lat)
-    da = extract_season(da, season)
-    to_cluster = condition_function(da)
-    stack_dims = {"lat_lon": ("lat", "lon")}
-    to_cluster_flat = to_cluster.stack(stack_dims)
-    if mask is not None:
-        mask_flat = mask.stack(stack_dims)
-        to_cluster_flat = to_cluster_flat.values[:, mask_flat.values]
-    return pairwise_distances(to_cluster_flat.T, metric=metric, n_jobs=N_WORKERS)
-
-
-def select_cluster(
-    Z: NDArray,
-    da: xr.DataArray,
-    n_clusters: int,
-    i_cluster: int,
-    mask: xr.DataArray | Literal["land"] | None = None,
-) -> xr.DataArray:
-    lon, lat = da.lon.values, da.lat.values
-    if mask and mask == "land":
-        mask = get_land_mask()
-    if mask is not None:
-        mask = mask.sel(lon=lon, lat=lat)
-        stack_dims = {"lat_lon": ("lat", "lon")}
-        mask_flat = mask.stack(stack_dims)
-    clusters = cut_tree(Z, n_clusters=n_clusters)[:, 0]
-    clusters_da = np.zeros(mask_flat.shape, dtype=float)
-    clusters_da[:] = np.nan
-    clusters_da = mask_flat.copy(data=clusters_da)
-    clusters_da[mask_flat] = clusters
-    this_region = clusters_da.where(clusters_da == i_cluster).unstack()
-    return da.where(this_region).mean(dim=["lon", "lat"]).copy()
-
-
 class Experiment(object):
     def __init__(
         self,
         data_handler: DataHandler,
-        inner_norm: str = None,
+        inner_norm: str | None = None,
     ) -> None:
         self.data_handler = data_handler
         self.inner_norm = inner_norm
@@ -267,7 +201,7 @@ class Experiment(object):
     def pca_transform(
         self,
         X: NDArray[Shape["*, *"], Float],
-        n_pcas: int = None,
+        n_pcas: int | None = None,
     ) -> NDArray[Shape["*, *"], Float]:
         if not n_pcas:
             X, self.Xmin, self.Xmax = to_zero_one(X)
@@ -283,7 +217,7 @@ class Experiment(object):
     def pca_inverse_transform(
         self,
         X: NDArray[Shape["*, *"], Float],
-        n_pcas: int = None,
+        n_pcas: int | None = None,
     ) -> NDArray[Shape["*, *"], Float]:
         if not n_pcas:
             return revert_zero_one(X, self.Xmin, self.Xmax)
@@ -316,13 +250,13 @@ class Experiment(object):
         centers: NDArray,
         labels: NDArray,
         return_type: int = RAW_REALSPACE,
-        X: NDArray = None,
+        X: NDArray | None = None,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
         All the clustering methods are responsible for producing their centers in pca space and their labels in sample space. This function handles the rest
         """
         if return_type == RAW_PCSPACE:
-            unique, counts = np.unique(labels, return_counts=True)
+            _, counts = np.unique(labels, return_counts=True)
             counts = counts / float(len(labels))
             labels = self.labels_as_da(labels)
             coords_centers = {
@@ -456,7 +390,7 @@ class Experiment(object):
 
     def compute_opps(
         self,
-        n_pcas: int = None,
+        n_pcas: int | None = None,
         lag_max: int = 90,
         type: int = 1,
         return_realspace: bool = False,
@@ -516,7 +450,7 @@ class Experiment(object):
         metric: str = "ssim",
         return_type: int = RAW_REALSPACE,
         force: bool = False,
-        train_kwargs: dict = None,
+        train_kwargs: dict | None = None,
         **kwargs,
     ) -> Tuple[SOMNet, xr.DataArray, NDArray]:
         pbc_flag = "_pbc" if PBC else ""
@@ -554,62 +488,3 @@ class Experiment(object):
             weights = net.weights
 
         return net, *self._cluster_output(weights, labels, return_type)
-
-
-    def _only_temp(func):
-        @wraps(func)
-        def wrapper_decorator(self, *args, **kwargs):
-            if self.data_handler.varname != "t":
-                print("Only valid for temperature, single pressure level")
-                print(self.data_handler.varname, self.data_handler.clim_type, self.data_handler.levels)
-                raise RuntimeError
-            value = func(self, *args, **kwargs)
-
-            return value
-
-        return wrapper_decorator
-
-    def linkage(
-        self,
-        condition_function: Callable = lambda x: x,
-        mask: xr.DataArray | Literal["land"] | None = None,
-        season: str | list | None = "JJA",
-        metric: str = "jaccard",
-        n_clu: int | None = None,
-    ):
-        distance_path = self.path.joinpath("distances.npy")
-        try:
-            distances = np.load(distance_path)
-        except FileNotFoundError:
-            distances = spatial_agglomerative_clustering(
-                self.da, condition_function, mask, season=season, metric=metric
-            )
-            np.save(distance_path, distances)
-        Z = linkage(squareform(distances), method="average") 
-        if n_clu is None:
-            return Z
-        mask = get_land_mask()
-        lon, lat = self.da.lon.values, self.da.lat.values
-        mask = mask.sel(lon=lon, lat=lat)
-        stack_dims = {'lat_lon': ('lat', 'lon')}
-        mask_flat = mask.stack(stack_dims)
-        clusters = cut_tree(Z, n_clusters=n_clu)[:, 0]
-        clusters_da = np.zeros(mask_flat.shape, dtype=float)
-        clusters_da[:] = np.nan
-        clusters_da = mask_flat.copy(data=clusters_da)
-        clusters_da[mask_flat] = clusters
-        clusters_da = clusters_da.unstack()  
-        return clusters_da     
-
-    @_only_temp
-    def heat_wave_linkage(self, n_clu: int | None = None):
-        condition_function = partial(quantile_exceedence, q=0.95, dim="time")
-        mask = "land"
-        season = [7, 8]
-        metric = "jaccard"
-        return self.linkage(condition_function, mask, season, metric, n_clu)
-
-    @_only_temp
-    def select_heat_wave_cluster(self, n_clusters: int = 9, i_cluster: int = 5):
-        Z = self.heat_wave_linkage()
-        return select_cluster(Z, self.da, n_clusters, i_cluster, "land")

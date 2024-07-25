@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Tuple
 from nptyping import NDArray, Float, Shape
 from functools import partial
-from itertools import combinations, product
 from multiprocessing import Pool
 import pickle as pkl
 
@@ -10,18 +9,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy.stats import norm
-from tqdm import tqdm
-from sklearn.inspection import permutation_importance
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_auc_score,
-    f1_score,
-    balanced_accuracy_score,
-    brier_score_loss,
-)
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-import shap
 from jetstream_hugo.definitions import N_WORKERS, infer_direction
 
 
@@ -213,113 +200,3 @@ def field_significance_v2(
     fdrcorr = to_test[0].copy(data=np.sum(fdrcorr, axis=0) > (1 - q) * n_sel)
     return nocorr, fdrcorr
 
-
-def comb_random_forest(y: NDArray, ds: xr.Dataset, all_combinations: list):
-    feature_importance = np.zeros((len(all_combinations), len(all_combinations[0]), 5))
-    scores = np.zeros((len(all_combinations), 4))
-    for j, comb in enumerate(all_combinations):
-        X = np.nan_to_num(
-            np.stack([ds[varname][:, jet].values for varname, jet in comb], axis=1),
-            nan=0,
-        )
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-        forest_regressor = RandomForestClassifier(
-            n_estimators=100, n_jobs=N_WORKERS, class_weight="balanced"
-        ).fit(X_train, y_train)
-        y_pred = forest_regressor.predict(X_test)
-        y_pred_proba = forest_regressor.predict_proba(X_test)[:, 1]
-        scores[j, 0] = roc_auc_score(y_test, y_pred_proba)
-        scores[j, 1] = f1_score(y_test, y_pred)
-        scores[j, 2] = balanced_accuracy_score(y_test, y_pred)
-        scores[j, 3] = brier_score_loss(y_test, y_pred_proba)
-        feature_importance[j, :, 0] = (
-            np.mean(
-                (X - X.mean(axis=1)[:, None]) * (y - y.mean()), axis=1
-            )
-            / np.std(X, axis=1)
-            / np.std(y)
-        )
-        feature_importance[j, :, 1] = forest_regressor.feature_importances_
-        feature_importance[j, :, 2] = permutation_importance(
-            forest_regressor, X_test, y_test
-        )
-        shap_values = shap.TreeExplainer(forest_regressor)(X, check_additivity=False)
-        feature_importance[j, :, 3] = shap_values.abs.mean(axis=0).values
-        feature_importance[j, :, 4] = shap_values.mean(axis=0).values
-    return feature_importance, scores
-
-
-def comb_random_forest_base_rate(
-    y: NDArray, y_base: NDArray, ds: xr.Dataset, all_combinations: list
-):
-    feature_importance = np.zeros((len(all_combinations), len(all_combinations[0]), 5))
-    scores = np.zeros((len(all_combinations), 4))
-    true_targets = y + y_base > 0.99
-    for j, comb in enumerate(all_combinations):
-        X = np.nan_to_num(
-            np.stack([ds[varname][:, jet].values for varname, jet in comb], axis=1),
-            nan=0,
-        )
-        X_train, X_test, y_train, y_test, _, y_base_test, _, true_targets_test = train_test_split(
-            X, y, y_base, true_targets, test_size=0.2
-        )
-        forest_regressor = RandomForestRegressor(
-            n_estimators=100, n_jobs=N_WORKERS
-        ).fit(X_train, y_train)
-        test_pred_proba = np.clip(forest_regressor.predict(X_test) + y_base_test, 0, 1)
-        test_pred = test_pred_proba > 0.5
-        scores[j, 0] = roc_auc_score(true_targets_test, test_pred_proba)
-        scores[j, 1] = f1_score(true_targets_test, test_pred)
-        scores[j, 2] = balanced_accuracy_score(true_targets_test, test_pred)
-        scores[j, 3] = brier_score_loss(true_targets_test, test_pred_proba)
-        feature_importance[j, :, 0] = (
-            np.mean(
-                (X - X.mean(axis=1)[:, None]) * (y - y.mean()), axis=1
-            )
-            / np.std(X, axis=1)
-            / np.std(y)
-        )
-        feature_importance[j, :, 1] = forest_regressor.feature_importances_
-        feature_importance[j, :, 2] = permutation_importance(
-            forest_regressor, X_test, y_test
-        )
-        shap_values = shap.TreeExplainer(forest_regressor)(X, check_additivity=False)
-        feature_importance[j, :, 3] = shap_values.abs.mean(axis=0).values
-        feature_importance[j, :, 4] = shap_values.mean(axis=0).values
-    return feature_importance, scores
-
-
-def comb_logistic_regression(y: NDArray, ds: xr.Dataset, all_combinations: list):
-    coefs = np.zeros((len(all_combinations), len(all_combinations[0])))
-    scores = np.zeros((len(all_combinations), 4))
-    for j, comb in enumerate(all_combinations):
-        X = np.nan_to_num(
-            np.stack([ds[varname][:, jet].values for varname, jet in comb], axis=1),
-            nan=0,
-        )
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-        log = LogisticRegression().fit(X_train, y_train)
-        coefs[j, :] = log.coef_[0]
-        y_pred = log.predict(X_test)
-        y_pred_proba = log.predict_proba(X_test)[:, 1]
-        scores[j, 0] = roc_auc_score(y_test, y_pred_proba)
-        scores[j, 1] = f1_score(y_test, y_pred)
-        scores[j, 2] = balanced_accuracy_score(y_test, y_pred)
-        scores[j, 3] = brier_score_loss(y_test, y_pred_proba)
-    return coefs, scores
-
-
-def all_logistic_regressions(
-    ds: xr.Dataset, n_predictors: int, Y: xr.DataArray | NDArray
-):
-    predictors = list(product(ds.data_vars, [0, 1]))
-    all_combinations = list(combinations(predictors, n_predictors))
-    func = partial(comb_logistic_regression, ds=ds, all_combinations=all_combinations)
-    try:
-        Y = Y.values
-    except AttributeError:
-        pass
-    with Pool(processes=Y.shape[1]) as pool:
-        results = list(tqdm(pool.imap(func, Y.T, chunksize=1)))
-    coefs, scores = zip(*results)
-    return np.stack(coefs, axis=0), np.stack(scores, axis=0)
