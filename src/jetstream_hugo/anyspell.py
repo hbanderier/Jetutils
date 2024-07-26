@@ -289,7 +289,7 @@ def stacked_lstsq(L, b, rcond=1e-10): # https://stackoverflow.com/questions/3044
     return np.conj(x, x)
 
 
-def compute_r(triplet, season: str | list | None = "JJA"):
+def compute_r(triplet, season: str | list | None = "JJA") -> NDArray:
     (predictor_name, lag), predictor_, target_ = triplet
     timescale = np.argmax(~target_[:1000].isnull())
     shape = target_.shape
@@ -335,7 +335,9 @@ def compute_all_responses(predictors: xr.DataArray, targets: xr.DataArray, lags:
     triplets = create_all_triplets(predictors, targets)
     with Pool(processes=N_WORKERS) as pool:
         all_r = list(tqdm(pool.imap(compute_r, triplets, chunksize=3), total=len(triplets),))
-    
+    all_r = np.asarray(all_r)
+    corr_da[:] = all_r
+    return corr_da
     
 
 def one_time_logistic_regression(targets):
@@ -466,12 +468,12 @@ class ExtremeExperiment(object):
         metric: str = "jaccard",
     ) -> None:
         self.data_handler = data_handler
-        self.da = self.data_handler.da
-        self.path = self.data_handler.path
+        self.da = self.data_handler.get_da()
+        self.path = self.data_handler.get_path()
         self.q = q
         self.mask = mask
         if season is None:
-            self.subseason = self.data_handler.season
+            self.subseason = self.data_handler.get_metadata()["season"]
         else:
             self.subseason = season
         self.metric = metric
@@ -500,13 +502,16 @@ class ExtremeExperiment(object):
         self,
         n_clu: int,
     ) -> xr.DataArray:
+        sample_dims = self.data_handler.get_sample_dims()
         clusters_da_file = f"clusters_{self.path_suffix}_{n_clu}.nc"
         clusters_da_file = self.path.joinpath(clusters_da_file)
         if clusters_da_file.is_file():
             return xr.open_dataarray(clusters_da_file)
-        lon, lat = self.da.lon.values, self.da.lat.values
-        stack_dims = {"lat_lon": ("lat", "lon")}
+
+        Z = self.compute_linkage_quantile()
         clusters = cut_tree(Z, n_clusters=n_clu)[:, 0]
+        lon, lat = sample_dims["lon"], sample_dims["lat"]
+        stack_dims = {"lat_lon": ("lat", "lon")}
         if mask and mask == "land":
             mask = get_land_mask()
         if mask is not None:

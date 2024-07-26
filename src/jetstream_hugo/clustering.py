@@ -142,8 +142,8 @@ class Experiment(object):
     ) -> None:
         self.data_handler = data_handler
         self.inner_norm = inner_norm
-        self.da = self.data_handler.da
-        self.path = self.data_handler.path
+        self.da = self.data_handler.get_da()
+        self.path = self.data_handler.get_path()
 
     def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
         try:
@@ -229,16 +229,19 @@ class Experiment(object):
         return X.reshape(X.shape[0], -1) # why reshape ?
     
     def labels_as_da(self, labels: NDArray) -> xr.DataArray:
-        shape = [len(dim) for dim in self.data_handler.samples_dims.values()]
+        sample_dims = self.data_handler.get_sample_dims()
+        shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
-        return xr.DataArray(labels, coords=self.data_handler.samples_dims).rename("labels")
+        return xr.DataArray(labels, coords=sample_dims).rename("labels")
     
     def _centers_realspace(self, centers: NDArray):
+        feature_dims = self.data_handler.get_feature_dims()
+        extra_dims = self.data_handler.get_extra_dims()
         n_pcas_tentative = centers.shape[1]
         pca_path = self._pca_file(n_pcas_tentative)
         if pca_path is not None:
             centers = self.pca_inverse_transform(centers, n_pcas_tentative)
-        centers = centers_realspace(centers, self.data_handler.feature_dims, self.data_handler.extra_dims)
+        centers = centers_realspace(centers, feature_dims, extra_dims)
         norm_path = self.path.joinpath(f"norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:

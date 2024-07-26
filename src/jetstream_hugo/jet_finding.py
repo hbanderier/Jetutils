@@ -1,5 +1,6 @@
 import warnings
 from pathlib import Path
+from os.path import commonpath
 from functools import partial, wraps
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
 from nptyping import NDArray
@@ -11,7 +12,6 @@ import pandas as pd
 from dask.diagnostics import ProgressBar
 import xarray as xr
 from scipy.stats import linregress
-from scipy.ndimage import distance_transform_edt
 from contourpy import contour_generator
 from sklearn.cluster import AgglomerativeClustering, Birch
 from sklearn.mixture import GaussianMixture
@@ -1121,22 +1121,24 @@ class MultiVarExperiment(object):
 
     def __init__(
         self,
-        data_handlers: Sequence[DataHandler],
+        data_handlers: Mapping[DataHandler],
         flatten_ds: bool = True,
     ) -> None:
-        self.varnames = [dh.varname for dh in data_handlers]
+        self.varnames = list(data_handlers)
         self.varnames.sort()
-        dataset = data_handlers[0].open_da_args[0]
-        level_type = data_handlers[0].open_da_args[1]
-        self.path = Path(DATADIR, dataset, level_type, "results")
+        self.data_handlers = list(data_handlers.values())
+        paths = [dh.get_path() for dh in data_handlers.values()]
+        basepath = commonpath(paths)
+        self.path = Path(basepath, "results")
         self.path.mkdir(exist_ok=True)
         
-        first_mda = data_handlers[0].metadata
-        assert all([dh.metadata == first_mda for dh in data_handlers])
+        first_dh = self.data_handlers[0]
+        first_mda = first_dh.get_metadata()
+        assert all([dh.get_metadata() == first_mda for dh in data_handlers])
 
         self.metadata = {
             "varnames": self.varnames,
-        } | data_handlers[0].metadata
+        } | first_mda
 
         self.path = find_spot(self.path, self.metadata)
         
@@ -1146,13 +1148,15 @@ class MultiVarExperiment(object):
             return
         
         ds = {}
-        for dh in data_handlers:
-            ds[dh.varname] = dh.da
+        for varname, dh in data_handlers.items():
+            ds[varname] = dh.get_da()
         self.ds = xr.Dataset(ds)
         with ProgressBar():
             self.ds = self.ds.load(**COMPUTE_KWARGS)
-        self.ds = flatten_by(self.ds, "s")
+        if flatten_ds:
+            self.ds = flatten_by(self.ds, "s")
         self.ds.to_netcdf(dspath)
+        self.time = first_dh.get_sample_dims()["time"]
 
     def _only_windspeed(func):
         @wraps(func)
@@ -1273,17 +1277,17 @@ class MultiVarExperiment(object):
 
         if self.level_type == "plev":
 
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.time)
             props_as_ds_uncat = is_polar_gmix(
                 props_as_ds_uncat, ["mean_lat", "mean_lon", "mean_lev"], mode="month"
             )
         elif self.level_type in ["2PVU_red", "2PVU"]:
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.time)
             props_as_ds_uncat = is_polar_gmix(
                 props_as_ds_uncat, ["mean_lat", "mean_lon", "mean_P"], mode="month"
             )
         else:
-            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.data_handlers[0].samples_dims["time"])
+            props_as_ds_uncat = props_as_ds_uncat.interp(time=self.time)
             props_as_ds_uncat["is_polar"] = props_as_ds_uncat["mean_lat"] > 40.0
         props_as_ds_uncat = add_persistence_to_props(props_as_ds_uncat, flags)
         props_as_ds_uncat = self.add_com_speed(all_jets_over_time, props_as_ds_uncat)

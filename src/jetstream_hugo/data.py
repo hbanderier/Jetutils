@@ -1,21 +1,23 @@
+import warnings
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
-from dask.distributed import Client
-from dask.diagnostics import ProgressBar
 from nptyping import NDArray
 from pathlib import Path
-import warnings
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 import flox.xarray
 import xrft
 from tqdm import tqdm
+from dask.distributed import Client
+from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
     DEFAULT_VARNAME,
     DATADIR,
     YEARS,
     COMPUTE_KWARGS,
+    get_region,
     save_pickle,
     load_pickle,
 )
@@ -597,8 +599,90 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
     return newpath
     
 
+class DataHandlerBase(object):
+    def __init__(
+        self,
+        da: xr.DataArray,
+        path: Path,
+    ) -> None:
+        self.da = da
+        self.path = path
+        self._setup_dims()
+        self._extract_metadata()
+        
+    def _setup_dims(self):
+        self.sample_dims = {"time": self.da.time.values}
+        try:
+            self.sample_dims["member"] = self.da.member.values
+        except AttributeError:
+            pass
+        self.lon, self.lat = self.da.lon.values, self.da.lat.values
+        if "lev" in self.da.dims:
+            self.feature_dims = {"lev": self.da.lev.values}
+            len(self.da.lev.values)
+        else:
+            self.feature_dims = {}
+        self.feature_dims["lat"] = self.lat
+        self.feature_dims["lon"] = self.lon
+        self.extra_dims = {}
+        for coordname, coord in self.da.coords.items():
+            if coordname not in self.da.dims:
+                self.extra_dims[coordname] = coord.values
+        if "lev" in self.da.dims and "lev":
+            self.extra_dims = {"lev": self.da.lev.values}
+        self.flat_shape = (
+            np.prod([len(dim) for dim in self.sample_dims.values()]),
+            np.prod([len(dim) for dim in self.feature_dims.values()])
+        )
+        
+    def _extract_metadata(self):
+        period = np.unique(self.da.time.dt.year)
+        season = np.unique(self.da.time.dt.month)
+        nullseason = {None: list(range(1, 13))}
+        for seasonname, monthlist in (SEASONS | nullseason).items():
+            if monthlist == season:
+                season = seasonname
+                break
+        region = get_region(self.da)
+        if "lev" in self.da.dims:
+            levels = self.da.lev.values
+        else:
+            levels = "all"
+        self.metadata = {
+            "period": period,
+            "season": season,
+            "region": region,
+            "levels": levels,
+        }
+        
+    def get_path(self) -> Path:
+        return self.path
+        
+    def get_da(self, load: bool = False) -> xr.DataArray:
+        if load:
+            try:
+                self.da = self.da.load()
+            except AttributeError:
+                pass
+        return self.da
+    
+    def get_metadata(self) -> Mapping:
+        return self.metadata
+    
+    def get_samples_dims(self) -> Mapping:
+        return self.sample_dims
+    
+    def get_feature_dims(self) -> Mapping:
+        return self.feature_dims
+    
+    def get_extra_dims(self) -> Mapping:
+        return self.extra_dims
+    
+    def get_flat_shape(self) -> Mapping:
+        return self.flat_shape
+    
 
-class DataHandler(object):
+class DataHandler(DataHandlerBase):
     def __init__(
         self,
         dataset: str,
@@ -671,26 +755,5 @@ class DataHandler(object):
                 self.da = self.da.isel(lev=self.da.argmax("lev"))
             except ValueError:
                 pass
-        self.samples_dims = {"time": self.da.time.values}
-        try:
-            self.samples_dims["member"] = self.da.member.values
-        except AttributeError:
-            pass
-        self.lon, self.lat = self.da.lon.values, self.da.lat.values
-        if "lev" in self.da.dims:
-            self.feature_dims = {"lev": self.da.lev.values}
-            len(self.da.lev.values)
-        else:
-            self.feature_dims = {}
-        self.feature_dims["lat"] = self.lat
-        self.feature_dims["lon"] = self.lon
-        self.extra_dims = {}
-        for coordname, coord in self.da.coords.items():
-            if coordname not in self.da.dims:
-                self.extra_dims[coordname] = coord.values
-        if "lev" in self.da.dims and "lev":
-            self.extra_dims = {"lev": self.da.lev.values}
-        self.flat_shape = (
-            np.prod([len(dim) for dim in self.samples_dims.values()]),
-            np.prod([len(dim) for dim in self.feature_dims.values()])
-        )
+            
+        self._setup_dims()
