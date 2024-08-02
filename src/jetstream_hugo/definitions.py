@@ -47,6 +47,7 @@ COMPUTE_KWARGS = {
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
 FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
+RESULTS = "/storage/homefs/hb22g102/persistent-extremes-era5/Results"
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGE = pd.date_range("19590101", "20221231")

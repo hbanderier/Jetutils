@@ -9,6 +9,7 @@ import xarray as xr
 import flox.xarray
 import xrft
 from tqdm import tqdm
+from deepdiff import DeepHash
 from dask.distributed import Client
 from dask.diagnostics import ProgressBar
 
@@ -669,7 +670,7 @@ class DataHandlerBase(object):
     def get_metadata(self) -> Mapping:
         return self.metadata
     
-    def get_samples_dims(self) -> Mapping:
+    def get_sample_dims(self) -> Mapping:
         return self.sample_dims
     
     def get_feature_dims(self) -> Mapping:

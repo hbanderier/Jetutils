@@ -1121,7 +1121,7 @@ class MultiVarExperiment(object):
 
     def __init__(
         self,
-        data_handlers: Mapping[DataHandler],
+        data_handlers: Mapping[str, DataHandler],
         flatten_ds: bool = True,
     ) -> None:
         self.varnames = list(data_handlers)
@@ -1134,7 +1134,7 @@ class MultiVarExperiment(object):
         
         first_dh = self.data_handlers[0]
         first_mda = first_dh.get_metadata()
-        assert all([dh.get_metadata() == first_mda for dh in data_handlers])
+        assert all([dh.get_metadata() == first_mda for dh in self.data_handlers])
 
         self.metadata = {
             "varnames": self.varnames,
