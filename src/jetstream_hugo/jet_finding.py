@@ -5,7 +5,7 @@ from functools import partial, wraps
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
 from nptyping import NDArray
 from multiprocessing import Pool
-from itertools import combinations, groupby
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -20,9 +20,7 @@ from tqdm import tqdm, trange
 from numba import njit, prange
 
 from jetstream_hugo.definitions import (
-    DATADIR,
     COMPUTE_KWARGS,
-    DATERANGE_SUMMER,
     N_WORKERS,
     OMEGA,
     RADIUS,
@@ -30,13 +28,12 @@ from jetstream_hugo.definitions import (
     degsin,
     degcos,
     labels_to_mask,
-    save_pickle,
-    load_pickle,
     to_zero_one,
     slice_1d,
-    Timer,
+    get_runs_fill_holes,
 )
 from jetstream_hugo.data import (
+    flatten_by,
     compute_extreme_climatology,
     smooth,
     unpack_levels,
@@ -49,26 +46,6 @@ from jetstream_hugo.clustering import Experiment
 
 DIRECTION_THRESHOLD = 0.33
 SMOOTHING = 0.15
-
-
-def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
-    if "lev" not in ds.dims:
-        return ds
-    ope = np.nanargmin if by[0] == "-" else np.nanargmax
-    by = by.lstrip("-")
-    to_concat = []
-    for year in tqdm(np.unique(ds.time.dt.year.values)):
-        ds_ = ds.sel(time=ds.time.dt.year == year)
-        if ds_["s"].chunks is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                ds_ = ds_.compute(**COMPUTE_KWARGS)
-        levmax = ds_[by].reduce(ope, dim="lev")
-        ds_ = ds_.isel(lev=levmax).reset_coords("lev")  # but not drop
-        ds_["lev"] = ds_["lev"].astype(np.float32)
-        to_concat.append(ds_)
-    return xr.concat(to_concat, dim="time")
-
 
 @njit
 def distance(x1: float, x2: float, y1: float, y2: float) -> float:
@@ -99,50 +76,6 @@ def my_pairwise(X: NDArray, Y: Optional[NDArray] = None) -> NDArray:
             for j in range(Y.shape[0]):
                 output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
     return output
-
-
-def get_runs(mask, cyclic: bool = True):
-    start = 0
-    runs = []
-    if cyclic:
-        for key, run in groupby(np.tile(mask, 2)):
-            if start >= len(mask):
-                break
-            length = sum(1 for _ in run)
-            runs.append((key, start, start + length - 1))
-            start += length
-        return runs
-    for key, run in groupby(mask):
-        length = sum(1 for _ in run)
-        runs.append((key, start, start + length - 1))
-        start += length
-    return runs
-
-
-def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
-    runs = get_runs(mask, cyclic=cyclic)
-    for run in runs:
-        key, start, end = run
-        leng = end - start + 1
-        if key or leng > hole_size:  # I want negative short spans
-            continue
-        if start == 0 and (not mask[-1] or not cyclic):
-            continue
-        if end == len(mask) - 1 and (not mask[0] or not cyclic):
-            continue
-        end_ = min(len(mask), end + 1)
-        mask[start:end_] = ~mask[start:end_]
-    runs = get_runs(mask, cyclic=cyclic)
-    indices = []
-    for run in runs:
-        key, start, end = run
-        leng = end - start + 1
-        if leng > 10 and key:
-            indices.append(np.arange(start, end + 1) % len(mask))
-    if len(indices) == 0:
-        _, start, end = max(runs, key=lambda x: (x[2] - x[1]) * int(x[0]))
-        indices.append(np.arange(start, end + 1) % len(mask))
-    return indices
 
 
 def preprocess(ds: xr.Dataset, smooth_s: float = None) -> xr.Dataset:

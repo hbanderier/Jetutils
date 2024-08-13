@@ -174,7 +174,7 @@ class Experiment(object):
             norm_da.to_netcdf(norm_path)
 
         da_weighted = self.da * norm_da
-        X = da_weighted.values.reshape(self.flat_shape)
+        X = da_weighted.values.reshape(self.data_handler.get_flat_shape())
         return X, da_weighted
     
     def _pca_file(self, n_pcas: int) -> str | None:

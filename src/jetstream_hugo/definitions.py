@@ -4,6 +4,7 @@ import pickle as pkl
 from pathlib import Path
 from nptyping import NDArray
 from typing import Any, Callable, ClassVar, Dict, Optional
+from itertools import groupby
 from dataclasses import dataclass, field
 import time
 
@@ -310,6 +311,50 @@ def coarsen_da(
     dx = (da.lon[1] - da.lon[0]).item()
     coarsening = int(np.round(target_dx / dx))
     return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
+
+
+def get_runs(mask, cyclic: bool = True):
+    start = 0
+    runs = []
+    if cyclic:
+        for key, run in groupby(np.tile(mask, 2)):
+            if start >= len(mask):
+                break
+            length = sum(1 for _ in run)
+            runs.append((key, start, start + length - 1))
+            start += length
+        return runs
+    for key, run in groupby(mask):
+        length = sum(1 for _ in run)
+        runs.append((key, start, start + length - 1))
+        start += length
+    return runs
+
+
+def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
+    runs = get_runs(mask, cyclic=cyclic)
+    for run in runs:
+        key, start, end = run
+        leng = end - start + 1
+        if key or leng > hole_size:  # I want negative short spans
+            continue
+        if start == 0 and (not mask[-1] or not cyclic):
+            continue
+        if end == len(mask) - 1 and (not mask[0] or not cyclic):
+            continue
+        end_ = min(len(mask), end + 1)
+        mask[start:end_] = ~mask[start:end_]
+    runs = get_runs(mask, cyclic=cyclic)
+    indices = []
+    for run in runs:
+        key, start, end = run
+        leng = end - start + 1
+        if leng > 10 and key:
+            indices.append(np.arange(start, end + 1) % len(mask))
+    if len(indices) == 0:
+        _, start, end = max(runs, key=lambda x: (x[2] - x[1]) * int(x[0]))
+        indices.append(np.arange(start, end + 1) % len(mask))
+    return indices
 
 
 class TimerError(Exception):

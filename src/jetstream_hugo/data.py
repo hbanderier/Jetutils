@@ -598,6 +598,23 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
         newpath.mkdir()
         save_pickle(metadata, newpath.joinpath("metadata.pkl"))
     return newpath
+
+
+def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
+    if "lev" not in ds.dims:
+        return ds
+    ope = np.nanargmin if by[0] == "-" else np.nanargmax
+    by = by.lstrip("-")
+    to_concat = []
+    if ds["s"].chunks is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            with ProgressBar():
+                ds = ds.compute(**COMPUTE_KWARGS)
+    levmax = ds[by].reduce(ope, dim="lev")
+    ds = ds.isel(lev=levmax).reset_coords("lev")  # but not drop
+    ds["lev"] = ds["lev"].astype(np.float32)
+    return ds
     
 
 class DataHandlerBase(object):
@@ -749,12 +766,9 @@ class DataHandler(DataHandlerBase):
             self.da = open_da(*self.open_da_args)
             with ProgressBar():
                 self.da = self.da.load()
+            if reduce_da:
+                self.da = flatten_by(xr.Dataset({varname: self.da}), varname)[varname]
             self.da.to_netcdf(da_path, format="NETCDF4")
 
-        if reduce_da:
-            try:
-                self.da = self.da.isel(lev=self.da.argmax("lev"))
-            except ValueError:
-                pass
             
         self._setup_dims()

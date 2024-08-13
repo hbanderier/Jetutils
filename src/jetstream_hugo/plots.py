@@ -304,7 +304,7 @@ def create_levels(
     direction = infer_direction(to_plot)
     extend = extend[direction] if q < 1 else "neither"
     if isinstance(levels, Sequence):
-        levelsc = np.asarray(levelsc)
+        levelsc = np.asarray(levels)
         if direction == 0:
             levelscf = np.delete(levelsc, len(levelsc) // 2)
         else:
@@ -317,7 +317,7 @@ def create_levels(
     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
     lowbound = 0 if direction == 1 else lowbound
     highbound = 0 if direction == -1 else highbound
-    levelsc = MaxNLocator(levels).tick_values(lowbound, highbound)
+    levelsc = MaxNLocator(levels, symmetric=(direction==0)).tick_values(lowbound, highbound)
     if direction == 0:
         levelscf = np.delete(levelsc, len(levelsc) // 2)
     else:
@@ -639,7 +639,6 @@ class Clusterplot:
             self.cbar = self.fig.colorbar(
                 im, ax=self.fig.axes, spacing="proportional", **cbar_kwargs
             )
-            self.cbar.ax.set_yticks(levelsc)
         else:
             self.cbar = None
 

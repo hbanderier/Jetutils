@@ -10,12 +10,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import xrft
-from tqdm import tqdm, trange
+from tqdm.notebook import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
 from sklearn.metrics import pairwise_distances
-from xclim.indices.run_length import rle, run_bounds
-from tqdm import tqdm
+from xclim.indices.run_length import rle, run_bounds # TODO: replace with basic run_lengths to drop xclim dependency
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -26,7 +25,8 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-import shap
+from xgboost import XGBClassifier, XGBRegressor
+from fasttreeshap import TreeExplainer, Explainer
 from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
@@ -37,6 +37,7 @@ from jetstream_hugo.definitions import (
     RESULTS,
     load_pickle,
     save_pickle,
+    get_runs_fill_holes,
 )
 from jetstream_hugo.data import (
     find_spot,
@@ -68,7 +69,7 @@ ALL_SCORES = {
 def spells_from_da(
     da: xr.DataArray,
     q: float = 0.95,
-    fill_holes: bool = False,
+    fill_holes: int = 0,
     minlen: np.timedelta64 = np.timedelta64(3, "D"),
     time_before: np.timedelta64 = np.timedelta64(0, "D"),
     time_after: np.timedelta64 = np.timedelta64(0, "D"),
@@ -77,38 +78,32 @@ def spells_from_da(
     dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
     months = np.unique(da.time.dt.month.values)
     months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
-    days = quantile_exceedence(da, q)
-    if fill_holes:
-        holes = rle(~days)
-        holes = np.where(holes.values == 1)[0]
-        days[holes] = 1
-    spells = run_bounds(days)
-    mask = (spells[0].dt.year == spells[1].dt.year).values
-    spells = spells[:, mask]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=UserWarning)
-        mask = spells.astype("datetime64[h]").values
-    mask = (mask[1] - mask[0]) >= minlen
-    spells = spells[:, mask].T
+    days = quantile_exceedence(da, q)   
+    runs = get_runs_fill_holes(days.values.copy(), hole_size=fill_holes)
+    run_times = [da.time.values[run] for run in runs]
+    spells = []
     spells_ts = []
     lengths = []
-    for spell in spells:
-        hw_len = (spell[1] - spell[0]).values.astype("timedelta64[D]")
-        year = spell[0].dt.year.values
-        min_time = np.datetime64(f"{year}-{months[0]}-01T00:00")
-        max_time = np.datetime64(f"{year}-{months[1]}-01T00:00") - dt
-        first_time = max(min_time, (spell[0] - time_before).values)
-        last_time = min(max_time, (spell[1] + time_after).values)
-        spell_ts = pd.date_range(first_time, last_time, freq="6h")
-        spells_ts.append(spell_ts)
-        lengths.append(np.full(len(spell_ts), hw_len.astype(int)))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=UserWarning)
-        spells = spells.astype("datetime64[h]").values
+    for run in run_times:
+        years = run.astype('datetime64[Y]').astype(int) + 1970
+        cond1 = years[0] == years[-1]
+        len_ = run[-1] - run[0]
+        cond2 = len_ >= minlen
+        if not (cond1 and cond2):
+            continue
+        spells.append([run[0], run[-1]])
+        ts_extended = pd.date_range(run[0] - time_before, run[-1] + time_after, freq=dt).values
+        ts_extended = ts_extended[np.isin(ts_extended, da.time.values)]
+        spells_ts.append(ts_extended)
+        lengths.append(len_.astype("timedelta64[D]").astype(int))
+    spells = np.asarray(spells)
     if output_type == "list":
         return spells_ts, spells
     da_spells = da.copy(data=np.zeros(da.shape, dtype=int))
-    da_spells.loc[np.concatenate(spells_ts)] = np.concatenate(lengths)
+    indexer = np.concatenate(spells_ts)
+    lengths = np.concatenate([np.full(len(spell_ts), len_) for spell_ts, len_ in zip(spells_ts, lengths)])
+    da_spells.loc[indexer] = lengths
+
     if output_type == "arr":
         return da_spells
     return spells_ts, spells, da_spells
@@ -118,15 +113,17 @@ def mask_from_spells(
     da: xr.DataArray,
     ds: xr.Dataset,
     spells_ts: list,
-    spells: list,
-    time_before: pd.Timedelta = pd.Timedelta(0, "D"),
+    spells: NDArray,
+    time_before: np.timedelta64 = np.timedelta64(0, "D"),
 ) -> xr.Dataset:
     months = np.unique(ds.time.dt.month.values)
     months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
-    lengths = spells[:, 1] - spells[:, 0]
-    longest_hotspell = np.argmax(lengths)
-    time_around_beg = spells_ts[longest_hotspell] - spells[longest_hotspell, 0]
-    time_around_beg = time_around_beg.values
+    try:
+        lengths = spells[:, 1] - spells[:, 0]
+        longest_spell = np.argmax(lengths)
+        time_around_beg = spells_ts[longest_spell] - spells[longest_spell, 0]
+    except ValueError:
+        time_around_beg = np.atleast_1d(np.timedelta64(0, "ns"))
     ds_masked = (
         ds.loc[dict(time=ds.time.values[0])]
         .reset_coords("time", drop=True)
@@ -134,35 +131,39 @@ def mask_from_spells(
     )
     ds_masked.loc[dict()] = np.nan
     ds_masked = ds_masked.expand_dims(
-        heat_wave=np.arange(len(spells)),
+        spell=np.arange(len(spells)),
         time_around_beg=time_around_beg,
     ).copy(deep=True)
-    ds_masked = ds_masked.assign_coords(lengths=("heat_wave", lengths))
+    ds_masked = ds_masked.assign_coords(lengths=("spell", lengths))
     dims = list(ds_masked.sizes.values())[:2]
     dummy_da = np.zeros(dims) + np.nan
     ds_masked = ds_masked.assign_coords(
-        temperature=(["heat_wave", "time_around_beg"], dummy_da)
+        avg_val=(["spell", "time_around_beg"], dummy_da)
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)
         ds_masked = ds_masked.assign_coords(
             absolute_time=(
-                ["heat_wave", "time_around_beg"],
+                ["spell", "time_around_beg"],
                 dummy_da.astype("datetime64[h]"),
             )
         )
+    if len(ds_masked.time_around_beg) <= 1:
+        return ds_masked
     for i, spell in enumerate(spells_ts):
         unexpected_offset = time_before - (spells[i][0] - spell[0])
         this_tab = time_around_beg[: len(spell)] + unexpected_offset
+        this_tab = np.clip(this_tab, None, ds_masked.time_around_beg.max().values) # Unexpected offset is weird
+        spell = spell[:len(this_tab)]
         to_assign = (
             ds.loc[dict(time=spell)]
             .assign_coords(time=this_tab)
             .rename(time="time_around_beg")
         )
-        accessor_dict = dict(heat_wave=i, time_around_beg=this_tab)
-        ds_masked.loc[accessor_dict] = to_assign
-        ds_masked.temperature.loc[accessor_dict] = da.loc[dict(time=spell)].values
-        ds_masked.absolute_time.loc[accessor_dict] = spell
+        indexer = dict(spell=i, time_around_beg=this_tab)
+        ds_masked.loc[indexer] = to_assign
+        ds_masked.avg_val.loc[indexer] = da.loc[dict(time=spell)].values
+        ds_masked.absolute_time.loc[indexer] = spell
     return ds_masked
 
 
@@ -495,6 +496,8 @@ def regress_against_time(targets: xr.DataArray) -> xr.DataArray:
     base_pred = base_pred.assign_coords(to_assign)
     for vals in product(*list(extra_dims.values())):
         indexer = {dim: val for dim, val in zip(extra_dims, vals)}
+        if not targets.loc[indexer].any("time"):
+            continue
         y = targets.loc[indexer].values
         X_train, X_test, y_train, y_test = train_test_split(X_base, y, test_size=0.2)
         lr = LogisticRegression(class_weight=None).fit(X_train, y_train)
@@ -511,8 +514,9 @@ def predict_all(
     predictors: xr.DataArray,
     orig_targets: xr.DataArray,
     base_pred: xr.DataArray | None = None,
-    type_: Literal["rf", "lr"] = "rf",
+    type_: Literal["rf", "lr", "xgb"] = "rf",
     compute_shap: bool = False,
+    n_folds: int = 1,
     save_path: Path | None = None,
     **kwargs,
 ):
@@ -534,6 +538,9 @@ def predict_all(
         lags = predictors.lag.values
         full_pred = full_pred.expand_dims(axis=-1, **dict(lag=lags))
         extra_dims["lag"] = lags
+    if n_folds > 1:
+        full_pred = full_pred.expand_dims(axis=-1, **dict(fold=np.arange(n_folds)))
+        extra_dims["fold"] = np.arange(n_folds)
     # Create score coordinates
     if len(extra_dims) == 0:
         creation_template = 0.0
@@ -542,10 +549,18 @@ def predict_all(
     to_assign = {score_name: creation_template for score_name in ALL_SCORES}
     full_pred = full_pred.assign_coords(to_assign).copy(deep=True)
     # Prepare feature importance da
+    if type_ == "xgb" and "importance_type" not in kwargs:
+        kwargs["importance_type"] = "cover"
+    if "importance_type" in kwargs:
+        importance_type = kwargs["importance_type"]
+    elif type_ == "rf":
+        importance_type = "impurity"
+    else:
+        importance_type = "coefs"
     importance_coords = {
         "type": [
             "correlation",
-            "impurity" if type_ == "rf" else "coefs",
+            importance_type,
             "permutation",
             "mean_shap",
             "mean_abs_shap",
@@ -588,11 +603,17 @@ def predict_all(
             predictors_ = predictors.loc[indexer_pred]
         except KeyError:
             predictors_ = predictors
-        predictors_ = predictors_.transpose("time", ...)
+        try:
+            fold = indexer_targets.pop("fold")
+        except KeyError:
+            pass
         # Turn to pandas so shap keeps predictor names and makes easier to understand plots
+        predictors_ = predictors_.transpose("time", ...)
         X = predictors_.drop_vars(
             ["varname", "jet", "timescale"], errors="ignore"
         ).to_pandas()
+        if not targets.loc[indexer_targets].any("time"):
+            continue
         y = targets.loc[indexer_targets].to_pandas()
         y_orig = orig_targets.loc[indexer_targets].to_pandas()
         y_base = base_pred.loc[indexer_targets].to_pandas()
@@ -607,17 +628,26 @@ def predict_all(
                 model = LogisticRegression(n_jobs=N_WORKERS, **kwargs).fit(
                     X_train, y_train
                 )
-            else:
+            elif type_ == "rf":
                 model = RandomForestClassifier(n_jobs=N_WORKERS, **kwargs).fit(
+                    X_train, y_train
+                )
+            elif type_ == "xgb":
+                model = XGBClassifier(n_jobs=N_WORKERS, **kwargs).fit(
                     X_train, y_train
                 )
             y_pred = model.predict(X_test)
             y_pred_prob = model.predict_proba(X_test)[:, 1]
             full_pred.loc[indexer] = model.predict_proba(X)[:, 1]
         else:
-            model = RandomForestRegressor(n_jobs=N_WORKERS, **kwargs).fit(
-                X_train, y_train
-            )
+            if type_ == "rf":
+                model = RandomForestRegressor(n_jobs=N_WORKERS, **kwargs).fit(
+                    X_train, y_train
+                )
+            elif type_ == "xgb":
+                model = XGBRegressor(n_jobs=N_WORKERS, **kwargs).fit(
+                    X_train, y_train
+                )
             y_pred_prob = model.predict(X_test) + y_base_test
             y_pred_prob = np.clip(y_pred_prob, 0, 1)
             y_pred = y_pred_prob > 0.5
@@ -637,13 +667,11 @@ def predict_all(
         )
         feature_importances.loc[dict(type="correlation", **indexer)] = corr.squeeze()
         # 2. Impurity (rf) or regression coefficients (lr; should be exponentiated)
-        if type_ == "rf":
+        if type_ in ["rf", "xgb"]:
             imp = model.feature_importances_
-            name = "impurity"
         elif type_ == "lr":
             imp = model.coef_.ravel()
-            name = "coefs"
-        feature_importances.loc[dict(type=name, **indexer)] = imp
+        feature_importances.loc[dict(type=importance_type, **indexer)] = imp
         # 3. Permutation importance
         r = permutation_importance(
             model, X_test, y_test, n_repeats=30, random_state=0, n_jobs=N_WORKERS
@@ -653,8 +681,8 @@ def predict_all(
         ]
         # 3. Potentially shap (mean and mean_abs)
         if compute_shap:
-            shap_explainer = shap.TreeExplainer if type_ == "rf" else shap.Explainer
-            shap_ = shap_explainer(model)(X, check_additivity=False)
+            shap_explainer = TreeExplainer if type_ == "rf" else Explainer
+            shap_ = shap_explainer(model, n_jobs=N_WORKERS)(X, y, check_additivity=False)
             raw_shap[indexer_str] = shap_
             shap_values = shap_.values
             feature_importances.loc[dict(type="mean_shap", **indexer)] = (
@@ -663,10 +691,11 @@ def predict_all(
             feature_importances.loc[dict(type="mean_abs_shap", **indexer)] = np.abs(
                 shap_values
             ).mean(axis=0)
-        # Save because this is very slow, ~2 minutes per iteration
-        full_pred.loc[indexer].to_netcdf(full_pred_fn)
-        feature_importances.loc[indexer].to_netcdf(feature_importance_fn)
-        save_pickle(raw_shap[indexer_str], raw_shap_fn)
+        # Save because this is very slow, ~2 minutes per iteration without shap, 4+ with
+        if save_path is not None:
+            full_pred.loc[indexer].to_netcdf(full_pred_fn)
+            feature_importances.loc[indexer].to_netcdf(feature_importance_fn)
+            save_pickle(raw_shap[indexer_str], raw_shap_fn)
     return full_pred, feature_importances, raw_shap
 
 
@@ -689,8 +718,9 @@ def multi_combination_prediction(
         identifier = "_".join(identifier)
         save_path = Path(RESULTS, "multi_prediction", type_, identifier)
         save_path.mkdir(mode=0o777, parents=True, exist_ok=True)
+    flat_len = np.prod([len(co) for co in extra_dims.values()])
     best_combinations = {}
-    for vals in product(*list(extra_dims.values())):
+    for vals in tqdm(product(*list(extra_dims.values())), total=flat_len):
         indexer = {dim: val for dim, val in zip(extra_dims, vals)}
         indexer_str = ["=".join((dim, str(val))) for dim, val in indexer.items()]
         indexer_str = "_".join(indexer_str)
@@ -714,7 +744,7 @@ def multi_combination_prediction(
             for predictor in predictor_names
         ]
         best_combinations[indexer_str] = {}
-        for n_predictors in trange(1, max_n_predictors):
+        for n_predictors in trange(1, max_n_predictors + 1, leave=False):
             full_pred_fn = thispath.joinpath(f"full_pred_{n_predictors}")
             feature_importances_fn = thispath.joinpath(
                 f"feature_importances_{n_predictors}"
@@ -742,6 +772,7 @@ def multi_combination_prediction(
                     targets_,
                     base_pred_,
                     type_,
+                    compute_shap=True,
                     **kwargs,
                 )
                 full_pred_list.append(full_pred)
@@ -966,6 +997,7 @@ class ExtremeExperiment(object):
         create_target_kwargs: Mapping,
         type_: Literal["rf", "lr"] = "rf",
         do_base_pred: bool = True,
+        n_folds: int = 1,
         prediction_kwargs: Mapping | None = None,
     ):
         targets_folder = self.create_targets(**create_target_kwargs, return_folder=True)
@@ -990,6 +1022,7 @@ class ExtremeExperiment(object):
             "type": type_,
             "lags": lags,
             "base_pred": path_to_base_pred, 
+            "n_folds": n_folds,
             "prediction_kwargs": prediction_kwargs,
         }
         if prediction_kwargs is None:
@@ -1003,6 +1036,7 @@ class ExtremeExperiment(object):
             base_pred,
             type_,
             True,
+            n_folds=n_folds,
             save_path=path,
             **prediction_kwargs,
         )
@@ -1083,6 +1117,7 @@ class ExtremeExperiment(object):
         best_predictors = load_pickle(path.joinpath("best_predictors.pkl"))
         combination = {}
         for identifier, predictor_list in tqdm(best_predictors.items()):
+            thispath = path.joinpath(identifier)
             full_pred_fn = thispath.joinpath("full_pred_best.nc")
             feature_importances_fn = thispath.joinpath("feature_importances_best.nc")
             raw_shap_fn = thispath.joinpath("raw_shap.pkl")
@@ -1097,11 +1132,14 @@ class ExtremeExperiment(object):
                 raw_shap = load_pickle(raw_shap_fn)
                 combination[identifier] = (full_pred, feature_importances, raw_shap)
                 continue
-            thispath = path.joinpath(identifier)
             indexer_list = identifier.split("_")
             indexer = {}
             for indexer_ in indexer_list:
                 dim, val = indexer_.split("=")
+                try:
+                    val = float(val)
+                except ValueError:
+                    pass
                 indexer[dim] = val
             if base_pred is None:
                 base_pred_ = None
