@@ -8,12 +8,14 @@ import pandas as pd
 import xarray as xr
 import flox.xarray
 import xrft
+import intake
 from tqdm import tqdm
 from deepdiff import DeepHash
 from dask.distributed import Client
 from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
+    TIMERANGE,
     DEFAULT_VARNAME,
     DATADIR,
     YEARS,
@@ -111,6 +113,17 @@ def data_path(
     return anom_path
 
 
+def standardize(ds):
+    ds = ds.rename({"U": "u", "V": "v"})
+    ds["u"] = ds["u"].astype(np.float16)
+    ds["u"] = ds["u"].astype(np.float16)
+    ds = ds.assign_coords(lon=(((ds.lon + 180) % 360) - 180))
+    ds = ds.sortby("lon")
+    ds = ds.sortby("lat")
+    ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
+    return ds.unify_chunks()
+
+
 def determine_chunks(da: xr.DataArray, chunk_type=None) -> Mapping:
     dims = list(da.coords.keys())
     lon_name = "lon" if "lon" in dims else "longitude"
@@ -188,7 +201,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     return da2.squeeze()
 
 
-def extract_season(da: xr.DataArray | xr.Dataset, season: list | str) -> xr.DataArray | xr.Dataset:
+def extract_season(da: xr.DataArray | xr.Dataset, season: list | str | tuple) -> xr.DataArray | xr.Dataset:
     if isinstance(season, list):
         da = da.isel(time=np.isin(da.time.dt.month, season))
     elif isinstance(season, str):
@@ -197,6 +210,12 @@ def extract_season(da: xr.DataArray | xr.Dataset, season: list | str) -> xr.Data
         else:
             print(f"Wrong season specifier : {season} is not a valid xarray season")
             raise ValueError
+    elif isinstance(season, tuple):
+        if season[1] > season[0]:
+            time_mask = (da.time.dt.dayofyear >= season[0]) & (da.time.dt.dayofyear <= season[1])
+        else: # over winter
+            time_mask = (da.time.dt.dayofyear >= season[1]) | (da.time.dt.dayofyear >= season[1])
+        da = da.sel(time=time_mask)
     return da
 
 
@@ -316,15 +335,15 @@ def open_da(
     varname: str,
     resolution: str,
     period: list | tuple | Literal["all"] | int | str = "all",
-    season: list | str = None,
+    season: list | str | tuple | None = None,
     minlon: Optional[int | float] = None,
     maxlon: Optional[int | float] = None,
     minlat: Optional[int | float] = None,
     maxlat: Optional[int | float] = None,
     levels: int | str | list | tuple | Literal["all"] = "all",
-    clim_type: str = None,
-    clim_smoothing: Mapping = None,
-    smoothing: Mapping = None,
+    clim_type: str | None = None,
+    clim_smoothing: Mapping | None = None,
+    smoothing: Mapping | None = None,
 ) -> xr.DataArray:
     """_summary_
 
@@ -379,8 +398,11 @@ def open_da(
         else:
             if isinstance(season, str):
                 monthlist = SEASONS[season]
-            else:
+            elif isinstance(season, list):
                 monthlist = np.atleast_1d(season)
+            elif isinstance(season, tuple):
+                sample_tr = TIMERANGE[TIMERANGE.year == period[0]]
+                monthlist = np.unique(sample_tr[np.isin(sample_tr.dayofyear, np.arange(season[0], season[1]))].month)
             files_to_load = [
                 path.joinpath(f"{year}{str(month).zfill(2)}.nc")
                 for month in monthlist
@@ -391,6 +413,10 @@ def open_da(
     files_to_load = [fn for fn in files_to_load if fn.is_file()]
 
     da = _open_dataarray(files_to_load, varname)
+    if (file_structure == "one_file") and (period != "all"):
+        da = da.isel(time=np.isin(da.time.dt.year, period))
+    if season is not None:
+        da = extract_season(da, season)
     da = da.rename(varname)
     da = rename_coords(da)
     if "lev" in da.dims and level_type not in ["plev", "thetalev"]:
@@ -399,16 +425,9 @@ def open_da(
         da = da.reindex(lat=da.lat[::-1])
     if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
         da = da.sel(lon=slice(minlon, maxlon + 0.1), lat=slice(minlat, maxlat + 0.1))
-
-    if (file_structure == "one_file") and (period != "all"):
-        da = da.isel(time=np.isin(da.time.dt.year, period))
-    if season is not None:
-        da = extract_season(da, season)
         
     if "lev" in da.dims and levels != "all":
         da = extract_levels(da, levels)
-    elif "lev" in da.dims:
-        da = da.chunk({"lev": 1})
         
     if clim_type is not None or smoothing is None:
         return da
@@ -761,7 +780,7 @@ class DataHandler(DataHandlerBase):
 
         da_path = self.path.joinpath("da.nc")
         if da_path.is_file():
-            self.da = xr.open_dataarray(da_path, chunks="auto")
+            self.da = xr.open_dataarray(da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
         else:
             self.da = open_da(*self.open_da_args)
             with ProgressBar():
@@ -769,6 +788,32 @@ class DataHandler(DataHandlerBase):
             if reduce_da:
                 self.da = flatten_by(xr.Dataset({varname: self.da}), varname)[varname]
             self.da.to_netcdf(da_path, format="NETCDF4")
-
-            
         self._setup_dims()
+        
+        
+def IntakeDataHandler(DataHandlerBase):
+    def __init__(
+        self, 
+        url: str, 
+        varname: str, 
+        ensemble_key: str | list[str], 
+        basepath: Path,
+        frequency: Literal["daily", "monthly"] = "daily",
+        forcing_variant: Literal["cmip6", "smbb"] = "cmip6",
+    ):
+        self.varname = varname
+        catalog = intake.open_esm_datastore(url)
+        catalog_subset = catalog.search(variable=self.varnames, frequency=frequency, forcing_variant=forcing_variant)
+        dsets = catalog_subset.to_dataset_dict(storage_options={'anon':True})
+        if isinstance(ensemble_key, str):
+            self.da = standardize(dsets[ensemble_key][varname])
+        else:
+            self.da = []
+            for ek in ensemble_key:
+                self.da.append(standardize(dsets[ek][varname]))
+            self.da = xr.concat(self.da, dim="time")
+        
+        self._extract_metadata()
+        self.path = find_spot(basepath, self.metadata)
+        self._setup_dims()
+        

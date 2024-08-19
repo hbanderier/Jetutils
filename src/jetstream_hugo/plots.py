@@ -120,8 +120,8 @@ COLOR_JETS = colormaps.bold(np.arange(12))
 DEFAULT_COLORMAP = colormaps.fusion_r
 
 
-def num2tex(x: float, force: bool = False) -> str:
-    float_str = f"{x:.2e}" if force else f"{x:.2g}"
+def num2tex(x: float, force: bool = False, ncomma: int = 1) -> str:
+    float_str = f"{x:.{ncomma}e}" if force else f"{x:.{ncomma}g}"
     if "e" in float_str:
         base, exponent = float_str.split("e")
         return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
