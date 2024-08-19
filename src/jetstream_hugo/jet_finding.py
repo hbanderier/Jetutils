@@ -36,8 +36,7 @@ from jetstream_hugo.data import (
     flatten_by,
     compute_extreme_climatology,
     smooth,
-    unpack_levels,
-    open_da,
+    standardize,
     DataHandler,
     find_spot,
 )
@@ -1077,7 +1076,7 @@ class MultiVarExperiment(object):
         
         dspath = self.path.joinpath("ds.nc")
         if dspath.is_file():
-            self.ds = xr.open_dataset(dspath, chunks="auto")
+            self.ds = xr.open_dataset(dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
             return
         
         ds = {}
