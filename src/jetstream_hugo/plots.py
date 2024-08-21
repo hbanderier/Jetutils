@@ -204,7 +204,7 @@ def honeycomb_panel(
     axes = np.empty((ncol, nrow), dtype=object)
     if subplot_kw is None:
         subplot_kw = {}
-    for i, j in product(range(ncol), range(nrow)):
+    for i, j in product(range(ncol), range(nrow)): # TODO: new SOM ordering
         if j % 2 == 0:
             slice_x = slice(2 * i, 2 * i + 2)
         else:
