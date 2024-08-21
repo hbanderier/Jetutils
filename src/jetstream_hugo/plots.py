@@ -357,10 +357,16 @@ def setup_lon_lat(
     return lon, lat
 
 
-def to_prettier_order(n: int, width: int = 6, height: int = 4):
+def to_prettier_order(n: int | NDArray, width: int = 6, height: int = 4):
     col, row = divmod(n, height)
     row = height - 1 - row
     return 1 + width * row + col
+
+
+# def inv_prettier_order(n: int | NDArray, width: int = 6, height: int = 4):
+#     col, row = divmod(n, height)
+#     row = height - 1 - row
+#     return 1 + width * row + col
 
 
 class Clusterplot:

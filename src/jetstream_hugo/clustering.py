@@ -368,19 +368,18 @@ class Experiment(object):
             X, Xmin, Xmax = to_zero_one(X)
             output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{metric}.pkl")
         init = "random" if np.prod(X.shape[1:]) > 1000 else "pca"
+        net = XPySom(
+            nx,
+            ny,
+            PBC=PBC,
+            activation_distance=metric,
+            init=init,
+            **kwargs,
+        )
         if output_path.is_file() and not force:
-            net = load_pickle(output_path)
+            net.load_weights(output_path)
         else:
-            net = XPySom(
-                nx,
-                ny,
-                PBC=PBC,
-                activation_distance=metric,
-                init=init,
-                **kwargs,
-            )
             net.train(X, 50, **train_kwargs)
-            save_pickle(net, output_path)
 
         labels = net.predict(X)
         if n_pcas:
