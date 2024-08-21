@@ -11,6 +11,7 @@ import time
 import numpy as np
 import pandas as pd
 import xarray as xr
+from dask.diagnostics import ProgressBar
 
 np.set_printoptions(precision=5, suppress=True)
 os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
@@ -355,6 +356,18 @@ def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
         _, start, end = max(runs, key=lambda x: (x[2] - x[1]) * int(x[0]))
         indices.append(np.arange(start, end + 1) % len(mask))
     return indices
+
+
+def _compute(obj, progress: bool = False, **kwargs):
+    kwargs = COMPUTE_KWARGS | kwargs
+    try:
+        if progress:
+            with ProgressBar():
+                return obj.compute(**kwargs)
+        else:
+            return obj.compute(**kwargs)
+    except AttributeError:
+        return obj
 
 
 class TimerError(Exception):

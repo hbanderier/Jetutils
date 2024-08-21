@@ -1,5 +1,6 @@
 from typing import Sequence, Tuple, Literal, Mapping, Optional, Callable
 
+from matplotlib.pylab import norm
 from nptyping import NDArray, Float, Shape
 import logging
 from pathlib import Path
@@ -8,11 +9,18 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from dask.diagnostics import ProgressBar
+from dask.array import Array as DaArray, from_array
 import scipy.linalg as linalg
 from scipy.optimize import minimize
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from simpsom import SOMNet
+
+try:
+    from dask_ml.decomposition import PCA
+    from dask_ml.cluster import KMeans
+except ModuleNotFoundError:
+    from sklearn.decomposition import PCA
+    from sklearn.cluster import KMeans
+# from simpsom import SOMNet
+from xpysom_dask.xpysom import XPySom
 
 from jetstream_hugo.definitions import (
     coarsen_da,
@@ -23,6 +31,7 @@ from jetstream_hugo.definitions import (
     degcos,
     labels_to_mask,
     to_zero_one,
+    _compute,
 )
 
 from jetstream_hugo.stats import compute_autocorrs
@@ -32,6 +41,7 @@ RAW_REALSPACE: int = 0
 RAW_PCSPACE: int = 1
 ADJUST: int = 2
 ADJUST_TWOSIDED: int = 3
+
 
 def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     if filename == "full.nc":
@@ -107,18 +117,31 @@ def labels_from_projs(
 
 
 def labels_to_centers(
-    labels: list | NDArray | xr.DataArray, da: xr.DataArray | xr.Dataset, coord: str = "cluster"
+    labels: list | NDArray | xr.DataArray,
+    da: xr.DataArray | xr.Dataset,
+    expected_nclu: int | None = None,
+    coord: str = "cluster",
 ) -> xr.DataArray:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
-    unique_labels, counts = np.unique(labels, return_counts=True)
+    if expected_nclu is not None:
+        unique_labels = np.arange(expected_nclu)
+        counts = np.zeros(expected_nclu)
+        unique_labels_, counts_ = np.unique(labels, return_counts=True)
+        counts[unique_labels_] = counts_
+    else:
+        unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(len(labels))
     dims = list(get_sample_dims(da))
     extra_dims = [coord for coord in da.coords if coord not in da.dims]
-    centers = [da.isel(time=(labels == i)).mean(dim=dims) for i in unique_labels]
+    centers = [
+        _compute(da.isel(time=(labels == i)).mean(dim=dims)) for i in unique_labels
+    ]
     for extra_dim in extra_dims:
         for i, center in enumerate(centers):
-            centers[i] = center.assign_coords({extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)})
+            centers[i] = center.assign_coords(
+                {extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)}
+            )
     centers = xr.concat(centers, dim=coord)
     centers = centers.assign_coords(
         {"ratio": (coord, counts), "label": (coord, unique_labels)}
@@ -145,38 +168,37 @@ class Experiment(object):
         self.da = self.data_handler.get_da()
         self.path = self.data_handler.get_path()
 
-    def prepare_for_clustering(self) -> Tuple[NDArray, xr.DataArray]:
-        try:
-            self.da = self.da.load()
-        except AttributeError:
-            pass
+    def get_norm_da(self):
         norm_path = self.path.joinpath(f"norm.nc")
         if norm_path.is_file():
-            norm_da = xr.open_dataarray(norm_path)
-        else:
-            norm_da = np.sqrt(degcos(self.da.lat))  # lat as da to simplify mult
+            return xr.open_dataarray(norm_path)
 
-            if self.inner_norm and self.inner_norm == 1:  # Grams et al. 2017
-                with ProgressBar():
-                    stds = (
-                        (self.da * norm_da)
-                        .rolling({"time": 30}, center=True, min_periods=1)
-                        .std()
-                        .mean(dim=["lon", "lat"])
-                        .compute(**COMPUTE_KWARGS)
-                    )
-                norm_da = norm_da * (1 / stds)
-            elif self.inner_norm and self.inner_norm == 2:
-                stds = (self.da * norm_da).std(dim="time")
-                norm_da = norm_da * (1 / stds)
-            elif self.inner_norm and self.inner_norm not in [1, 2]:
-                raise NotImplementedError()
-            norm_da.to_netcdf(norm_path)
+        norm_da = np.sqrt(degcos(self.da.lat))  # lat as da to simplify mult
+
+        if self.inner_norm and self.inner_norm == 1:  # Grams et al. 2017
+            stds = (
+                (self.da * norm_da)
+                .rolling({"time": 30}, center=True, min_periods=1)
+                .std()
+                .mean(dim=["lon", "lat"])
+            )
+            norm_da = norm_da * (1 / stds)
+        elif self.inner_norm and self.inner_norm == 2:
+            stds = (self.da * norm_da).std(dim="time")
+            norm_da = norm_da * (1 / stds)
+        elif self.inner_norm and self.inner_norm not in [1, 2]:
+            raise NotImplementedError()
+        norm_da = _compute(norm_da, progress=True)
+        norm_da.to_netcdf(norm_path)
+        return norm_da
+
+    def prepare_for_clustering(self) -> Tuple[NDArray | DaArray, xr.DataArray]:
+        norm_da = self.get_norm_da()
 
         da_weighted = self.da * norm_da
-        X = da_weighted.values.reshape(self.data_handler.get_flat_shape())
+        X = da_weighted.data.reshape(self.data_handler.get_flat_shape())
         return X, da_weighted
-    
+
     def _pca_file(self, n_pcas: int) -> str | None:
         potential_paths = list(self.path.glob("pca_*.pkl"))
         potential_paths = {
@@ -189,65 +211,75 @@ class Experiment(object):
 
     def compute_pcas(self, n_pcas: int, force: bool = False) -> str:
         path = self._pca_file(n_pcas)
-        if path is not None:
+        if path is not None and not force:
             return path
         logging.debug(f"Computing {n_pcas} pcas")
         X, _ = self.prepare_for_clustering()
         pca_path = self.path.joinpath(f"pca_{n_pcas}.pkl")
         results = PCA(n_components=n_pcas, whiten=False).fit(X)
+        results = _compute(results, progress=True)
         save_pickle(results, pca_path)
         return pca_path
 
     def pca_transform(
         self,
-        X: NDArray[Shape["*, *"], Float],
+        X: NDArray | DaArray,
         n_pcas: int | None = None,
-    ) -> NDArray[Shape["*, *"], Float]:
-        if not n_pcas:
-            X, self.Xmin, self.Xmax = to_zero_one(X)
-        pca_path = self.compute_pcas(n_pcas)
-        pca_results = load_pickle(pca_path)
+        compute: bool = False,
+    ) -> NDArray:
+        if n_pcas is None:
+            return X
         transformed_file = self.path.joinpath(f"pca_{n_pcas}.npy")
         if transformed_file.is_file():
             return np.load(transformed_file)
+        pca_path = self.compute_pcas(n_pcas)
+        pca_results = load_pickle(pca_path)
         X = pca_results.transform(X)[:, :n_pcas]
+        if not compute:
+            return X
+        X = _compute(X, progress=True)
         np.save(transformed_file, X)
         return X
 
     def pca_inverse_transform(
         self,
-        X: NDArray[Shape["*, *"], Float],
+        X: NDArray | DaArray,
         n_pcas: int | None = None,
+        compute: bool = False,
     ) -> NDArray[Shape["*, *"], Float]:
-        if not n_pcas:
-            return revert_zero_one(X, self.Xmin, self.Xmax)
+        if n_pcas is None:
+            return X
         pca_path = self.compute_pcas(n_pcas)
         pca_results = load_pickle(pca_path)
         diff_n_pcas = pca_results.n_components - X.shape[1]
         X = np.pad(X, [[0, 0], [0, diff_n_pcas]])
         X = pca_results.inverse_transform(X)
-        return X.reshape(X.shape[0], -1) # why reshape ?
-    
+        if not compute:
+            return X
+        return _compute(X, progress=True)
+
     def labels_as_da(self, labels: NDArray) -> xr.DataArray:
         sample_dims = self.data_handler.get_sample_dims()
         shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
         return xr.DataArray(labels, coords=sample_dims).rename("labels")
-    
+
     def _centers_realspace(self, centers: NDArray):
         feature_dims = self.data_handler.get_feature_dims()
         extra_dims = self.data_handler.get_extra_dims()
         n_pcas_tentative = centers.shape[1]
         pca_path = self._pca_file(n_pcas_tentative)
         if pca_path is not None:
-            centers = self.pca_inverse_transform(centers, n_pcas_tentative)
+            centers = self.pca_inverse_transform(
+                centers, n_pcas_tentative, compute=True
+            )
         centers = centers_realspace(centers, feature_dims, extra_dims)
         norm_path = self.path.joinpath(f"norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:
             norm_da = norm_da.mean(dim="time")
         return centers / norm_da
-    
+
     def _cluster_output(
         self,
         centers: NDArray,
@@ -258,26 +290,29 @@ class Experiment(object):
         """
         All the clustering methods are responsible for producing their centers in pca space and their labels in sample space. This function handles the rest
         """
+        n_clu = centers.shape[0]
+        counts = np.zeros(n_clu)
         if return_type == RAW_PCSPACE:
-            _, counts = np.unique(labels, return_counts=True)
+            clusters_, counts_ = np.unique(labels, return_counts=True)
+            counts[clusters_] = counts_
             counts = counts / float(len(labels))
             labels = self.labels_as_da(labels)
             coords_centers = {
                 "cluster": np.arange(centers.shape[0]),
-                "pc": np.arange(centers.shape[1])
+                "pc": np.arange(centers.shape[1]),
             }
             centers = xr.DataArray(centers, coords=coords_centers)
             centers = centers.assign_coords({"ratios": ("cluster", counts)})
-        
+
         elif return_type == RAW_REALSPACE:
-            centers = labels_to_centers(labels, self.da, coord="cluster")
-            
+            centers = labels_to_centers(labels, self.da, expected_nclu=n_clu, coord="cluster")
+
         elif return_type in [ADJUST, ADJUST_TWOSIDED]:
             projection = np.tensordot(X, centers.T, axes=X.ndim - 1)
             neg = return_type == ADJUST_TWOSIDED
             newlabels = labels_from_projs(projection, neg=neg, adjust=True)
             centers = labels_to_centers(newlabels, self.da, coord="cluster")
-            
+
         else:
             print("Wrong return specifier")
             raise ValueError
@@ -301,12 +336,61 @@ class Experiment(object):
             logging.debug(f"Fitting KMeans clustering with {n_clu} clusters")
             results = results.fit(X)
             save_pickle(results, results_path)
-            
+
         centers = results.cluster_centers_
         labels = results.labels_
-        
+
         return self._cluster_output(centers, labels, return_type, X)
-    
+
+    def som_cluster(
+        self,
+        nx: int,
+        ny: int,
+        n_pcas: int = 0,
+        PBC: bool = True,
+        metric: str = "euclidean",
+        return_type: int = RAW_REALSPACE,
+        force: bool = False,
+        train_kwargs: dict | None = None,
+        **kwargs,
+    ) -> Tuple[XPySom, xr.DataArray, NDArray]:
+        pbc_flag = "_pbc" if PBC else ""
+
+        if train_kwargs is None:
+            train_kwargs = {}
+        X, da_weighted = self.prepare_for_clustering()
+        if n_pcas:
+            X = self.pca_transform(X, n_pcas)
+            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.pkl")
+        else:
+            da_weighted = coarsen_da(da_weighted, 1.5)
+            X = da_weighted.data.reshape(da_weighted.shape[0], -1)
+            X, Xmin, Xmax = to_zero_one(X)
+            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{metric}.pkl")
+        init = "random" if np.prod(X.shape[1:]) > 1000 else "pca"
+        if output_path.is_file() and not force:
+            net = load_pickle(output_path)
+        else:
+            net = XPySom(
+                nx,
+                ny,
+                PBC=PBC,
+                activation_distance=metric,
+                init=init,
+                **kwargs,
+            )
+            net.train(X, 50, **train_kwargs)
+            save_pickle(net, output_path)
+
+        labels = net.predict(X)
+        if n_pcas:
+            weights = net.weights
+        else:
+            weights = revert_zero_one(net.weights, Xmin, Xmax)
+
+        return net, *self._cluster_output(weights, labels, return_type)
+
+    # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(
         self,
         X: NDArray,
@@ -395,23 +479,23 @@ class Experiment(object):
         self,
         n_pcas: int | None = None,
         lag_max: int = 90,
-        type: int = 1,
+        type_: int = 1,
         return_realspace: bool = False,
     ) -> Tuple[Path, dict]:
-        if type not in [1, 2]:
+        if type_ not in [1, 2]:
             raise ValueError(f"Wrong OPP type, pick 1 or 2")
         X, _ = self.prepare_for_clustering()
         if n_pcas:
             X = self.pca_transform(X, n_pcas)
         X = X.reshape((X.shape[0], -1))
         n_pcas = X.shape[1]
-        opp_path: Path = self.path.joinpath(f"opp_{n_pcas}_T{type}.pkl")
+        opp_path: Path = self.path.joinpath(f"opp_{n_pcas}_T{type_}.pkl")
         results = None
         if not opp_path.is_file():
-            if type == 1:
+            if type_ == 1:
                 logging.debug("Computing T1 OPPs")
                 results = self._compute_opps_T1(X, lag_max)
-            if type == 2:
+            if type_ == 2:
                 logging.debug("Computing T2 OPPs")
                 results = self._compute_opps_T2(X, lag_max)
             save_pickle(results, opp_path)
@@ -432,62 +516,14 @@ class Experiment(object):
 
         if type == 3:
             OPPs = np.empty((2 * n_clu, n_pcas))
-            OPPs[::2] = self.compute_opps(n_pcas, type=1)[1]["OPPs"][:n_clu]
-            OPPs[1::2] = self.compute_opps(n_pcas, type=2)[1]["OPPs"][:n_clu]
+            OPPs[::2] = self.compute_opps(n_pcas, type_=1)[1]["OPPs"][:n_clu]
+            OPPs[1::2] = self.compute_opps(n_pcas, type_=2)[1]["OPPs"][:n_clu]
             X1 = self.opp_transform(X, n_pcas, cutoff=n_clu, type=1)
             X2 = self.opp_transform(X, n_pcas, cutoff=n_clu, type=2)
         elif type in [1, 2]:
-            OPPs = self.compute_opps(n_pcas, type=type)[1]["OPPs"][:n_clu]
+            OPPs = self.compute_opps(n_pcas, type_=type)[1]["OPPs"][:n_clu]
             X1 = self.opp_transform(X, n_pcas, cutoff=n_clu, type=type)
             X2 = None
 
         labels = labels_from_projs(X1, X2, cutoff=n_clu, neg=False, adjust=False)
         return self._cluster_output(OPPs, labels, return_type, X)
-
-    def som_cluster(
-        self,
-        nx: int,
-        ny: int,
-        n_pcas: int = 0,
-        PBC: bool = True,
-        metric: str = "ssim",
-        return_type: int = RAW_REALSPACE,
-        force: bool = False,
-        train_kwargs: dict | None = None,
-        **kwargs,
-    ) -> Tuple[SOMNet, xr.DataArray, NDArray]:
-        pbc_flag = "_pbc" if PBC else ""
-
-        if train_kwargs is None:
-            train_kwargs = {}
-        X, da_weighted = self.prepare_for_clustering()
-        if metric in ["ssim", "euclidean"]:
-            da_weighted = coarsen_da(da_weighted, 1.5)
-            X, Xmin, Xmax = to_zero_one(da_weighted.values)
-            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{metric}.npy")
-        else:
-            X = self.pca_transform(X, n_pcas)
-            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.npy")
-        init = "random" if np.prod(X.shape[1:]) > 1000 else "pca"
-        if output_path.is_file() and not force:
-            net = SOMNet(nx, ny, X, metric=metric, PBC=PBC, load_file=output_path.as_posix())
-        else:
-            net = SOMNet(
-                nx,
-                ny,
-                X,
-                PBC=PBC,
-                metric=metric,
-                init=init,
-                **kwargs,
-            )
-            net.train(**train_kwargs)
-            net.save_map(output_path.as_posix())
-
-        labels = net.bmus
-        if metric in ["euclidean", "ssim"]: 
-            weights = revert_zero_one(net.weights, Xmin, Xmax)
-        else:
-            weights = net.weights
-
-        return net, *self._cluster_output(weights, labels, return_type)

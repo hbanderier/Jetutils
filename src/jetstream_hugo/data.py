@@ -10,7 +10,6 @@ import flox.xarray
 import xrft
 import intake
 from tqdm import tqdm
-from deepdiff import DeepHash
 from dask.distributed import Client
 from dask.diagnostics import ProgressBar
 
@@ -114,7 +113,7 @@ def data_path(
 
 
 def standardize(ds):
-    ds = ds.rename({"U": "u", "V": "v"})
+    ds = ds.rename({"U": "u", "V": "v", "member ID": "member"})
     ds["u"] = ds["u"].astype(np.float16)
     ds["u"] = ds["u"].astype(np.float16)
     ds = ds.assign_coords(lon=(((ds.lon + 180) % 360) - 180))
@@ -643,7 +642,7 @@ class DataHandlerBase(object):
         path: Path,
     ) -> None:
         self.da = da
-        self.path = path
+        self.path = Path(path)
         self._setup_dims()
         self._extract_metadata()
         
@@ -677,7 +676,7 @@ class DataHandlerBase(object):
         season = np.unique(self.da.time.dt.month)
         nullseason = {None: list(range(1, 13))}
         for seasonname, monthlist in (SEASONS | nullseason).items():
-            if monthlist == season:
+            if monthlist == season.tolist():
                 season = seasonname
                 break
         region = get_region(self.da)
