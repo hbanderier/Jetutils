@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+from tqdm import tqdm
 from dask.diagnostics import ProgressBar
 from dask.array import Array as DaArray, from_array
 import scipy.linalg as linalg
@@ -135,7 +136,7 @@ def labels_to_centers(
     dims = list(get_sample_dims(da))
     extra_dims = [coord for coord in da.coords if coord not in da.dims]
     centers = [
-        _compute(da.isel(time=(labels == i)).mean(dim=dims)) for i in unique_labels
+        _compute(da.isel(time=(labels == i)).mean(dim=dims)) for i in tqdm(unique_labels)
     ]
     for extra_dim in extra_dims:
         for i, center in enumerate(centers):
@@ -296,7 +297,6 @@ class Experiment(object):
             clusters_, counts_ = np.unique(labels, return_counts=True)
             counts[clusters_] = counts_
             counts = counts / float(len(labels))
-            labels = self.labels_as_da(labels)
             coords_centers = {
                 "cluster": np.arange(centers.shape[0]),
                 "pc": np.arange(centers.shape[1]),
@@ -316,7 +316,8 @@ class Experiment(object):
         else:
             print("Wrong return specifier")
             raise ValueError
-
+        
+        labels = self.labels_as_da(labels)
         return centers, labels
 
     def do_kmeans(
@@ -355,19 +356,7 @@ class Experiment(object):
         **kwargs,
     ) -> Tuple[XPySom, xr.DataArray, NDArray]:
         pbc_flag = "_pbc" if PBC else ""
-
-        if train_kwargs is None:
-            train_kwargs = {}
-        X, da_weighted = self.prepare_for_clustering()
-        if n_pcas:
-            X = self.pca_transform(X, n_pcas)
-            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{n_pcas}.pkl")
-        else:
-            da_weighted = coarsen_da(da_weighted, 1.5)
-            X = da_weighted.data.reshape(da_weighted.shape[0], -1)
-            X, Xmin, Xmax = to_zero_one(X)
-            output_path = self.path.joinpath(f"som_{nx}_{ny}{pbc_flag}_{metric}.pkl")
-        init = "random" if np.prod(X.shape[1:]) > 1000 else "pca"
+        init = "random" if self.data_handler.get_flat_shape()[1] > 5000 else "pca"
         net = XPySom(
             nx,
             ny,
@@ -376,10 +365,31 @@ class Experiment(object):
             init=init,
             **kwargs,
         )
-        if output_path.is_file() and not force:
-            net.load_weights(output_path)
+        if n_pcas:
+            output_file_stem = f"som_{nx}_{ny}{pbc_flag}_{n_pcas}"
         else:
-            net.train(X, 50, **train_kwargs)
+            output_file_stem = f"som_{nx}_{ny}{pbc_flag}_{metric}"
+        output_path_weights = self.path.joinpath(f"{output_file_stem}.npy")
+        output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
+        output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
+        if all([ofile.is_file() for ofile in [output_path_weights, output_path_labels, output_path_centers]]) and not force:
+            net.load_weights(output_path_weights)
+            centers = xr.open_dataarray(output_path_centers)
+            labels = xr.open_dataarray(output_path_labels)
+            net.train_data_bmus = labels.values
+            return net, centers, labels
+        if train_kwargs is None:
+            train_kwargs = {}
+        train_kwargs["out_path"] = output_path_weights
+        X, da_weighted = self.prepare_for_clustering()
+        if n_pcas:
+            X = self.pca_transform(X, n_pcas)
+        else:
+            if (da_weighted.lon[1] - da_weighted.lon[0]).item() < 1:
+                da_weighted = coarsen_da(da_weighted, 1.5)
+                X = da_weighted.data.reshape(da_weighted.shape[0], -1)
+            X, Xmin, Xmax = to_zero_one(X)
+        net.train(X, 50, **train_kwargs)
 
         labels = net.predict(X)
         if n_pcas:
@@ -387,7 +397,10 @@ class Experiment(object):
         else:
             weights = revert_zero_one(net.weights, Xmin, Xmax)
 
-        return net, *self._cluster_output(weights, labels, return_type)
+        centers, labels = self._cluster_output(weights, labels, return_type, X)
+        centers.to_netcdf(output_path_centers)
+        labels.to_netcdf(output_path_labels)
+        return net, centers, labels
 
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(
