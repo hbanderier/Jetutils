@@ -1,5 +1,8 @@
 import warnings
+from os.path import commonpath
+
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
+from itertools import product
 from nptyping import NDArray
 from pathlib import Path
 
@@ -22,21 +25,27 @@ from jetstream_hugo.definitions import (
     get_region,
     save_pickle,
     load_pickle,
+    _compute,
 )
+
 SEASONS = {
     "DJF": [1, 2, 12],
     "MAM": [3, 4, 5],
     "JJA": [6, 7, 8],
     "SON": [9, 10, 11],
 }
-    
-    
+
+
 def get_land_mask() -> xr.DataArray:
     mask = xr.open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
-    mask = mask.squeeze().rename(longitude="lon", latitude="lat").reset_coords("time", drop=True)
+    mask = (
+        mask.squeeze()
+        .rename(longitude="lon", latitude="lat")
+        .reset_coords("time", drop=True)
+    )
     return mask.astype(bool)
-    
-    
+
+
 def determine_file_structure(path: Path) -> str:
     if path.joinpath("full.nc").is_file():
         return "one_file"
@@ -48,32 +57,14 @@ def determine_file_structure(path: Path) -> str:
     raise RuntimeError
 
 
-def unpack_smooth_map(smooth_map: Mapping | Sequence) -> str:
-    strlist = []
-    for dim, value in smooth_map.items():
-        if dim == "detrended":
-            if smooth_map["detrended"]:
-                strlist.append("detrended")
-            continue
-        smooth_type, winsize = value
-        if dim == "dayofyear":
-            dim = "doy"
-        if isinstance(winsize, float):
-            winsize = f"{winsize:.2f}"
-        elif isinstance(winsize, int):
-            winsize = str(winsize)
-        strlist.append("".join((dim, smooth_type, winsize)))
-    return "_".join(strlist)
-
-
 def data_path(
     dataset: str,
     level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
     varname: str,
     resolution: str,
-    clim_type: str = None,
-    clim_smoothing: Mapping = None,
-    smoothing: Mapping = None,
+    clim_type: str | None = None,
+    clim_smoothing: Mapping | None = None,
+    smoothing: Mapping | None = None,
     for_compute_anomaly: bool = False,
 ) -> Path | Tuple[Path, Path, Path]:
     if clim_type is None and for_compute_anomaly:
@@ -86,7 +77,7 @@ def data_path(
 
     if smoothing is None:
         smoothing = {}
-        
+
     if clim_type == "" and len(clim_smoothing) != 0:
         print("Cannot define clim_smoothing if clim is None")
         raise TypeError
@@ -95,7 +86,7 @@ def data_path(
 
     unpacked = unpack_smooth_map(clim_smoothing)
     underscore = "_" if unpacked != "" else ""
-    
+
     clim_path = path.joinpath(clim_type + underscore + unpacked)
     anom_path = clim_path.joinpath(unpack_smooth_map(smoothing))
     if not anom_path.is_dir() and not for_compute_anomaly:
@@ -112,49 +103,42 @@ def data_path(
     return anom_path
 
 
-def standardize(ds):
-    ds = ds.rename({"U": "u", "V": "v", "member ID": "member"})
-    ds["u"] = ds["u"].astype(np.float16)
-    ds["u"] = ds["u"].astype(np.float16)
-    ds = ds.assign_coords(lon=(((ds.lon + 180) % 360) - 180))
-    ds = ds.sortby("lon")
-    ds = ds.sortby("lat")
-    ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
-    return ds.unify_chunks()
+def standardize(da):
+    standard_dict = {
+        "longitude": "lon",
+        "latitude": "lat",
+        "level": "lev",
+        "member_id": "member",
+        "U": "u",
+        "V": "v",
+        "T": "t",
+    }
+    for key, value in standard_dict.items():
+        try:
+            da = da.rename({key: value})
+        except ValueError:
+            pass
+    da["time"] = da.indexes["time"].to_datetimeindex()
+    da = da.astype(np.float32)
+    if (da.lon.max() > 180) and (da.lon.min() >= 0):
+        da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
+        da = da.sortby("lon")
+    if np.diff(da.lat.values)[0] < 0:
+        da = da.reindex(lat=da.lat[::-1])
+    return da.unify_chunks()
 
 
-def determine_chunks(da: xr.DataArray, chunk_type=None) -> Mapping:
-    dims = list(da.coords.keys())
-    lon_name = "lon" if "lon" in dims else "longitude"
-    lat_name = "lat" if "lat" in dims else "latitude"
-    lev_name = "lev" if "lev" in dims else "level"
-    if lev_name in dims:
-        chunks = {lev_name: -1}
-    else:
-        chunks = {}
-        
-    if chunk_type in ["horiz", "horizointal", "lonlat"]:
-        chunks = {"time": 31, lon_name: -1, lat_name: -1} | chunks
-    elif chunk_type in ["time"]:
-        if da.nbytes > 5e9:
-            chunks = {"time": -1, lon_name: 100, lat_name: 100} | chunks
-        else:
-            chunks = {"time": -1, lon_name: -1, lat_name: -1} | chunks
-    else:
-        chunks = {"time": 31, lon_name: 40, lat_name: -1} | chunks
-    return chunks
-
-
-def rename_coords(da: xr.DataArray) -> xr.DataArray:
-    try:
-        da = da.rename({"longitude": "lon", "latitude": "lat"})
-    except ValueError:
-        pass
-    try:
-        da = da.rename({"level": "lev"})
-    except ValueError:
-        pass
-    return da
+def extract_period(da, period: list | tuple | Literal["all"] | int | str = "all"):
+    if period == "all":
+        return da
+    if isinstance(period, tuple):
+        if len(period) == 2:
+            period = np.arange(period[0], period[1] + 1)
+        elif len(period) == 3:
+            period = np.arange(period[0], period[1] + 1, period[2])
+    elif isinstance(period, int):
+        period = [period]
+    return da.isel(time=np.isin(da.time.dt.year, period))
 
 
 def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
@@ -180,7 +164,10 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     levels, level_names = unpack_levels(levels)
 
     if ~any([isinstance(level, tuple) for level in levels]):
-        da = da.sel(lev=levels).squeeze()
+        try:
+            da = da.isel(lev=levels).squeeze()
+        except ValueError:
+            da = da.sel(lev=levels).squeeze()
         if len(levels) == 1:
             return da.reset_coords("lev", drop=True)
         return da
@@ -196,11 +183,13 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
         else:
             val = da.sel(lev=level).values
         da2.loc[:, :, :, level_name] = val
-    
+
     return da2.squeeze()
 
 
-def extract_season(da: xr.DataArray | xr.Dataset, season: list | str | tuple) -> xr.DataArray | xr.Dataset:
+def extract_season(
+    da: xr.DataArray | xr.Dataset, season: list | str | tuple
+) -> xr.DataArray | xr.Dataset:
     if isinstance(season, list):
         da = da.isel(time=np.isin(da.time.dt.month, season))
     elif isinstance(season, str):
@@ -211,23 +200,189 @@ def extract_season(da: xr.DataArray | xr.Dataset, season: list | str | tuple) ->
             raise ValueError
     elif isinstance(season, tuple):
         if season[1] > season[0]:
-            time_mask = (da.time.dt.dayofyear >= season[0]) & (da.time.dt.dayofyear <= season[1])
-        else: # over winter
-            time_mask = (da.time.dt.dayofyear >= season[1]) | (da.time.dt.dayofyear >= season[1])
+            time_mask = (da.time.dt.dayofyear >= season[0]) & (
+                da.time.dt.dayofyear <= season[1]
+            )
+        else:  # over winter
+            time_mask = (da.time.dt.dayofyear >= season[1]) | (
+                da.time.dt.dayofyear >= season[1]
+            )
         da = da.sel(time=time_mask)
     return da
+
+
+def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
+    if isinstance(filename, list) and len(filename) == 1:
+        filename = filename[0]
+    if isinstance(filename, list):
+        da = xr.open_mfdataset(filename, chunks=None)
+        da = da.unify_chunks()
+    else:
+        da = xr.open_dataset(filename, chunks="auto")
+        da = da.unify_chunks()
+    if "expver" in da.dims:
+        da = da.sel(expver=1).reset_coords("expver", drop=True)
+    try:
+        da = da[varname]
+    except KeyError:
+        try:
+            da = da[DEFAULT_VARNAME]
+        except KeyError:
+            da = da[list(da.data_vars)[-1]]
+    return da.rename(varname)
+
+
+def extract(
+    da: xr.DataArray,
+    period: list | tuple | Literal["all"] | int | str = "all",
+    season: list | str | tuple | None = None,
+    minlon: Optional[int | float] = None,
+    maxlon: Optional[int | float] = None,
+    minlat: Optional[int | float] = None,
+    maxlat: Optional[int | float] = None,
+    levels: int | str | list | tuple | Literal["all"] = "all",
+    members: str | list | Literal["all"] = "all",
+):
+    da = standardize(da)
+    
+    da = extract_period(da, period)
+    
+    if season is not None:
+        da = extract_season(da, season)
+
+    if "member" in da.dims and members != "all":
+        try:
+            da = da.isel(member=members)
+        except ValueError:
+            da = da.sel(member=members)
+        
+    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
+        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+
+    if "lev" in da.dims:
+        if len(da.lev) == 1:
+            da = da.reset_coords("lev", drop=True)
+            
+    if "lev" in da.dims and levels != "all":
+        da = extract_levels(da, levels)
+
+    return da
+
+
+def open_da(
+    dataset: str,
+    level_type: (
+        Literal["plev"] | Literal["thetalev"] | Literal["2PVU"] | Literal["surf"]
+    ),
+    varname: str,
+    resolution: str,
+    period: list | tuple | Literal["all"] | int | str = "all",
+    season: list | str | tuple | None = None,
+    minlon: Optional[int | float] = None,
+    maxlon: Optional[int | float] = None,
+    minlat: Optional[int | float] = None,
+    maxlat: Optional[int | float] = None,
+    levels: int | str | list | tuple | Literal["all"] = "all",
+    clim_type: str | None = None,
+    clim_smoothing: Mapping | None = None,
+    smoothing: Mapping | None = None,
+) -> xr.DataArray:
+    path = data_path(
+        dataset,
+        level_type,
+        varname,
+        resolution,
+        clim_type,
+        clim_smoothing,
+        smoothing,
+        False,
+    )
+    file_structure = determine_file_structure(path)
+
+    if isinstance(period, tuple):
+        period = np.arange(int(period[0]), int(period[1] + 1))
+    elif isinstance(period, list):
+        period = np.asarray(period).astype(int)
+    elif period == "all":
+        period = YEARS
+    elif isinstance(period, int | str):
+        period = [int(period)]
+
+    files_to_load = []
+
+    if file_structure == "one_file":
+        files_to_load = [path.joinpath("full.nc")]
+    elif file_structure == "yearly":
+        files_to_load = [path.joinpath(f"{year}.nc") for year in period]
+    elif file_structure == "monthly":
+        if season is None:
+            files_to_load = [
+                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
+                for month in range(1, 13)
+                for year in period
+            ]
+        else:
+            if isinstance(season, str):
+                monthlist = SEASONS[season]
+            elif isinstance(season, list):
+                monthlist = np.atleast_1d(season)
+            elif isinstance(season, tuple):
+                sample_tr = TIMERANGE[TIMERANGE.year == period[0]]
+                monthlist = np.unique(
+                    sample_tr[
+                        np.isin(sample_tr.dayofyear, np.arange(season[0], season[1]))
+                    ].month
+                )
+            files_to_load = [
+                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
+                for month in monthlist
+                for year in period
+            ]
+
+    files_to_load = [fn for fn in files_to_load if fn.is_file()]
+
+    da = _open_dataarray(files_to_load, varname)
+    da = extract(
+        da,
+        period=period,
+        season=season,
+        minlon=minlon,
+        maxlon=maxlon,
+        minlat=minlat,
+        maxlat=maxlat,
+        levels=levels,
+    )
+    return da
+
+
+def unpack_smooth_map(smooth_map: Mapping | Sequence) -> str:
+    strlist = []
+    for dim, value in smooth_map.items():
+        if dim == "detrended":
+            if smooth_map["detrended"]:
+                strlist.append("detrended")
+            continue
+        smooth_type, winsize = value
+        if dim == "dayofyear":
+            dim = "doy"
+        if isinstance(winsize, float):
+            winsize = f"{winsize:.2f}"
+        elif isinstance(winsize, int):
+            winsize = str(winsize)
+        strlist.append("".join((dim, smooth_type, winsize)))
+    return "_".join(strlist)
 
 
 def pad_wrap(da: xr.DataArray, dim: str) -> bool:
     resolution = da[dim][1] - da[dim][0]
     if dim in ["lon", "longitude"]:
-        return (
-                360 >= da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
-        )
-    return dim == "dayofyear"
+        return 360 >= da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
+    return dim in ["dayofyear", "hourofyear"]
 
 
-def _window_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
+def _window_smoothing(
+    da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool = True
+) -> xr.DataArray:
     if dim != "hourofyear":
         return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
     groups = da.groupby(da.hourofyear % 24)
@@ -236,11 +391,17 @@ def _window_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int, cen
     if "time" in da.dims:
         dim = "time"
     for group in groups.groups.values():
-        to_concat.append(da.loc[{dim: da.hourofyear[group]}].rolling({dim: winsize // 4}, center=center, min_periods=1).mean())
+        to_concat.append(
+            da.loc[{dim: da.hourofyear[group]}]
+            .rolling({dim: winsize // 4}, center=center, min_periods=1)
+            .mean()
+        )
     return xr.concat(to_concat, dim=dim).sortby(dim)
 
 
-def window_smoothing(da: xr.DataArray, dim: str, winsize: int, center: bool=True) -> xr.DataArray:
+def window_smoothing(
+    da: xr.DataArray, dim: str, winsize: int, center: bool = True
+) -> xr.DataArray:
     dims = dim.split("+")
     for dim in dims:
         if pad_wrap(da, dim):
@@ -271,7 +432,11 @@ def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
     ft = ft.where(mask, 0)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=FutureWarning)
-        newda = xrft.ifft(ft, dim=[f"freq_{dim_}" for dim_ in dim]).real.assign_coords(da.coords).rename(name)
+        newda = (
+            xrft.ifft(ft, dim=[f"freq_{dim_}" for dim_ in dim])
+            .real.assign_coords(da.coords)
+            .rename(name)
+        )
     newda.attrs = da.attrs
     for i, extra_dim in enumerate(extra_dims):
         newda.assign_coords({extra_dim: extra_coords[i]})
@@ -307,133 +472,6 @@ def smooth(
     return da
 
 
-def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
-    if isinstance(filename, list) and len(filename) == 1:
-        filename = filename[0]
-    if isinstance(filename, list):
-        da = xr.open_mfdataset(filename, chunks=None)
-        da = da.unify_chunks()
-    else:
-        da = xr.open_dataset(filename, chunks="auto")
-        da = da.unify_chunks()
-    if "expver" in da.dims:
-        da = da.sel(expver=1).reset_coords("expver", drop=True)
-    try:
-        da = da[varname]
-    except KeyError:
-        try:
-            da = da[DEFAULT_VARNAME]
-        except KeyError:
-            da = da[list(da.data_vars)[-1]]
-    return da
-
-
-def open_da(
-    dataset: str,
-    level_type: Literal["plev"] | Literal["thetalev"] | Literal["2PVU"] | Literal["surf"],
-    varname: str,
-    resolution: str,
-    period: list | tuple | Literal["all"] | int | str = "all",
-    season: list | str | tuple | None = None,
-    minlon: Optional[int | float] = None,
-    maxlon: Optional[int | float] = None,
-    minlat: Optional[int | float] = None,
-    maxlat: Optional[int | float] = None,
-    levels: int | str | list | tuple | Literal["all"] = "all",
-    clim_type: str | None = None,
-    clim_smoothing: Mapping | None = None,
-    smoothing: Mapping | None = None,
-) -> xr.DataArray:
-    """_summary_
-
-    Args:
-        dataset (str): _description_
-        varname (str): _description_
-        resolution (str): Time resolution like '6H' -> Change to data_type (str), '6H_p' ?
-        period (list | tuple | Literal[&quot;all&quot;] | int | str, optional): _description_. Defaults to "all".
-        season (list | str, optional): _description_. Defaults to None.
-        minlon (Optional[int  |  float], optional): _description_. Defaults to None.
-        maxlon (Optional[int  |  float], optional): _description_. Defaults to None.
-        minlat (Optional[int  |  float], optional): _description_. Defaults to None.
-        maxlat (Optional[int  |  float], optional): _description_. Defaults to None.
-        levels (int | str | list | tuple | Literal[&quot;all&quot;], optional): _description_. Defaults to "all".
-        clim_type (str, optional): _description_. Defaults to None.
-        clim_smoothing (Mapping, optional): _description_. Defaults to None.
-        smoothing (Mapping, optional): _description_. Defaults to None.
-
-    Raises:
-        ValueError: _description_
-
-    Returns:
-        xr.DataArray: _description_
-    """
-    path = data_path(
-        dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
-    )
-    file_structure = determine_file_structure(path)
-
-    if isinstance(period, tuple):
-        period = np.arange(int(period[0]), int(period[1] + 1))
-    elif isinstance(period, list):
-        period = np.asarray(period).astype(int)
-    elif period == "all":
-        period = YEARS
-    elif isinstance(period, int | str):
-        period = [int(period)]
-    
-    files_to_load = []
-
-    if file_structure == "one_file":
-        files_to_load = [path.joinpath("full.nc")]
-    elif file_structure == "yearly":
-        files_to_load = [path.joinpath(f"{year}.nc") for year in period]
-    elif file_structure == "monthly":
-        if season is None:
-            files_to_load = [
-                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
-                for month in range(1, 13)
-                for year in period
-            ]
-        else:
-            if isinstance(season, str):
-                monthlist = SEASONS[season]
-            elif isinstance(season, list):
-                monthlist = np.atleast_1d(season)
-            elif isinstance(season, tuple):
-                sample_tr = TIMERANGE[TIMERANGE.year == period[0]]
-                monthlist = np.unique(sample_tr[np.isin(sample_tr.dayofyear, np.arange(season[0], season[1]))].month)
-            files_to_load = [
-                path.joinpath(f"{year}{str(month).zfill(2)}.nc")
-                for month in monthlist
-                for year in period
-            ]
-            
-
-    files_to_load = [fn for fn in files_to_load if fn.is_file()]
-
-    da = _open_dataarray(files_to_load, varname)
-    if (file_structure == "one_file") and (period != "all"):
-        da = da.isel(time=np.isin(da.time.dt.year, period))
-    if season is not None:
-        da = extract_season(da, season)
-    da = da.rename(varname)
-    da = rename_coords(da)
-    if "lev" in da.dims and level_type not in ["plev", "thetalev"]:
-        da = da.reset_coords("lev", drop=True)
-    if np.diff(da.lat.values)[0] < 0:
-        da = da.reindex(lat=da.lat[::-1])
-    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
-        da = da.sel(lon=slice(minlon, maxlon + 0.1), lat=slice(minlat, maxlat + 0.1))
-        
-    if "lev" in da.dims and levels != "all":
-        da = extract_levels(da, levels)
-        
-    if clim_type is not None or smoothing is None:
-        return da
-    
-    return smooth(da, smoothing)
-
-
 def compute_hourofyear(da: xr.DataArray) -> xr.DataArray:
     return da.time.dt.hour + 24 * (da.time.dt.dayofyear - 1)
 
@@ -442,7 +480,9 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
     if clim_type.lower() == "hourofyear":
         da = da.assign_coords(hourofyear=compute_hourofyear(da))
         coord = da.hourofyear
-    elif clim_type.lower() in [att for att in dir(da.time.dt) if not att.startswith("_")]:
+    elif clim_type.lower() in [
+        att for att in dir(da.time.dt) if not att.startswith("_")
+    ]:
         coord = getattr(da.time.dt, clim_type)
     else:
         raise NotImplementedError
@@ -460,13 +500,15 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
             expected_groups=np.unique(coord.values),
         ).compute(**COMPUTE_KWARGS)
     return clim
-    
 
-def compute_anom(anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False):
+
+def compute_anom(
+    anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False
+):
     anom, coord = assign_clim_coord(anom, clim_type)
     this_gb = anom.groupby(coord)
     if not normalized:
-        anom = (this_gb - clim)
+        anom = this_gb - clim
     else:
         variab = flox.xarray.xarray_reduce(
             anom,
@@ -475,10 +517,12 @@ def compute_anom(anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normali
             method="cohorts",
             expected_groups=np.unique(coord.values),
         )
-        anom = ((this_gb - clim).groupby(coord) / variab).reset_coords("hourofyear", drop=True)
+        anom = ((this_gb - clim).groupby(coord) / variab).reset_coords(
+            "hourofyear", drop=True
+        )
         anom = anom.where((anom != np.nan) & (anom != np.inf) & (anom != -np.inf), 0)
     return anom.reset_coords(clim_type, drop=True)
-    
+
 
 def compute_all_smoothed_anomalies(
     dataset: str,
@@ -490,7 +534,14 @@ def compute_all_smoothed_anomalies(
     smoothing: Mapping = None,
 ) -> None:
     path, clim_path, anom_path = data_path(
-        dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, True
+        dataset,
+        level_type,
+        varname,
+        resolution,
+        clim_type,
+        clim_smoothing,
+        smoothing,
+        True,
     )
     anom_path.mkdir(parents=True, exist_ok=True)
 
@@ -501,14 +552,18 @@ def compute_all_smoothed_anomalies(
     if dest_clim.is_file() and all([dest_anom.is_file() for dest_anom in dests_anom]):
         return
 
-    sources = [source for source in path.iterdir() if source.is_file() and source.suffix == ".nc"]
-    
+    sources = [
+        source
+        for source in path.iterdir()
+        if source.is_file() and source.suffix == ".nc"
+    ]
+
     if clim_type is None:
         for source, dest in tqdm(zip(sources, dests_anom), total=len(dests_anom)):
             if dest.is_file():
                 continue
-            anom = rename_coords(_open_dataarray(source, varname))
-            anom = smooth(anom, smoothing).compute(**COMPUTE_KWARGS)
+            anom = standardize(_open_dataarray(source, varname))
+            anom = smooth(anom, smoothing).astype(np.float32).compute(**COMPUTE_KWARGS)
             anom.to_netcdf(dest)
         return
     if dest_clim.is_file():
@@ -519,17 +574,17 @@ def compute_all_smoothed_anomalies(
         )
         clim = compute_clim(da, clim_type)
         clim = smooth(clim, clim_smoothing)
-        clim.to_netcdf(dest_clim)
+        clim.astype(np.float32).to_netcdf(dest_clim)
     if len(sources) > 1:
         iterator_ = tqdm(zip(sources, dests_anom), total=len(dests_anom))
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
-        anom = rename_coords(xr.open_dataarray(source))
+        anom = standardize(xr.open_dataarray(source))
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)
-            anom = anom.compute(**COMPUTE_KWARGS)
+            anom = anom.astype(np.float32).compute(**COMPUTE_KWARGS)
         anom.to_netcdf(dest)
 
 
@@ -563,9 +618,11 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
     q_clim = compute_clim(q, "dayofyear")
     q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
     q_clim.to_netcdf(opath)
-    
-    
-def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False) -> xr.Dataset:
+
+
+def compute_anomalies_ds(
+    ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False
+) -> xr.Dataset:
     ds, coord = assign_clim_coord(ds, clim_type)
     clim = flox.xarray.xarray_reduce(
         ds,
@@ -589,7 +646,9 @@ def compute_anomalies_ds(ds: xr.Dataset, clim_type: str, normalized: bool = Fals
     )
     variab = smooth(variab, {clim_type: ("win", 61)})
     if return_clim:
-        return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True), clim
+        return ((this_gb - clim).groupby(coord) / variab).reset_coords(
+            clim_type, drop=True
+        ), clim
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)
 
 
@@ -623,29 +682,59 @@ def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
         return ds
     ope = np.nanargmin if by[0] == "-" else np.nanargmax
     by = by.lstrip("-")
-    to_concat = []
     if ds["s"].chunks is not None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             with ProgressBar():
                 ds = ds.compute(**COMPUTE_KWARGS)
+    ds[by] = ds[by].interpolate_na("time", method="linear", fill_value="extrapolate")
     levmax = ds[by].reduce(ope, dim="lev")
     ds = ds.isel(lev=levmax).reset_coords("lev")  # but not drop
     ds["lev"] = ds["lev"].astype(np.float32)
     return ds
-    
 
-class DataHandlerBase(object):
+
+def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None = None) -> dict:
+    if isinstance(da, xr.DataArray) and varname is None:
+        varname = da.name
+    elif isinstance(da, xr.Dataset) and varname is None:
+        varname = list(da.data_vars)
+        varname.sort()
+    period = np.unique(da.time.dt.year)
+    season = np.unique(da.time.dt.month)
+    nullseason = {None: list(range(1, 13))}
+    for seasonname, monthlist in (SEASONS | nullseason).items():
+        if monthlist == season.tolist():
+            season = seasonname
+            break
+    region = get_region(da)
+    if "lev" in da.dims:
+        levels = da.lev.values.tolist()
+    else:
+        levels = None
+    metadata = {
+        "varname": varname,
+        "period": period.tolist(),
+        "season": season,
+        "region": region,
+        "levels": levels,
+    }
+    if "member" in da.dims:
+        metadata["members"] = np.unique(da.member).tolist()
+    return metadata
+
+
+class DataHandler(object):
     def __init__(
         self,
-        da: xr.DataArray,
+        da: xr.DataArray | xr.Dataset,
         path: Path,
     ) -> None:
         self.da = da
         self.path = Path(path)
         self._setup_dims()
-        self._extract_metadata()
-        
+        self.metadata = metadata_from_da(self.da)
+
     def _setup_dims(self):
         self.sample_dims = {"time": self.da.time.values}
         try:
@@ -668,59 +757,34 @@ class DataHandlerBase(object):
             self.extra_dims = {"lev": self.da.lev.values}
         self.flat_shape = (
             np.prod([len(dim) for dim in self.sample_dims.values()]),
-            np.prod([len(dim) for dim in self.feature_dims.values()])
+            np.prod([len(dim) for dim in self.feature_dims.values()]),
         )
-        
-    def _extract_metadata(self):
-        period = np.unique(self.da.time.dt.year)
-        season = np.unique(self.da.time.dt.month)
-        nullseason = {None: list(range(1, 13))}
-        for seasonname, monthlist in (SEASONS | nullseason).items():
-            if monthlist == season.tolist():
-                season = seasonname
-                break
-        region = get_region(self.da)
-        if "lev" in self.da.dims:
-            levels = self.da.lev.values
-        else:
-            levels = "all"
-        self.metadata = {
-            "period": period,
-            "season": season,
-            "region": region,
-            "levels": levels,
-        }
-        
+    
     def get_path(self) -> Path:
         return self.path
-        
-    def get_da(self, load: bool = False) -> xr.DataArray:
-        if load:
-            try:
-                self.da = self.da.load()
-            except AttributeError:
-                pass
-        return self.da
-    
+
+    def load_da(self, progress: bool = False, **kwargs):
+        self.da = _compute(self.da, progress=progress, **kwargs)
+
     def get_metadata(self) -> Mapping:
         return self.metadata
-    
+
     def get_sample_dims(self) -> Mapping:
         return self.sample_dims
-    
+
     def get_feature_dims(self) -> Mapping:
         return self.feature_dims
-    
+
     def get_extra_dims(self) -> Mapping:
         return self.extra_dims
-    
+
     def get_flat_shape(self) -> Mapping:
         return self.flat_shape
     
-
-class DataHandler(DataHandlerBase):
-    def __init__(
-        self,
+                
+    @classmethod
+    def from_specs(
+        cls,
         dataset: str,
         level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
         varname: str,
@@ -736,14 +800,20 @@ class DataHandler(DataHandlerBase):
         clim_smoothing: Mapping = None,
         smoothing: Mapping = None,
         reduce_da: bool = True,
-    ) -> None:
-        self.path = data_path(
-            dataset, level_type, varname, resolution, clim_type, clim_smoothing, smoothing, False
+    ) -> "DataHandler":
+        path = data_path(
+            dataset,
+            level_type,
+            varname,
+            resolution,
+            clim_type,
+            clim_smoothing,
+            smoothing,
+            False,
         ).joinpath("results")
-        self.path.mkdir(exist_ok=True)
         if level_type == "surf":
             levels = "all"
-        self.open_da_args = (
+        open_da_args = (
             dataset,
             level_type,
             varname,
@@ -759,60 +829,168 @@ class DataHandler(DataHandlerBase):
             clim_smoothing,
             smoothing,
         )
+        if levels != "all":
+            levels, level_names = unpack_levels(levels)
+            
+        region = (minlon, maxlon, minlat, maxlat)
+        
+        if period == "all":
+            period = YEARS
+        
+        metadata = {
+            "varname": varname,
+            "period": period.tolist(),
+            "season": season,
+            "region": region,
+            "levels": levels,
+        }
+        path = find_spot(path, metadata)
+        da_path = path.joinpath("da.nc")
+        if da_path.is_file():
+            da = xr.open_dataarray(
+                da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1}
+            )
+        else:
+            da = open_da(*open_da_args)
+            da = smooth(da, smoothing)
+            with ProgressBar():
+                da = da.load(**COMPUTE_KWARGS)
+            if reduce_da:
+                da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
+            da.to_netcdf(da_path, format="NETCDF4")
+        return cls(da, path)
+    
+    @classmethod
+    def from_several_dhs(
+        cls,
+        data_handlers: Mapping[str, "DataHandler"],
+        flatten_ds: bool = True,
+    ):
+        varnames = list(data_handlers)
+        if flatten_ds:
+            varnames.append("lev")
+        varnames.sort()
+        data_handlers_list = list(data_handlers.values())
+        paths = [dh.get_path() for dh in data_handlers_list]
+        basepath = commonpath(paths)
+        path = Path(basepath, "results")
+        path.mkdir(exist_ok=True)
+        
+        all_mdas = [dh.get_metadata() for dh in data_handlers_list]
+        for mda in all_mdas:
+            mda.pop("varname")
+        assert all([mda == all_mdas[0] for mda in all_mdas])
 
-        self.varname = varname
-        self.region = (minlon, maxlon, minlat, maxlat)
-        self.clim_type = clim_type
-        if levels != 'all':
-            self.levels, self.level_names = unpack_levels(levels)
-        else: 
-            self.levels = 'all'
+        metadata = {
+            "varname": varnames,
+        } | all_mdas[0]
+        if flatten_ds:
+            metadata["levels"] = None
 
-        self.metadata = {
+        path = find_spot(path, metadata)
+        
+        dspath = path.joinpath("ds.nc")
+        if dspath.is_file():
+            ds = xr.open_dataset(dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
+            return cls(ds, path)
+        
+        ds = {}
+        for varname, dh in data_handlers.items():
+            ds[varname] = dh.da
+        ds = xr.Dataset(ds)
+        with ProgressBar():
+            ds = ds.load(**COMPUTE_KWARGS)
+        if flatten_ds:
+            ds = flatten_by(ds, "s")
+        ds.to_netcdf(dspath)
+        return cls(ds, path)
+    
+    @classmethod
+    def from_intake(
+        cls,
+        url: str,
+        varname: str,
+        basepath: Path,
+        component="atm",
+        experiment: str | list[str] = "historical",
+        frequency: Literal["daily", "monthly"] = "daily",
+        forcing_variant: Literal["cmip6", "smbb"] = "cmip6",
+        period: list | tuple | Literal["all"] | int | str = "all",
+        season: list | str = None,
+        minlon: Optional[int | float] = None,
+        maxlon: Optional[int | float] = None,
+        minlat: Optional[int | float] = None,
+        maxlat: Optional[int | float] = None,
+        levels: int | str | tuple | list | Literal["all"] = "all",
+        members: str | list | Literal["all"] = "all",
+        reduce_da: bool = True,
+    ) -> "DataHandler":
+        basepath = Path(basepath)
+        if varname == "s":
+            varname_to_search = ["U", "V"]
+        else:
+            varname_to_search = varname
+        varname = varname.lower()
+        indexers = [component, experiment, frequency, forcing_variant]
+        indexers = [np.atleast_1d(indexer) for indexer in indexers]
+        indexers = [[str(idx_) for idx_ in indexer] for indexer in indexers]
+        indexers = list(product(*indexers))
+        ensemble_keys = [".".join(indexer) for indexer in indexers]
+        
+        metadata = {
+            "varname": varname.lower(),
+            "ensemble_keys": ensemble_keys,
+            "members": members,
             "period": period,
             "season": season,
             "region": (minlon, maxlon, minlat, maxlat),
-            "levels": self.levels,
+            "levels": levels,
         }
         
-        self.path = find_spot(self.path, self.metadata)
-
-        da_path = self.path.joinpath("da.nc")
-        if da_path.is_file():
-            self.da = xr.open_dataarray(da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
-        else:
-            self.da = open_da(*self.open_da_args)
-            with ProgressBar():
-                self.da = self.da.load()
-            if reduce_da:
-                self.da = flatten_by(xr.Dataset({varname: self.da}), varname)[varname]
-            self.da.to_netcdf(da_path, format="NETCDF4")
-        self._setup_dims()
+        path = find_spot(basepath, metadata)
+        da_path = path.joinpath("da.zarr")
+        if da_path.exists():
+            da = xr.open_dataarray(da_path, engin="zarr")
+            return cls(da, path)
         
-        
-def IntakeDataHandler(DataHandlerBase):
-    def __init__(
-        self, 
-        url: str, 
-        varname: str, 
-        ensemble_key: str | list[str], 
-        basepath: Path,
-        frequency: Literal["daily", "monthly"] = "daily",
-        forcing_variant: Literal["cmip6", "smbb"] = "cmip6",
-    ):
-        self.varname = varname
         catalog = intake.open_esm_datastore(url)
-        catalog_subset = catalog.search(variable=self.varnames, frequency=frequency, forcing_variant=forcing_variant)
-        dsets = catalog_subset.to_dataset_dict(storage_options={'anon':True})
-        if isinstance(ensemble_key, str):
-            self.da = standardize(dsets[ensemble_key][varname])
+        catalog_subset = catalog.search(
+            variable=varname_to_search,
+            component=component,
+            experiment=experiment,
+            frequency=frequency,
+            forcing_variant=forcing_variant,
+        )
+        dsets = catalog_subset.to_dataset_dict(storage_options={"anon": True})
+        if len(ensemble_keys) == 1:
+            da = dsets[ensemble_keys[0]]
         else:
-            self.da = []
-            for ek in ensemble_key:
-                self.da.append(standardize(dsets[ek][varname]))
-            self.da = xr.concat(self.da, dim="time")
+            da = []
+            for ek in ensemble_keys:
+                da.append(dsets[ek])
+            da = xr.concat(da, dim="time")
+            
+        if varname == "s":
+            da = np.sqrt(da["U"] ** 2 + da["V"] ** 2)
+        else:
+            da = da[varname]
+
+        da = extract(
+            da,
+            period=period,
+            season=season,
+            minlon=minlon,
+            maxlon=maxlon,
+            minlat=minlat,
+            maxlat=maxlat,
+            levels=levels,
+            members=members,
+        )
         
-        self._extract_metadata()
-        self.path = find_spot(basepath, self.metadata)
-        self._setup_dims()
+        da = da.chunk({"member": 1, "time": 10000, "lev":-1, "lon": -1, "lat": -1})
+        
+        if reduce_da:
+            da = da.max("lev")
+
+        return cls(da, path)
         
