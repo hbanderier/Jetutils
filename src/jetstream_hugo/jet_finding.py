@@ -704,8 +704,10 @@ def jet_overlap_values(jet1: NDArray, jet2: NDArray) -> Tuple[float, float]:
     x2, y2 = jet2[idx2, :2].T
     mask12 = np.isin(x1, x2)
     mask21 = np.isin(x2, x1)
-    overlap = (np.mean(mask12) + np.mean(mask21)) / 2
-    vert_dist = np.mean(np.abs(y1[mask12] - y2[mask21]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        overlap = (np.mean(mask12) + np.mean(mask21)) / 2
+        vert_dist = np.mean(np.abs(y1[mask12] - y2[mask21]))
     return overlap, vert_dist
 
 
@@ -793,23 +795,35 @@ def isin(a, b):
 def _track_jets(df):
     print("tracking jets")
     df = df[["lon", "lat"]]
-    time = df.index.levels[0]
+    time = df.index.get_level_values(0)
+    df["raw_index"] = np.arange(len(df))
+    time_starts = df.loc[(slice(None), "0", 0), "raw_index"].values # iloc vs loc on large dfs: 1000x speedup
+    del df["raw_index"]
     dt = time[1] - time[0]
-    all_jets_one_array = round_half(df)
-    all_jets_over_time = []
+    df = round_half(df)
+    guess_nflags = len(time) // 3
+    guess_len = 100
+    all_jets_over_time = np.zeros((guess_nflags, guess_len), dtype=[("time", "datetime64[s]"), ("jet ID", "i4")])
+    all_jets_over_time[:] = (np.datetime64("NaT"), -1)
+    last_valid_index = np.full(guess_nflags, fill_value=guess_len, dtype="int32")
     for jet_id, jet in df.loc[time[0]].groupby("jet ID"):
-        all_jets_over_time.append([(time[0], jet_id)])
+        jet_id = int(jet_id)
+        all_jets_over_time[int(jet_id), 0] = (time[0], int(jet_id))
+        last_valid_index[int(jet_id)] = 0
+    last_flag = int(jet_id)
     flags = df.loc[:, :, 0]["lon"].astype(np.int32).copy().rename("flags")
     flags[:] = 0
-    last_flag = int(jet_id)
-    flags.loc[time[0], :jet_id] = np.arange(last_flag + 1, dtype=np.int32)
-    for t, jets in df.loc[time[1]:].groupby("time"): 
+    flags.loc[time[0], :str(jet_id)] = np.arange(last_flag + 1, dtype=np.int32)
+    for it, (t, jets) in enumerate(tqdm(df.iloc[time_starts[1]:].groupby("time"), total=len(time) - 1)): 
+        min_time_index = max(it - 3, 0)
+        subdf = df.iloc[time_starts[min_time_index]:time_starts[it + 1]]
         jets = jets.droplevel(0)
-        from_ = max(0, last_flag - 30)
-        potentials = all_jets_over_time[from_:]
-        potentials = [potential[-1] for potential in potentials]
+        from_ = max(0, last_flag - 20)
+        potentials = all_jets_over_time[from_:last_flag + 1]
+        these_lvis = last_valid_index[from_:last_flag + 1]
+        potentials = [potential[lvi] for potential, lvi in zip(potentials, these_lvis)]
         times_to_test = [ind[0] for ind in potentials]
-        timesteps_to_check = [t - n * dt for n in range(4)]
+        timesteps_to_check = [t - n * dt for n in range(1, 5)]
         condition = np.isin(times_to_test, timesteps_to_check)
         potentials = [ind for con, ind in zip(condition, potentials) if con]
         num_valid_jets = len(jets.groupby(level=0))
@@ -817,7 +831,7 @@ def _track_jets(df):
         overlaps = dist_mat.copy()
         for i, jtt_idx in enumerate(potentials):
             i = int(i)
-            jet_to_try = df.loc[*jtt_idx, :].values
+            jet_to_try = subdf.loc[jtt_idx[0], str(jtt_idx[1]), :].values
             for j, jet in jets.groupby(level=0):
                 j = int(j)
                 jet = jet.values
@@ -836,22 +850,25 @@ def _track_jets(df):
                 if flagged[j]:
                     continue
                 this_flag = from_ + i
-                all_jets_over_time[this_flag].append((t, str(j)))
+                last_valid_index[this_flag] = last_valid_index[this_flag] + 1
+                all_jets_over_time[this_flag, last_valid_index[this_flag]] = (t, j)
                 flagged[j] = True
                 flags.loc[t, j] = this_flag
                 break
         for j in range(num_valid_jets):
             if not flagged[j]:
                 last_flag += 1
-                all_jets_over_time.append([(t, str(j))])
+                last_valid_index[last_flag] = 0
+                all_jets_over_time[last_flag, 0] = (t, j)
                 flags[t, j] = last_flag
                 flagged[j] = True
-    all_jets_over_time = pd.concat(
-        [pd.DataFrame(ajot, columns=["time", "jet ID"]) for ajot in all_jets_over_time], 
-        keys=np.arange(len(all_jets_over_time)),
-        names=["flag", "timesteps"],
-    )
-    return all_jets_over_time, flags
+    ajot_df = []
+    for ajot in all_jets_over_time[:last_flag + 1]:
+        times = ajot["time"]   
+        ajot = ajot[:np.argmax(np.isnat(times))]
+        ajot_df.append(pd.DataFrame(ajot))
+    ajot_df = pd.concat(ajot_df, keys=np.arange(last_flag + 1), names=["flag", "timesteps"])
+    return ajot_df, flags
     
     
 def track_jets(all_jets_one_df):
@@ -871,13 +888,14 @@ def track_jets(all_jets_one_df):
         ajots.append(all_jets_over_time)
         all_flags.append(flags)
         keys.append(indexer)
+    ajots = pd.concat(ajots, keys=keys)
+    all_flags = pd.concat(all_flags, keys=keys)
     return ajots, all_flags
 
 
-def extract_props_over_time(jet, props_as_ds, incorrect):
-    jet = jet[jet[:, 0] != incorrect, :]
-    times = xr.DataArray(props_as_ds.time[jet[:, 0]].values, dims="point")
-    jets = xr.DataArray(jet[:, 1], dims="point")
+def extract_props_over_time(jet_over_time: pd.DataFrame, props_as_ds):
+    times = xr.DataArray(jet_over_time.loc[:, "time"].values, dims="point")
+    jets = xr.DataArray(jet_over_time.loc[:, "jet ID"].values, dims="point")
     props_over_time = props_as_ds.loc[{"time": times, "jet": jets}].rename(
         jet="jet_index"
     )
@@ -894,12 +912,10 @@ def add_persistence_to_props(ds_props: xr.Dataset, flags: NDArray):
     dt2 = np.timedelta64(1, "D")
     factor = float(dt1 / dt2)
     num_jets = ds_props["mean_lon"].shape[1]
-    jet_persistence_prop = flags[:, :num_jets].copy().astype(float)
-    nan_flag = np.amax(flags)
+    jet_persistence_prop = flags.loc[:, :str(num_jets - 1)].copy().astype(float).values
     unique_flags, jet_persistence = np.unique(flags, return_counts=True)
     for i, flag in enumerate(unique_flags[:-1]):
-        jet_persistence_prop[flags[:, :num_jets] == flag] = jet_persistence[i] * factor
-    jet_persistence_prop[flags[:, :num_jets] == nan_flag] = np.nan
+        jet_persistence_prop = jet_persistence[i] * factor
     ds_props["persistence"] = (names, jet_persistence_prop)
     return ds_props
 
@@ -1023,34 +1039,26 @@ class JetFindingExperiment(object):
         data_handler: DataHandler,
     ) -> None:
         self.ds = data_handler.da
+        self.path = data_handler.path
         self.data_handler = data_handler
         self.time = data_handler.get_sample_dims()["time"]
 
-    def find_jets(self, **kwargs) -> Tuple:
+    def find_jets(self, **kwargs) -> pd.DataFrame:
         ofile_ajdf = self.path.joinpath("all_jets_one_df.pkl")
-        ofile_waj = self.path.joinpath("where_are_jets.npy")
-        ofile_ajoa = self.path.joinpath("all_jets_one_array.npy")
 
-        if all([ofile.is_file() for ofile in (ofile_ajdf, ofile_waj, ofile_ajoa)]):
+        if ofile_ajdf.is_file():
             all_jets_one_df = pd.read_pickle(ofile_ajdf)
-            where_are_jets = np.load(ofile_waj)
-            all_jets_one_array = np.load(ofile_ajoa)
-            return all_jets_one_df, where_are_jets, all_jets_one_array
-        
+            return all_jets_one_df
         try:
-            qs_path = self.path.parent.joinpath("s_q_clim.nc")
+            qs_path = self.path.joinpath("qs_5.nc")
             qs = xr.open_dataarray(qs_path)[2]
-            kwargs["thresholds_da"] = qs
+            kwargs["threshold"] = qs
         except FileNotFoundError:
             pass
         
-        all_jets = find_all_jets(self.ds, **kwargs)
-        all_jets_one_df = all_jets_to_one_df(all_jets, self.time)
-        where_are_jets, all_jets_one_array = all_jets_to_one_array(all_jets)
+        all_jets_one_df = find_all_jets(self.ds, self.path, **kwargs)
         all_jets_one_df.to_pickle(ofile_ajdf)
-        np.save(ofile_waj, where_are_jets)
-        np.save(ofile_ajoa, all_jets_one_array)
-        return all_jets_one_df, where_are_jets, all_jets_one_array
+        return all_jets_one_df
 
     def compute_jet_props(
         self, processes: int = N_WORKERS, chunksize=100
@@ -1058,56 +1066,42 @@ class JetFindingExperiment(object):
         jet_props_incomplete_path = self.path.joinpath("props_as_ds_uncat_raw.nc")
         if jet_props_incomplete_path.is_file():
             return xr.open_dataset(jet_props_incomplete_path)
-        all_jets_one_df, _, _ = self.find_jets(processes=processes, chunksize=chunksize)
+        all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
         props_as_ds_uncat = compute_all_jet_props(
             all_jets_one_df, self.ds["s"], processes=processes, chunksize=chunksize
         )
         props_as_ds_uncat.to_netcdf(jet_props_incomplete_path)
         return props_as_ds_uncat
 
-    def track_jets(self, processes: int = N_WORKERS, chunksize=100) -> Tuple:
-        all_jets_one_df, where_are_jets, all_jets_one_array = self.find_jets(
-            processes=processes, chunksize=chunksize
-        )
-        ofile_ajot = self.path.joinpath("all_jets_over_time.npy")
-        ofile_flags = self.path.joinpath("flags.npy")
+    def track_jets(self) -> Tuple:
+        all_jets_one_df = self.find_jets()
+        ofile_ajot = self.path.joinpath("all_jets_over_time.pkl")
+        ofile_flags = self.path.joinpath("flags.pkl")
 
         if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]):
-            all_jets_over_time = np.load(ofile_ajot)
-            flags = np.load(ofile_flags)
+            all_jets_over_time = load_pickle(ofile_ajot)
+            flags = load_pickle(ofile_flags)
 
             return (
                 all_jets_one_df,
-                where_are_jets,
-                all_jets_one_array,
                 all_jets_over_time,
                 flags,
             )
-        if len(np.unique(np.diff(self.ds.time))) > 1:
-            yearbreaks = np.sum(
-                self.ds.time.dt.year.values == self.ds.time.dt.year.values[0]
-            )
-        else:
-            yearbreaks = -1
         all_jets_over_time, flags = track_jets(
-            all_jets_one_array,
-            where_are_jets,
-            yearbreaks=yearbreaks,
+            all_jets_one_df
         )
 
-        np.save(ofile_ajot, all_jets_over_time)
-        np.save(ofile_flags, flags)
+        save_pickle(all_jets_over_time, ofile_ajot)
+        save_pickle(flags, ofile_flags)
 
         return (
             all_jets_one_df,
-            where_are_jets,
-            all_jets_one_array,
             all_jets_over_time,
             flags,
         )
 
     def props_as_ds(
-        self, categorize: bool = True, processes: int = N_WORKERS, chunksize=100
+        self, categorize: bool = True
     ) -> xr.Dataset:
         ofile_padu = self.path.joinpath("props_as_ds_uncat.nc")
         ofile_pad = self.path.joinpath("props_as_ds.nc")
@@ -1119,8 +1113,8 @@ class JetFindingExperiment(object):
             props_as_ds = categorize_ds_jets(xr.open_dataset(ofile_padu))
             props_as_ds.to_netcdf(ofile_pad)
             return props_as_ds
-        all_jets_one_df, _, _, all_jets_over_time, flags = self.track_jets()
-        props_as_ds_uncat = self.compute_jet_props(processes, chunksize)
+        all_jets_one_df, all_jets_over_time, flags = self.track_jets()
+        props_as_ds_uncat = self.compute_jet_props()
 
         if self.level_type == "plev":
             props_as_ds_uncat = props_as_ds_uncat.interp(time=self.time)
@@ -1146,14 +1140,14 @@ class JetFindingExperiment(object):
 
     def props_over_time(
         self,
-        all_jets_over_time: list | None = None,
+        all_jets_over_time: pd.DataFrame | None = None,
         props_as_ds_uncat: xr.Dataset | None = None,
         processes: int = N_WORKERS,
         chunksize: int = 100,
         save: bool = True,
     ) -> xr.Dataset:
         if all_jets_over_time is None:
-            _, _, _, all_jets_over_time, _ = self.track_jets()
+            _, all_jets_over_time, _ = self.track_jets()
         if props_as_ds_uncat is None:
             props_as_ds_uncat = self.props_as_ds(categorize=False)
         incorrect = len(self.ds.time)
@@ -1217,13 +1211,19 @@ class JetFindingExperiment(object):
                 props_as_ds_uncat[varname].loc[times, jet_indices.astype(int)] = values
         return props_as_ds_uncat
 
-    def compute_extreme_clim(self, varname: str, subsample: int = 1):
+    def compute_extreme_clim(self, varname: str, subsample: int = 5):
         da = self.ds[varname]
         time = pd.Series(self.time)
         years = time.dt.year.values
         mask = np.isin(years, np.unique(years)[::subsample])
         opath = self.path.joinpath(f"q{varname}_clim_{subsample}.nc")
         compute_extreme_climatology(da.isel(time=mask), opath)
+        quantiles_clim = xr.open_dataarray(opath)
+        quantiles = xr.DataArray(np.zeros((len(self.ds.time), quantiles_clim.shape[0])), coords={"time": self.ds.time.values, "quantile": quantiles_clim.coords["quantile"].values})
+        for qcl in quantiles_clim.transpose():
+            dayofyear = qcl.dayofyear
+            quantiles[quantiles.time.dt.dayofyear == dayofyear, :] = qcl.values
+        quantiles.to_netcdf(self.path.joinpath(f"q{varname}_{subsample}.nc"))
 
 
 def compute_dx_dy(ds):
