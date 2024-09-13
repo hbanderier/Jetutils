@@ -728,12 +728,12 @@ class DataHandler(object):
     def __init__(
         self,
         da: xr.DataArray | xr.Dataset,
-        path: Path,
+        basepath: Path,
     ) -> None:
         self.da = da
-        self.path = Path(path)
         self._setup_dims()
         self.metadata = metadata_from_da(self.da)
+        self.path = find_spot(basepath, self.metadata)
 
     def _setup_dims(self):
         self.sample_dims = {"time": self.da.time.values}
@@ -858,7 +858,7 @@ class DataHandler(object):
             if reduce_da:
                 da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
             da.to_netcdf(da_path, format="NETCDF4")
-        return cls(da, path)
+        return cls(da, path.parent)
     
     @classmethod
     def from_several_dhs(
@@ -892,7 +892,7 @@ class DataHandler(object):
         dspath = path.joinpath("ds.nc")
         if dspath.is_file():
             ds = xr.open_dataset(dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
-            return cls(ds, path)
+            return cls(ds, path.parent)
         
         ds = {}
         for varname, dh in data_handlers.items():
@@ -903,7 +903,7 @@ class DataHandler(object):
         if flatten_ds:
             ds = flatten_by(ds, "s")
         ds.to_netcdf(dspath)
-        return cls(ds, path)
+        return cls(ds, path.parent)
     
     @classmethod
     def from_intake(
@@ -951,7 +951,7 @@ class DataHandler(object):
         da_path = path.joinpath("da.zarr")
         if da_path.exists():
             da = xr.open_dataarray(da_path, engin="zarr")
-            return cls(da, path)
+            return cls(da, path.parent)
         
         catalog = intake.open_esm_datastore(url)
         catalog_subset = catalog.search(
@@ -992,5 +992,5 @@ class DataHandler(object):
         if reduce_da:
             da = da.max("lev")
 
-        return cls(da, path)
+        return cls(da, path.parent)
         
