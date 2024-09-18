@@ -166,7 +166,7 @@ class Experiment(object):
     ) -> None:
         self.data_handler = data_handler
         self.inner_norm = inner_norm
-        self.da = self.data_handler.get_da()
+        self.da = self.data_handler.da
         self.path = self.data_handler.get_path()
 
     def get_norm_da(self):
@@ -376,7 +376,7 @@ class Experiment(object):
             net.load_weights(output_path_weights)
             centers = xr.open_dataarray(output_path_centers)
             labels = xr.open_dataarray(output_path_labels)
-            net.train_data_bmus = labels.values
+            net.latest_bmus = labels.values
             return net, centers, labels
         if train_kwargs is None:
             train_kwargs = {}

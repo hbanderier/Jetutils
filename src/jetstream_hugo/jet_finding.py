@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from os.path import commonpath
 from functools import partial, wraps
-from typing import Callable, Mapping, Optional, Sequence, Tuple, Literal
+from typing import Callable, Iterable, Mapping, Optional, Sequence, Tuple, Literal
 from nptyping import NDArray
 from multiprocessing import Pool
 from itertools import combinations, product
@@ -16,7 +16,7 @@ from contourpy import contour_generator
 from sklearn.cluster import AgglomerativeClustering, Birch
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import pairwise_distances
-from tqdm import tqdm, trange
+from tqdm.autonotebook import tqdm, trange
 from numba import njit, prange
 
 from jetstream_hugo.definitions import (
@@ -32,7 +32,8 @@ from jetstream_hugo.definitions import (
     slice_1d,
     get_runs_fill_holes,
     save_pickle,
-    load_pickle
+    load_pickle,
+    _compute,
 )
 from jetstream_hugo.data import (
     flatten_by,
@@ -250,7 +251,7 @@ def all_jets_to_one_df(all_jets: list, **extra_dims):
 
 def inner_find_all_jets(ds_block, basepath: Path, **kwargs):
     extra_dims = {}
-    for potential in ["member", "time"]:
+    for potential in ["member", "time", "cluster"]:
         if potential in ds_block.dims:
             extra_dims[potential] = ds_block[potential].values
     # len_ = np.prod([len(co) for co in extra_dims.values()])
@@ -280,9 +281,13 @@ def find_all_jets(ds, basepath: Path, threshold: xr.DataArray | None = None, **k
     template = ds.isel(lon=0, lat=0).reset_coords(drop=True)
     if threshold is not None:
         ds["threshold"] = ("time", threshold.data)
-    to_comp = ds.map_blocks(inner_find_all_jets, template=template, kwargs=dict(basepath=basepath, **kwargs)).persist() 
-    progress(to_comp)
-    to_comp.compute()
+    try:
+        to_comp = ds.map_blocks(inner_find_all_jets, template=template, kwargs=dict(basepath=basepath, **kwargs)).persist() 
+        progress(to_comp, notebook=False)
+        to_comp.compute()
+    except ValueError:
+        print("No Dask client found, reverting to sequential")
+        _ = inner_find_all_jets(ds, basepath=basepath, **kwargs)
     dfs = []
     for f in basepath.joinpath("jets").glob("*.pkl"):
         dfs.append(load_pickle(f))
@@ -350,9 +355,7 @@ def compute_jet_props(jet: pd.DataFrame, da: xr.DataArray) -> dict:
     jet_numpy = jet[["lon", "lat", "s"]].to_numpy()
     x, y, s = jet_numpy.T
     dic = {}
-    dic["mean_lon"] = np.average(x, weights=s)
-    dic["mean_lat"] = np.average(y, weights=s)
-    for optional_ in ["lev", "P", "theta"]:
+    for optional_ in ["lon", "lat", "lev", "P", "theta"]:
         if optional_ in jet:
             dic[f"mean_{optional_}"] = np.average(jet[optional_].to_numpy(), weights=s)
     dic["mean_spe"] = np.mean(s)
@@ -389,7 +392,7 @@ def compute_jet_props(jet: pd.DataFrame, da: xr.DataArray) -> dict:
 
 
 def compute_jet_props_wrapper(args: Tuple) -> list:
-    da, (_, jets) = args
+    jets, da = args
     jets = jets.droplevel(level=0)
     props = []
     for _, jet in jets.groupby(level=0):
@@ -398,32 +401,45 @@ def compute_jet_props_wrapper(args: Tuple) -> list:
     return pd.DataFrame.from_dict(props)
 
 
+def map_maybe_parallel(iterator: Iterable, func: Callable, len_: int, processes: int = N_WORKERS, chunksize: int = 100) -> list:
+    if processes == 1:
+        return list(
+            tqdm(map(func, iterator), total=len_)
+        )
+    with Pool(processes=processes) as pool:
+        return list(
+            tqdm(
+                pool.imap(func, iterator, chunksize=chunksize),
+                total=len_,
+            )
+        )
+        
+def create_mappable_iterator(df: pd.DataFrame, das: Sequence | None = None, others: Sequence | None = None, potentials: Tuple = ("member", "time", "cluster")) -> Tuple:
+    if das is None:
+        das = []
+    if others is None:
+        others = []
+    iter_dims = []
+    for potential in potentials:
+        if all([potential in da.dims for da in das]) and potential in df.index.names:
+            iter_dims.append(potential)
+    iterator_ = df.groupby(iter_dims)
+    indices = list(iterator_.indices)
+    len_ = len(indices)
+    iterator = ((jets, *[_compute(da.sel({dim: values for dim, values in zip(iter_dims, index)})) for da in das], *others) for index, jets in iterator_)
+    return iter_dims, indices, len_, iterator
+
+
 def compute_all_jet_props(
     all_jets_one_df: pd.DataFrame,
     da: xr.DataArray,
     processes: int = N_WORKERS,
     chunksize: int = 100,
 ) -> xr.Dataset:
-    index: pd.MultiIndex = all_jets_one_df.index
-    times = index.levels[0]
-    time_name = da.dims[0]
-    all_props_dfs = []
-
-    iterable = zip(da.sel({time_name: times}), all_jets_one_df.groupby(level=0))
+    iter_dims, indices, len_, iterator = create_mappable_iterator(all_jets_one_df, [da])
+    all_props_dfs = map_maybe_parallel(iterator, compute_jet_props_wrapper, len_=len_, processes=processes, chunksize=chunksize)
     print("Computing jet properties")
-    if processes == 1:
-        all_props_dfs = list(
-            tqdm(map(compute_jet_props_wrapper, iterable), total=len(times))
-        )
-    else:
-        with Pool(processes=processes) as pool:
-            all_props_dfs = list(
-                tqdm(
-                    pool.imap(compute_jet_props_wrapper, iterable, chunksize=chunksize),
-                    total=len(times),
-                )
-            )
-    all_props_df = pd.concat(all_props_dfs, keys=times, names=[time_name, "jet"])
+    all_props_df = pd.concat(all_props_dfs, keys=indices, names=[*iter_dims, "jet"])
     return xr.Dataset.from_dataframe(all_props_df)
 
 
@@ -493,7 +509,7 @@ def compute_one_wb_props(jet: pd.DataFrame, da_pvs: xr.DataArray, every: int = 5
 
 
 def compute_wb_props_wrapper(args: Tuple) -> list:
-    (_, jets), da_pvs, mask = args
+    jets, da_pvs, mask = args
     jets = jets.droplevel(0)
     if not mask:
         keys = ["above", "affected_from", "affected_until", "mean_int", "mean_dist"]
@@ -512,25 +528,10 @@ def compute_all_wb_props(
     processes: int = N_WORKERS,
     chunksize: int = 100,
 ) -> xr.Dataset:
-    index: pd.MultiIndex = all_jets_one_df.index
-    times = index.levels[0]
-    time_name = da_pvs.dims[0]
-
-    iterable = zip(all_jets_one_df.groupby(level=0), da_pvs.sel({time_name: times}), event_mask)
-    print("Computing wb properties")
-    if processes == 1:
-        all_props_dfs = list(
-            tqdm(map(compute_wb_props_wrapper, iterable), total=len(times))
-        )
-    else:
-        with Pool(processes=processes) as pool:
-            all_props_dfs = list(
-                tqdm(
-                    pool.imap(compute_wb_props_wrapper, iterable, chunksize=chunksize),
-                    total=len(times),
-                )
-            )
-    all_props_df = pd.concat(all_props_dfs, keys=times, names=[time_name, "jet"])
+    iter_dims, indices, len_, iterator = create_mappable_iterator(all_jets_one_df, [da_pvs], [event_mask])
+    print("Computing RWB properties")
+    all_props_dfs = map_maybe_parallel(iterator, compute_wb_props_wrapper, len_=len_, processes=processes, chunksize=chunksize)
+    all_props_df = pd.concat(all_props_dfs, keys=indices, names=[*iter_dims, "jet"])
     return xr.Dataset.from_dataframe(all_props_df)
 
 
@@ -539,7 +540,7 @@ def round_half(x):
 
 
 def do_one_int_low(args):
-    da_low_, (time, jets) = args
+    jets, da_low_ = args
     jets = jets.droplevel(0)
     ints = []
     for j, (jet_name, jet) in enumerate(jets.groupby(level=0)):
@@ -552,8 +553,8 @@ def do_one_int_low(args):
     return xr.DataArray(ints, coords={"jet": np.arange(len(ints))})
 
 
-def compute_int_low(
-    all_jets_one_df: pd.DataFrame, props_as_ds: xr.Dataset, exp_low_path: Path
+def compute_int_low( # broken with members
+    all_jets_one_df: pd.DataFrame, props_as_ds: xr.Dataset, exp_low_path: Path, processes: int = N_WORKERS, chunksize: int = 100,
 ) -> xr.Dataset:
     this_path = exp_low_path.joinpath("int_low.nc")
     if this_path.is_file():
@@ -561,23 +562,14 @@ def compute_int_low(
         props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
         return props_as_ds
     print("computing int low")
-    da_low = xr.open_dataarray(exp_low_path.joinpath("da.nc"))
     props_as_ds["int_low"] = props_as_ds["mean_lon"].copy()
-    times = all_jets_one_df.index.levels[0]
-    iterable = all_jets_one_df.groupby(level=0)
-    iterable = zip(da_low.loc[times], iterable)
-    with Pool(processes=N_WORKERS) as pool:
-        all_jet_ints = list(
-            tqdm(
-                pool.imap(do_one_int_low, iterable, chunksize=1000),
-                total=len(times),
-            )
-        )
-    props_as_ds["int_low"] = xr.concat(all_jet_ints, dim="time").assign_coords(
-        time=times
-    )
+    
+    da_low = xr.open_dataarray(exp_low_path.joinpath("da.nc"))
+    iter_dims, indices, len_, iterator = create_mappable_iterator(all_jets_one_df, [da_low])
+    all_jet_ints = map_maybe_parallel(iterator, do_one_int_low, len_=len_, processes=processes, chunksize=chunksize)
+    
+    props_as_ds["int_low"] = ((*iter_dims, "jet"), np.stack([jet_ints.values for jet_ints in all_jet_ints]))
     props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
-
     props_as_ds["int_low"].to_netcdf(exp_low_path.joinpath("int_low.nc"))
     return props_as_ds
 
@@ -792,32 +784,39 @@ def isin(a, b):
     return result.reshape(shape)
 
 
-def _track_jets(df):
-    print("tracking jets")
-    df = df[["lon", "lat"]]
-    time = df.index.get_level_values(0)
-    df["raw_index"] = np.arange(len(df))
+def _track_jets(df, progress: bool = True):
+    df = df[["lon", "lat"]].copy()
+    time = np.unique(df.index.get_level_values(0))
+    df.insert(2, "raw_index", np.arange(len(df)))
     time_starts = df.loc[(slice(None), "0", 0), "raw_index"].values # iloc vs loc on large dfs: 1000x speedup
-    del df["raw_index"]
+    df.drop(columns="raw_index", inplace=True)
     dt = time[1] - time[0]
     df = round_half(df)
-    guess_nflags = len(time) // 3
+    guess_nflags = len(time)
     guess_len = 100
     all_jets_over_time = np.zeros((guess_nflags, guess_len), dtype=[("time", "datetime64[s]"), ("jet ID", "i4")])
     all_jets_over_time[:] = (np.datetime64("NaT"), -1)
     last_valid_index = np.full(guess_nflags, fill_value=guess_len, dtype="int32")
-    for jet_id, jet in df.loc[time[0]].groupby("jet ID"):
+    for jet_id, jet in df.iloc[:time_starts[1]].groupby("jet ID"):
         jet_id = int(jet_id)
         all_jets_over_time[int(jet_id), 0] = (time[0], int(jet_id))
         last_valid_index[int(jet_id)] = 0
     last_flag = int(jet_id)
-    flags = df.loc[:, :, 0]["lon"].astype(np.int32).copy().rename("flags")
-    flags[:] = 0
+    flags = df.loc[:, :, 0].copy()
+    flags.insert(2, "raw_index", np.arange(len(flags)))
+    time_starts_flags = flags.loc[(slice(None), "0"), "raw_index"].values # iloc vs loc on large dfs: 1000x speedup
+    flags.drop(columns="raw_index", inplace=True)
+    flags = flags["lon"].astype(np.int32).copy().rename("flags")
+    flags.iloc[:] = 0
     flags.loc[time[0], :str(jet_id)] = np.arange(last_flag + 1, dtype=np.int32)
-    for it, (t, jets) in enumerate(tqdm(df.iloc[time_starts[1]:].groupby("time"), total=len(time) - 1)): 
+    if progress:
+        iter_ = enumerate(pbar := tqdm(df.iloc[time_starts[1]:].groupby("time"), total=len(time) - 1, leave=False))
+    else:
+        iter_ =  enumerate(df.iloc[time_starts[1]:].groupby("time"))
+    for it, (t, jets) in iter_: 
         min_time_index = max(it - 3, 0)
-        subdf = df.iloc[time_starts[min_time_index]:time_starts[it + 1]]
-        jets = jets.droplevel(0)
+        subdf = df.iloc[time_starts[min_time_index]:time_starts[it + 1]].copy()
+        jets = jets.droplevel(0).copy()
         from_ = max(0, last_flag - 20)
         potentials = all_jets_over_time[from_:last_flag + 1]
         these_lvis = last_valid_index[from_:last_flag + 1]
@@ -826,13 +825,14 @@ def _track_jets(df):
         timesteps_to_check = [t - n * dt for n in range(1, 5)]
         condition = np.isin(times_to_test, timesteps_to_check)
         potentials = [ind for con, ind in zip(condition, potentials) if con]
-        num_valid_jets = len(jets.groupby(level=0))
+        jets_grouped = jets.groupby(level=0)
+        num_valid_jets = len(jets_grouped)
         dist_mat = np.zeros((len(potentials), num_valid_jets), dtype=np.float32)
         overlaps = dist_mat.copy()
         for i, jtt_idx in enumerate(potentials):
             i = int(i)
             jet_to_try = subdf.loc[jtt_idx[0], str(jtt_idx[1]), :].values
-            for j, jet in jets.groupby(level=0):
+            for j, jet in jets_grouped:
                 j = int(j)
                 jet = jet.values
                 overlaps[i, j], dist_mat[i, j] = jet_overlap_values(jet, jet_to_try)
@@ -840,7 +840,7 @@ def _track_jets(df):
             dist_mat[np.isnan(dist_mat)] = np.nanmax(dist_mat) + 1
         except ValueError:
             pass
-        connected_mask = (overlaps > 0.5) & (dist_mat < 10)
+        connected_mask = (overlaps > 0.4) & (dist_mat < 15)
         flagged = np.zeros(num_valid_jets, dtype=np.bool_)
         for i, jtt_idx in enumerate(potentials):
             js = np.argsort(dist_mat[i])
@@ -853,15 +853,18 @@ def _track_jets(df):
                 last_valid_index[this_flag] = last_valid_index[this_flag] + 1
                 all_jets_over_time[this_flag, last_valid_index[this_flag]] = (t, j)
                 flagged[j] = True
-                flags.loc[t, j] = this_flag
+                flags.iloc[time_starts_flags[it + 1] + j] = this_flag
                 break
+        pass
         for j in range(num_valid_jets):
             if not flagged[j]:
                 last_flag += 1
                 last_valid_index[last_flag] = 0
                 all_jets_over_time[last_flag, 0] = (t, j)
-                flags[t, j] = last_flag
+                flags.iloc[time_starts_flags[it + 1] + j] = last_flag
                 flagged[j] = True
+        if progress:
+            pbar.set_description(f"last_flag: {last_flag}")
     ajot_df = []
     for ajot in all_jets_over_time[:last_flag + 1]:
         times = ajot["time"]   
@@ -871,25 +874,19 @@ def _track_jets(df):
     return ajot_df, flags
     
     
-def track_jets(all_jets_one_df):
+def track_jets(all_jets_one_df, processes: int = N_WORKERS):
     inner = ["time", "jet ID", "orig_points"]
     levels = all_jets_one_df.index.names
     outer = [level for level in levels if level not in inner]
     if len(outer) == 0:
-        return _track_jets(all_jets_one_df)
-
-    ajots = []
-    all_flags = []
-    keys = []
-    for indexer, all_jets in all_jets_one_df.groupby(outer):
-        all_jets = all_jets.droplevel(list(range(len(indexer))))
-        print(indexer)
-        all_jets_over_time, flags = _track_jets(all_jets)
-        ajots.append(all_jets_over_time)
-        all_flags.append(flags)
-        keys.append(indexer)
-    ajots = pd.concat(ajots, keys=keys)
-    all_flags = pd.concat(all_flags, keys=keys)
+        return _track_jets(all_jets_one_df, progress=True)
+    iter_dims, indices, len_, iterator = create_mappable_iterator(all_jets_one_df, potentials=tuple(outer))
+    iterator = (a[0].droplevel(iter_dims) for a in iterator)
+    res = map_maybe_parallel(iterator, _track_jets, len_=len_, processes=processes, chunksize=1)
+    
+    ajots, all_flags = tuple(zip(*res))
+    ajots = pd.concat(ajots, keys=indices, names=[*iter_dims, *ajots[0].index.names])
+    all_flags = pd.concat(all_flags, keys=indices, names=[*iter_dims, *all_flags[0].index.names])
     return ajots, all_flags
 
 
@@ -1050,7 +1047,7 @@ class JetFindingExperiment(object):
             all_jets_one_df = pd.read_pickle(ofile_ajdf)
             return all_jets_one_df
         try:
-            qs_path = self.path.joinpath("qs_5.nc")
+            qs_path = self.path.joinpath("s_q.nc")
             qs = xr.open_dataarray(qs_path)[2]
             kwargs["threshold"] = qs
         except FileNotFoundError:
@@ -1067,8 +1064,10 @@ class JetFindingExperiment(object):
         if jet_props_incomplete_path.is_file():
             return xr.open_dataset(jet_props_incomplete_path)
         all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
+        print("Loading s")
+        da_ = _compute(self.ds["s"], progress=True)
         props_as_ds_uncat = compute_all_jet_props(
-            all_jets_one_df, self.ds["s"], processes=processes, chunksize=chunksize
+            all_jets_one_df, da_, processes=processes, chunksize=chunksize
         )
         props_as_ds_uncat.to_netcdf(jet_props_incomplete_path)
         return props_as_ds_uncat

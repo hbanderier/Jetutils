@@ -163,7 +163,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
 
     levels, level_names = unpack_levels(levels)
 
-    if ~any([isinstance(level, tuple) for level in levels]):
+    if not any([isinstance(level, tuple) for level in levels]):
         try:
             da = da.isel(lev=levels).squeeze()
         except ValueError:
@@ -652,13 +652,20 @@ def compute_anomalies_ds(
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)
 
 
+def _fix_dict_lists(dic: dict) -> dict:
+    for key, val in dic.items():
+        if isinstance(val, NDArray):
+            dic[key] = val.tolist()
+    return dic
+
 def find_spot(basepath: Path, metadata: Mapping) -> Path:
     found = False
+    metadata = _fix_dict_lists(metadata)
     for dir in basepath.iterdir():
         if not dir.is_dir():
             continue
         try:
-            other_mda = load_pickle(dir.joinpath("metadata.pkl"))
+            other_mda = _fix_dict_lists(load_pickle(dir.joinpath("metadata.pkl")))
             if "varnames" in other_mda:
                 other_mda["varnames"].sort()
         except FileNotFoundError:
@@ -680,6 +687,7 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
 def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
     if "lev" not in ds.dims:
         return ds
+    unique_levs = np.unique(ds.lev.values)
     ope = np.nanargmin if by[0] == "-" else np.nanargmax
     by = by.lstrip("-")
     if ds["s"].chunks is not None:
@@ -691,6 +699,8 @@ def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
     levmax = ds[by].reduce(ope, dim="lev")
     ds = ds.isel(lev=levmax).reset_coords("lev")  # but not drop
     ds["lev"] = ds["lev"].astype(np.float32)
+    ds.attrs["orig_lev"] = unique_levs
+    ds.attrs["flattened"] = 1
     return ds
 
 
@@ -710,6 +720,8 @@ def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None =
     region = get_region(da)
     if "lev" in da.dims:
         levels = da.lev.values.tolist()
+    elif "orig_lev" in da.attrs:
+        levels = da.attrs["orig_lev"]
     else:
         levels = None
     metadata = {
@@ -721,6 +733,8 @@ def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None =
     }
     if "member" in da.dims:
         metadata["members"] = np.unique(da.member).tolist()
+    if "flattened" in da.attrs:
+        metadata["flattened"] = da.attrs["flattened"]
     return metadata
 
 
@@ -728,8 +742,9 @@ class DataHandler(object):
     def __init__(
         self,
         da: xr.DataArray | xr.Dataset,
-        basepath: Path,
+        basepath: Path | str,
     ) -> None:
+        basepath = Path(basepath)
         self.da = da
         self._setup_dims()
         self.metadata = metadata_from_da(self.da)
@@ -844,6 +859,8 @@ class DataHandler(object):
             "region": region,
             "levels": levels,
         }
+        if varname in ["u", "v", "s"]:
+            metadata["flattened"] = reduce_da
         path = find_spot(path, metadata)
         da_path = path.joinpath("da.nc")
         if da_path.is_file():
@@ -884,8 +901,9 @@ class DataHandler(object):
         metadata = {
             "varname": varnames,
         } | all_mdas[0]
-        if flatten_ds:
-            metadata["levels"] = None
+        
+        if any([varname in ["u", "v", "s"] for varname in varnames]):
+            metadata["flattened"] = flatten_ds
 
         path = find_spot(path, metadata)
         
