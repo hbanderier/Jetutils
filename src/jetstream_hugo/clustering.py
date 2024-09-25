@@ -401,6 +401,59 @@ class Experiment(object):
         centers.to_netcdf(output_path_centers)
         labels.to_netcdf(output_path_labels)
         return net, centers, labels
+    
+    def project_on_other_som(
+        self,
+        other_exp: Path,  
+        **kwargs,
+    ) -> Tuple[XPySom, xr.DataArray, NDArray]:
+        nx, ny = kwargs["nx"], kwargs["ny"]
+        pbc = "pbc" in kwargs and kwargs["pbc"]
+        pbc_flag = "_pbc" if pbc else ""
+        net, centers, labels = other_exp.som_cluster(**kwargs)
+        
+        if "n_pcas" in kwargs and kwargs["n_pcas"]:
+            n_pcas = kwargs["n_pcas"]
+            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{n_pcas}.nc"
+        else:
+            metric = kwargs["metric"]
+            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{metric}.nc"
+        output_file = self.path.joinpath(output_file)
+        if output_file.is_file():
+            return net, centers, xr.open_dataarray(output_file)
+        other_da = other_exp.da
+        _, da_weighted = self.prepare_for_clustering()
+                
+        if "n_pcas" in kwargs and kwargs["n_pcas"]:
+            X = self.pca_transform(X, kwargs["n_pcas"])
+        else:
+            if (other_da.lon[1] - other_da.lon[0]).item() < 1:
+                other_da = coarsen_da(other_da, 1.5)
+            da_weighted = da_weighted.interp(
+                lon=other_da.lon.values, 
+                lat=other_da.lat.values,
+                kwargs={"fill_value": "extrapolate"}
+            )
+            X = to_zero_one(
+                da_weighted.data.reshape(
+                    np.prod(da_weighted.shape[:2]), 
+                    np.prod(da_weighted.shape[2:])
+                )
+            )[0]
+        
+        sample_shape = [len(co) for co in self.data_handler.sample_dims.values()]
+        X = _compute(X, progress=True)
+        labels = net.predict(X).reshape(sample_shape)
+        labels = xr.DataArray(labels, coords=self.data_handler.sample_dims)
+        labels.attrs["som_from_exp"] = other_exp.path.as_posix()
+        for key, val in kwargs.items():
+            if isinstance(val, dict):
+                continue
+            if isinstance(val, bool):
+                val = int(val)
+            labels.attrs[key] = val
+        labels.to_netcdf(output_file)
+        return net, centers, labels
 
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(

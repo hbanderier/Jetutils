@@ -178,7 +178,6 @@ OMEGA = 7.2921e-5  # rad.s-1
 KAPPA = 0.2854
 R_SPECIFIC_AIR = 287.0500676
 
-
 def degcos(x: float) -> float:
     return np.cos(x / 180 * np.pi)
 
