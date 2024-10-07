@@ -144,13 +144,14 @@ def compute_sigma(df: pl.DataFrame) -> pl.DataFrame:
     index_columns = get_index_columns(df, ("member", "time", "cluster"))
     x = pl.col("lon").radians() * RADIUS
     y = (
-        (1 + pl.col("lat").radians().sin()) / pl.col("lat").radians().sin()
+        (1 + pl.col("lat").radians().sin()) / pl.col("lat").radians().cos()
     ).log() * RADIUS
     df = df.with_columns(x=x, y=y)
     df = df.join(directional_diff(df, "s", "x"), on=[*index_columns, "x", "y"])
     df = df.join(directional_diff(df, "s", "y"), on=[*index_columns, "x", "y"])
-    sigma = (pl.col("u") * pl.col("dsdy") - pl.col("v") * pl.col("dsdx")) / pl.col("s")
+    sigma = (pl.col("v") * pl.col("dsdx") - pl.col("u") * pl.col("dsdy")) / pl.col("s")
     df = df.with_columns(sigma=sigma)
+    df = df.sort([*index_columns, "lat", "lon"])
     df = df.drop("x", "y", "dsdx", "dsdy")
     return df
 
@@ -343,9 +344,8 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
     # smooth, compute sigma
     index_columns = get_index_columns(df)
     df = coarsen(df, {"lon": 1, "lat": 1})
-    df = smooth_in_space(df, 15)
+    df = smooth_in_space(df, 7)
     df = compute_sigma(df)
-    df = smooth_in_space(df, 5, to_smooth="sigma")
     df = df.with_columns(
         lon=round_polars("lon").cast(pl.Float32),
         lat=round_polars("lat").cast(pl.Float32),
@@ -532,13 +532,14 @@ def inner_compute_widths(args):
         pl.Float32
     )
 
-    half_width = pl.when(pl.col("side") == -1).then(pl.col("half_width_down")).otherwise(pl.col("half_width_up"))
+    half_width = pl.when(pl.col("side") == -1).then(pl.col("half_width_down")).otherwise(pl.col("half_width_up")).list.first()
 
     index_columns = get_index_columns(jets, ("member", "time", "cluster"))
     agg_out = {ic: pl.col(ic).first() for ic in [*index_columns, "lon", "lat", "s"]}
 
     first_agg_out = agg_out | {"half_width_up": half_width_up, "half_width_down": half_width_down}
-    second_agg_out = agg_out | {
+    second_agg_out = agg_out | {"half_width": pl.col("half_width").sum()}
+    third_agg_out = agg_out | {
         "width": (pl.col("half_width") * pl.col("s")).sum() / pl.col("s").sum()
     }
 
@@ -580,12 +581,9 @@ def inner_compute_widths(args):
         **first_agg_out
     )
 
-    jets = jets.with_columns(half_width=half_width)[::2].drop(["half_width_up", "half_width_down", "side"])
-    jets = jets.with_columns(
-        half_width=pl.col("half_width").list.first(),
-    )
-    jets = jets.group_by("jet ID", maintain_order=True).agg(**second_agg_out)
-    print("tictac", file=stderr, end="\r")  # to prevent server from disconnecting
+    jets = jets.with_columns(half_width=half_width).drop(["half_width_up", "half_width_down", "side"])
+    jets = jets.group_by(["jet ID", "index"]).agg(**second_agg_out)
+    jets = jets.group_by("jet ID", maintain_order=True).agg(**third_agg_out)
     return jets.drop("s").cast({"width": pl.Float32})
 
 
@@ -1220,9 +1218,10 @@ class JetFindingExperiment(object):
                 all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
 
         else:
-            for i, memb in enumerate(self.data_handler.get_sample_dims()["member"]):
-                print(i, memb)
-                ds_ = _compute(self.ds.isel(member=i), progress=True)
+            members = self.data_handler.get_sample_dims()["member"]
+            for i, memb_list in enumerate(np.array_split(members, 10)):
+                print(i, " ", memb_list[0], "to", memb_list[-1])
+                ds_ = _compute(self.ds.sel(member=memb_list), progress=True)
                 df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
                 all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
                 print("tictac", file=stderr, end="\r")
