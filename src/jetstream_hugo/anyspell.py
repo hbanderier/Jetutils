@@ -822,8 +822,8 @@ class ExtremeExperiment(object):
         metric: str = "jaccard",
     ) -> None:
         self.data_handler = data_handler
-        self.da = self.data_handler.get_da()
-        self.path = self.data_handler.get_path()
+        self.da = self.data_handler.da
+        self.path = self.data_handler.path
         self.q = q
         self.mask_name = mask_name(mask)
         if mask and mask == "land":

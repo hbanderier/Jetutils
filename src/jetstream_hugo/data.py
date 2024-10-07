@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 import flox.xarray
 import xrft
@@ -604,13 +605,15 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     return ((time_da >= t1) & (time_da < t2)).values
 
 
-def get_nao(interp_like: xr.DataArray | xr.Dataset | None = None) -> xr.DataArray:
-    df = pd.read_csv(f"{DATADIR}/ERA5/daily_nao.csv", delimiter=",")
-    index = pd.to_datetime(df.iloc[:, :3])
-    series = xr.DataArray(df.iloc[:, 3].values, coords={"time": index})
-    if interp_like is None:
-        return series
-    return series.interp_like(interp_like)
+def get_nao(df: pl.DataFrame) -> pl.DataFrame:
+    nao = pl.read_csv(f"{DATADIR}/ERA5/daily_nao.csv")
+    nao = (
+        nao
+        .with_columns(time=pl.datetime(pl.col("year"), pl.col("month"), pl.col("day")))
+        .drop(["year", "month", "day"])
+        .cast({"time": df["time"].dtype})
+    )
+    return df.join_asof(nao, on="time")
 
 
 def compute_extreme_climatology(da: xr.DataArray, opath: Path):
@@ -827,7 +830,7 @@ class DataHandler(object):
             False,
         ).joinpath("results")
         if level_type == "surf":
-            levels = "all"
+            levels = None
         open_da_args = (
             dataset,
             level_type,
@@ -844,7 +847,7 @@ class DataHandler(object):
             clim_smoothing,
             smoothing,
         )
-        if levels != "all":
+        if levels != "all" and levels is not None:
             levels, level_names = unpack_levels(levels)
             
         region = (minlon, maxlon, minlat, maxlat)

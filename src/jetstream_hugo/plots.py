@@ -104,6 +104,8 @@ MYPURPLES = LinearSegmentedColormap.from_list("mypurples", ["#f2f2f2", COLORS[1]
 MYPINKS = LinearSegmentedColormap.from_list("mypinks", ["#f2f2f2", COLORS[2], COLORS_EXT[8]])
 MYREDS = LinearSegmentedColormap.from_list("myreds", ["#f2f2f2", COLORS[3], COLORS_EXT[11]])
 PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[1]])
+BLUEWHITERED = LinearSegmentedColormap.from_list("bluewhitered", [COLORS_EXT[11], COLORS[3], "#f2f2f2", COLORS[0], COLORS_EXT[2]])
+
 
 COASTLINE = feat.NaturalEarthFeature(
     "physical", "coastline", "110m", edgecolor="black", facecolor="none"
