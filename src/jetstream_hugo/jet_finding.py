@@ -2,7 +2,6 @@ from pathlib import Path
 from sys import stderr
 from datetime import timedelta
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
-from nptyping import NDArray
 from multiprocessing import Pool, current_process, get_context
 
 import numpy as np
@@ -14,20 +13,15 @@ from sklearn.mixture import GaussianMixture
 from tqdm import tqdm, trange
 
 from jetstream_hugo.definitions import (
-    COMPUTE_KWARGS,
     N_WORKERS,
-    OMEGA,
     RADIUS,
-    coarsen_da,
     labels_to_mask,
     to_zero_one,
     _compute,
 )
 from jetstream_hugo.data import (
     SEASONS,
-    flatten_by,
     compute_extreme_climatology,
-    smooth,
     DataHandler,
 )
 

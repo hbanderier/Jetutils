@@ -2,7 +2,6 @@ import os
 import platform
 import pickle as pkl
 from pathlib import Path
-from nptyping import NDArray
 from typing import Any, Callable, ClassVar, Dict, Optional
 from itertools import groupby
 from dataclasses import dataclass, field
@@ -236,7 +235,7 @@ def infer_direction(to_plot: Any) -> int:
     return 1 if np.abs(max_) > np.abs(min_) else -1
 
 
-def labels_to_mask(labels: xr.DataArray | NDArray) -> NDArray:
+def labels_to_mask(labels: xr.DataArray | np.array) -> np.array:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
     unique_labels = np.unique(labels)
@@ -276,7 +275,7 @@ def slice_from_df(
     return da.loc[indexer]
 
 
-def first_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray:
+def first_elements(arr: np.array, n_elements: int, sort: bool = False) -> np.array:
     ndim = arr.ndim
     if ndim > 1 and sort:
         print("sorting output not supported for arrays with ndim > 1")
@@ -290,7 +289,7 @@ def first_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray
     return idxs
 
 
-def last_elements(arr: NDArray, n_elements: int, sort: bool = False) -> NDArray:
+def last_elements(arr: np.array, n_elements: int, sort: bool = False) -> np.array:
     arr = np.nan_to_num(arr, posinf=0)
     ndim = arr.ndim
     if ndim > 1 and sort:

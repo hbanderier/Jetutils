@@ -3,16 +3,12 @@ from os.path import commonpath
 
 from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
 from itertools import product
-from nptyping import NDArray
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-import flox.xarray
-import xrft
-import intake
 from tqdm import tqdm
 from dask.distributed import Client
 from dask.diagnostics import ProgressBar
@@ -417,6 +413,7 @@ def window_smoothing(
 
 
 def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
+    import xrft
     name = da.name
     dim = dim.split("+")
     extra_dims = [coord for coord in da.coords if coord not in da.dims]
@@ -456,6 +453,7 @@ def smooth(
     da: xr.DataArray | xr.Dataset,
     smooth_map: Mapping | None,
 ) -> xr.DataArray:
+    import xrft
     if smooth_map is None:
         return da
     for dim, value in smooth_map.items():
@@ -491,6 +489,7 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
 
 
 def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
+    import flox
     da, coord = assign_clim_coord(da, clim_type)
     with ProgressBar():
         clim = flox.xarray.xarray_reduce(
@@ -506,6 +505,7 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
 def compute_anom(
     anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False
 ):
+    import flox
     anom, coord = assign_clim_coord(anom, clim_type)
     this_gb = anom.groupby(coord)
     if not normalized:
@@ -589,7 +589,7 @@ def compute_all_smoothed_anomalies(
         anom.to_netcdf(dest)
 
 
-def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
+def time_mask(time_da: xr.DataArray, filename: str) -> np.array:
     if filename == "full.nc":
         return np.ones(len(time_da)).astype(bool)
 
@@ -626,6 +626,7 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
 def compute_anomalies_ds(
     ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False
 ) -> xr.Dataset:
+    import flox
     ds, coord = assign_clim_coord(ds, clim_type)
     clim = flox.xarray.xarray_reduce(
         ds,
@@ -657,7 +658,7 @@ def compute_anomalies_ds(
 
 def _fix_dict_lists(dic: dict) -> dict:
     for key, val in dic.items():
-        if isinstance(val, NDArray):
+        if isinstance(val, np.array):
             dic[key] = val.tolist()
     return dic
 
@@ -946,6 +947,7 @@ class DataHandler(object):
         members: str | list | Literal["all"] = "all",
         reduce_da: bool = True,
     ) -> "DataHandler":
+        import intake
         basepath = Path(basepath)
         if varname == "s":
             varname_to_search = ["U", "V"]
