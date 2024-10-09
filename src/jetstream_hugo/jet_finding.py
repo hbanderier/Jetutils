@@ -256,7 +256,7 @@ def do_rle_fill_hole(
         df.group_by(by, maintain_order=True)
         .agg(
             condition_expr.alias("condition"),
-            index=pl.int_range(0, pl.col("alignment").len()),
+            index=pl.int_range(0, condition_expr.len()),
         )
         .explode("condition", "index")
     )
@@ -398,7 +398,6 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
 
 
 def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
-
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
@@ -678,58 +677,6 @@ def round_half(x):
     return np.round(x * 2) / 2
 
 
-def do_one_int_low(args):
-    jets, da_low_ = args
-    ints = []
-    for _, jet in jets.group_by("jet ID", maintain_order=True):
-        x, y = round_half(jet.select(["lon", "lat"]).to_numpy().T)
-        x_ = xr.DataArray(x, dims="points")
-        y_ = xr.DataArray(y, dims="points")
-        s_low = da_low_.sel(lon=x_, lat=y_).values
-        jet_low = np.asarray([x, y, s_low]).T
-        ints.append(jet_integral_haversine(jet_low))
-    return xr.DataArray(ints, coords={"jet": np.arange(len(ints))})
-
-
-def compute_int_low(  # broken with members
-    all_jets_one_df: pl.DataFrame,
-    props_as_ds: xr.Dataset,
-    exp_low_path: Path,
-    processes: int = N_WORKERS,
-    chunksize: int = 100,
-) -> xr.Dataset:
-    this_path = exp_low_path.joinpath("int_low.nc")
-    if this_path.is_file():
-        props_as_ds["int_low"] = xr.open_dataarray(this_path)
-        props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
-        return props_as_ds
-    print("computing int low")
-    props_as_ds["int_low"] = props_as_ds["mean_lon"].copy()
-
-    da_low = xr.open_dataarray(exp_low_path.joinpath("da.nc"))
-    len_, iterator = create_mappable_iterator(all_jets_one_df, [da_low])
-    all_jet_ints = map_maybe_parallel(
-        iterator, do_one_int_low, len_=len_, processes=processes, chunksize=chunksize
-    )
-
-    props_as_ds["int_low"] = (
-        tuple(props_as_ds.dims),
-        np.stack([jet_ints.values for jet_ints in all_jet_ints]),
-    )
-    props_as_ds["int_ratio"] = props_as_ds["int_low"] / props_as_ds["int"]
-    props_as_ds["int_low"].to_netcdf(exp_low_path.joinpath("int_low.nc"))
-    return props_as_ds
-
-
-def is_polar_v2(props_as_ds: xr.Dataset) -> xr.Dataset:
-    props_as_ds[:, "is_polar"] = (
-        props_as_ds.select("mean_lat") * 200
-        - props_as_ds.select("mean_lon") * 30
-        + props_as_ds.select("int_low") / RADIUS
-    ) > 9000
-    return props_as_ds
-
-
 def extract_season_from_df(
     df: pl.DataFrame,
     season: list | str | tuple | int | None = None,
@@ -890,13 +837,13 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
     inter12 = x1.is_in(x2)
     inter21 = x2.is_in(x1)
     vert_dist = (y1.filter(inter12) - y2.filter(inter21)).abs().mean()
-    overlap = 0.5 * (inter12.mean() + inter21.mean())
+    overlap = inter12.mean() # new needs to be in old. giving weight to inter21 would let short new jets swallow old big jets, it's weird i think
     return vert_dist.over(row), overlap.over(row)
 
 
 def _track_jets(df: pl.DataFrame):
     index_columns = get_index_columns(df)
-    df = df.select([*index_columns, "lon", "lat"]).clone()
+    df = df.select([*index_columns, "lon", "lat", "is_polar"])
     unique_times = (
         df.select("time")
         .with_row_index()
@@ -905,13 +852,15 @@ def _track_jets(df: pl.DataFrame):
     time_index_df = unique_times["index"]
     unique_times = unique_times["time"]
     df = df.with_columns(df.select(pl.col(["lon", "lat"]).map_batches(round_half)))
-    guess_nflags = max(50, len(unique_times))
+    guess_nflags = max(50, len(unique_times) // 2)
     guess_len = 1000
     all_jets_over_time = np.zeros(
         (guess_nflags, guess_len), dtype=[("time", "datetime64[ms]"), ("jet ID", "i2")]
     )
     all_jets_over_time[:] = (np.datetime64("NaT"), -1)
-    last_valid_index = np.full(guess_nflags, fill_value=0, dtype="int16")
+    last_valid_index_rel = np.full(guess_nflags, fill_value=-1, dtype="int32")
+    last_valid_index_abs = np.full(guess_nflags, fill_value=-1, dtype="int32")
+
     flags = df.group_by(["time", "jet ID"], maintain_order=True).first()
     flags = flags.select([*index_columns]).clone()
     flags = flags.insert_column(
@@ -925,7 +874,8 @@ def _track_jets(df: pl.DataFrame):
     for last_flag, _ in df[: time_index_df[1]].group_by("jet ID", maintain_order=True):
         last_flag = last_flag[0]
         all_jets_over_time[last_flag, 0] = (unique_times[0], last_flag)
-        last_valid_index[last_flag] = 0
+        last_valid_index_rel[last_flag] = 0
+        last_valid_index_abs[last_flag] = 0
         flags[last_flag, "flag"] = last_flag
     current = current_process()
     if current.name == "MainProcess":
@@ -939,18 +889,21 @@ def _track_jets(df: pl.DataFrame):
         )
         current_df = df[time_index_df[it] : last_time]
         t = unique_times[it]
-        min_it = max(0, it - 4)
-        previous_df = df[time_index_df[min_it] : time_index_df[it]]
-        from_ = max(0, last_flag - 20)
-
-        # Filter actual candidates in previous df: no long time jump, no duplicate flag. If flag happens several times, pick the most recent
-        potentials = all_jets_over_time[from_ : last_flag + 1]
-        these_lvis = last_valid_index[from_ : last_flag + 1]
-        potentials = [potential[lvi] for potential, lvi in zip(potentials, these_lvis)]
-        times_of_jets = [ind[0] for ind in potentials]
-        timesteps_to_check = unique_times[min_it:it]
-        condition = np.isin(times_of_jets, timesteps_to_check)
-        potentials = [ind for con, ind in zip(condition, potentials) if con]
+        min_it = max(0, it - 5)
+        previous_df = df[time_index_df[min_it]: time_index_df[it]]
+        potential_flags = np.where((last_valid_index_abs >= (it - 4)) & (last_valid_index_abs >= 0))[0]
+        if len(potential_flags) == 0:
+            n_new = current_df["jet ID"].unique().len()
+            for j in range(n_new):
+                last_flag += 1
+                last_valid_index_rel[last_flag] = 0
+                last_valid_index_abs[last_flag] = it
+                all_jets_over_time[last_flag, 0] = (t, j)
+                flags[int(time_index_flags[it] + j), "flag"] = last_flag
+            if current.name == "MainProcess":
+                pbar.set_description(f"last_flag: {last_flag}")
+            continue
+        potentials = all_jets_over_time[potential_flags, last_valid_index_rel[potential_flags]]
 
         # Cumbersome construction for pairwise operations in polars
         # 1. Put potential previous jets in one df
@@ -968,9 +921,9 @@ def _track_jets(df: pl.DataFrame):
         )
 
         # 2. Turn into lists
-        potentials_df = potentials_df_gb.agg(pl.col("lon"), pl.col("lat"))
+        potentials_df = potentials_df_gb.agg(pl.col("lon"), pl.col("lat"), pl.col("is_polar").mean())
         current_df = current_df.group_by(["jet ID", "time"], maintain_order=True).agg(
-            pl.col("lon"), pl.col("lat")
+            pl.col("lon"), pl.col("lat"), pl.col("is_polar").mean()
         )
 
         # 3. create expressions (see function)
@@ -994,18 +947,22 @@ def _track_jets(df: pl.DataFrame):
         except ValueError:
             pass
         index_start_flags = time_index_flags[it]
-        connected_mask = (overlaps > 0.4) & (dist_mat < 8)
+        connected_mask = (overlaps > 0.5) & (dist_mat < 10)
+        potentials_isp = potentials_df["is_polar"].to_numpy()
+        current_isp = current_df["is_polar"].to_numpy()
+        connected_mask = (np.abs(potentials_isp[:, None] - current_isp[None, :]) < 0.15) & connected_mask
         flagged = np.zeros(n_new, dtype=np.bool_)
         for i, jtt_idx in enumerate(potentials):
-            js = np.argsort(dist_mat[i])
+            js = np.argsort(dist_mat[i] / dist_mat[i].max() - overlaps[i] / overlaps[i].max())
             for j in js:
                 if not connected_mask[i, j]:
                     break
                 if flagged[j]:
                     continue
-                this_flag = from_ + i
-                last_valid_index[this_flag] = last_valid_index[this_flag] + 1
-                all_jets_over_time[this_flag, last_valid_index[this_flag]] = (t, j)
+                this_flag = potential_flags[i]
+                last_valid_index_rel[this_flag] = last_valid_index_rel[this_flag] + 1
+                last_valid_index_abs[this_flag] = it
+                all_jets_over_time[this_flag, last_valid_index_rel[this_flag]] = (t, j)
                 flagged[j] = True
                 flags[int(index_start_flags + j), "flag"] = this_flag
                 break
@@ -1013,7 +970,8 @@ def _track_jets(df: pl.DataFrame):
         for j in range(n_new):
             if not flagged[j]:
                 last_flag += 1
-                last_valid_index[last_flag] = 0
+                last_valid_index_rel[last_flag] = 0
+                last_valid_index_abs[last_flag] = it
                 all_jets_over_time[last_flag, 0] = (t, j)
                 flags[int(index_start_flags + j), "flag"] = last_flag
                 flagged[j] = True
@@ -1374,4 +1332,4 @@ class JetFindingExperiment(object):
         for qcl in quantiles_clim.transpose():
             dayofyear = qcl.dayofyear
             quantiles[quantiles.time.dt.dayofyear == dayofyear, :] = qcl.values
-        quantiles.to_netcdf(self.path.joinpath(f"q{varname}_{subsample}.nc"))
+        quantiles.to_netcdf(self.path.joinpath(f"q{varname}_{subsample}.nc")) # TODO: wrong name, fix
