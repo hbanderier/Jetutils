@@ -1,27 +1,17 @@
-import warnings
 from pathlib import Path
 from sys import stderr
-from os.path import commonpath
-from functools import partial, wraps
 from datetime import timedelta
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
 from nptyping import NDArray
 from multiprocessing import Pool, current_process, get_context
-from itertools import combinations, product
 
 import numpy as np
 import polars as pl
 import polars_ols as pls
-from dask.distributed import progress
-from dask.distributed.client import _get_global_client
 import xarray as xr
-from scipy.stats import linregress
 from contourpy import contour_generator
-from sklearn.cluster import AgglomerativeClustering, Birch
 from sklearn.mixture import GaussianMixture
-from sklearn.metrics import pairwise_distances
 from tqdm import tqdm, trange
-from numba import njit, prange
 
 from jetstream_hugo.definitions import (
     COMPUTE_KWARGS,
