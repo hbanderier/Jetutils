@@ -589,7 +589,7 @@ def compute_all_smoothed_anomalies(
         anom.to_netcdf(dest)
 
 
-def time_mask(time_da: xr.DataArray, filename: str) -> np.array:
+def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
     if filename == "full.nc":
         return np.ones(len(time_da)).astype(bool)
 
@@ -658,7 +658,7 @@ def compute_anomalies_ds(
 
 def _fix_dict_lists(dic: dict) -> dict:
     for key, val in dic.items():
-        if isinstance(val, np.array):
+        if isinstance(val, np.ndarray):
             dic[key] = val.tolist()
     return dic
 

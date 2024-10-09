@@ -678,7 +678,7 @@ def extract_features(
     props_as_df: pl.DataFrame,
     feature_names: Sequence = None,
     season: list | str | tuple | int | None = None,
-) -> Tuple[NDArray, float]:
+) -> Tuple[np.ndarray, float]:
     props_as_df = extract_season_from_df(props_as_df, season)
     if feature_names is None:
         feature_names = ["mean_lon", "mean_lat", "s_star"]

@@ -235,7 +235,7 @@ def infer_direction(to_plot: Any) -> int:
     return 1 if np.abs(max_) > np.abs(min_) else -1
 
 
-def labels_to_mask(labels: xr.DataArray | np.array) -> np.array:
+def labels_to_mask(labels: xr.DataArray | np.ndarray) -> np.ndarray:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
     unique_labels = np.unique(labels)
@@ -275,7 +275,7 @@ def slice_from_df(
     return da.loc[indexer]
 
 
-def first_elements(arr: np.array, n_elements: int, sort: bool = False) -> np.array:
+def first_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.ndarray:
     ndim = arr.ndim
     if ndim > 1 and sort:
         print("sorting output not supported for arrays with ndim > 1")
@@ -289,7 +289,7 @@ def first_elements(arr: np.array, n_elements: int, sort: bool = False) -> np.arr
     return idxs
 
 
-def last_elements(arr: np.array, n_elements: int, sort: bool = False) -> np.array:
+def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.ndarray:
     arr = np.nan_to_num(arr, posinf=0)
     ndim = arr.ndim
     if ndim > 1 and sort:
