@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Tuple
-from nptyping import NDArray, Float, Shape
 from functools import partial
 from multiprocessing import Pool
 import pickle as pkl
@@ -32,8 +31,8 @@ def autocorrelation(path: Path, time_steps: int = 50) -> Path:
 
 
 def compute_autocorrs(
-    X: NDArray[Shape["*, *"], Float], lag_max: int
-) -> NDArray[Shape["*, *, *"], Float]:
+    X: np.ndarray, lag_max: int
+) -> np.ndarray:
     autocorrs = []
     i_max = X.shape[1]
     for i in range(lag_max):
@@ -76,9 +75,9 @@ def Hurst_exponent(path: Path, subdivs: int = 11) -> Path:
 
 
 def searchsortednd(
-    a: NDArray, x: NDArray, **kwargs
+    a: np.ndarray, x: np.ndarray, **kwargs
 ) -> (
-    NDArray
+    np.ndarray
 ):  # https://stackoverflow.com/questions/40588403/vectorized-searchsorted-numpy + reshapes
     orig_shapex, nx = x.shape[1:], x.shape[0]
     _, na = a.shape[1:], a.shape[0]
@@ -95,7 +94,7 @@ def searchsortednd(
     return (p - na * (np.arange(m)[None, :])).reshape((nx, *orig_shapex))
 
 
-def fdr_correction(p: NDArray, q: float = 0.02):
+def fdr_correction(p: np.ndarray, q: float = 0.02):
     pshape = p.shape
     p = p.ravel()
     num_p = len(p)
@@ -110,7 +109,7 @@ def fdr_correction(p: NDArray, q: float = 0.02):
 
 def field_significance(
     to_test: xr.DataArray,
-    take_from: NDArray | xr.DataArray,
+    take_from: np.ndarray | xr.DataArray,
     n_sel: int = 100,
     q: float = 0.02,
 ) -> Tuple[xr.DataArray, xr.DataArray]:
@@ -139,7 +138,7 @@ def field_significance(
     return nocorr, fdr_correction(p, q)
 
 
-def one_ks_cumsum(b: NDArray, a: NDArray, q: float = 0.02, n_sam: int = None):
+def one_ks_cumsum(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int = None):
     if n_sam is None:
         n_sam = len(a)
     x = np.concatenate([a, b], axis=0)
@@ -152,7 +151,7 @@ def one_ks_cumsum(b: NDArray, a: NDArray, q: float = 0.02, n_sam: int = None):
     return nocorr, fdr_correction(p, q)
 
 
-def one_ks_searchsorted(b: NDArray, a: NDArray, q: float = 0.02, n_sam: int = None):
+def one_ks_searchsorted(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int = None):
     if n_sam is None:
         n_sam = len(a)
     x = np.concatenate([a, b], axis=0)
@@ -167,7 +166,7 @@ def one_ks_searchsorted(b: NDArray, a: NDArray, q: float = 0.02, n_sam: int = No
 
 def field_significance_v2(
     to_test: xr.DataArray,
-    take_from: NDArray,
+    take_from: np.ndarray,
     n_sel: int = 100,
     q: float = 0.02,
     method: str = "cumsum",

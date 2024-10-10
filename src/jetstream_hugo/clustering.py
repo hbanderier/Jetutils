@@ -1,7 +1,6 @@
 from typing import Sequence, Tuple, Literal, Mapping, Optional, Callable
 
 from matplotlib.pylab import norm
-from nptyping import NDArray, Float, Shape
 import logging
 from pathlib import Path
 
@@ -44,7 +43,7 @@ ADJUST: int = 2
 ADJUST_TWOSIDED: int = 3
 
 
-def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
+def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
     if filename == "full.nc":
         return np.ones(len(time_da)).astype(bool)
 
@@ -60,7 +59,7 @@ def time_mask(time_da: xr.DataArray, filename: str) -> NDArray:
     return ((time_da >= t1) & (time_da < t2)).values
 
 
-def centers_realspace(centers: NDArray, feature_dims: Mapping) -> xr.DataArray:
+def centers_realspace(centers: np.ndarray, feature_dims: Mapping) -> xr.DataArray:
     coords = {"cluster": np.arange(centers.shape[0])} | feature_dims
     shape = [len(coord) for coord in coords.values()]
     return xr.DataArray(centers.reshape(shape), coords=coords)
@@ -76,17 +75,17 @@ def get_feature_dims(da: xr.DataArray) -> Mapping:
     return {key: da[key].values for key in da.dims if key not in excluded}
 
 
-def centers_realspace_from_da(centers: NDArray, da: xr.DataArray) -> xr.DataArray:
+def centers_realspace_from_da(centers: np.ndarray, da: xr.DataArray) -> xr.DataArray:
     return centers_realspace(centers, get_feature_dims(da))
 
 
 def labels_from_projs(
-    X1: NDArray,
-    X2: NDArray | None = None,
+    X1: np.ndarray,
+    X2: np.ndarray | None = None,
     cutoff: int | None = None,
     neg: bool = True,
     adjust: bool = True,
-) -> NDArray:
+) -> np.ndarray:
     if cutoff is None:
         if X2 is None:
             cutoff = X1.shape[1]
@@ -118,7 +117,7 @@ def labels_from_projs(
 
 
 def labels_to_centers(
-    labels: list | NDArray | xr.DataArray,
+    labels: list | np.ndarray | xr.DataArray,
     da: xr.DataArray | xr.Dataset,
     expected_nclu: int | None = None,
     coord: str = "cluster",
@@ -150,7 +149,7 @@ def labels_to_centers(
     return centers.set_xindex("label")
 
 
-def timeseries_on_map(timeseries: NDArray, labels: list | NDArray):
+def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray):
     timeseries = np.atleast_2d(timeseries)
     mask = labels_to_mask(labels)
     return np.asarray(
@@ -193,7 +192,7 @@ class Experiment(object):
         norm_da.to_netcdf(norm_path)
         return norm_da
 
-    def prepare_for_clustering(self) -> Tuple[NDArray | DaArray, xr.DataArray]:
+    def prepare_for_clustering(self) -> Tuple[np.ndarray | DaArray, xr.DataArray]:
         norm_da = self.get_norm_da()
 
         da_weighted = self.da * norm_da
@@ -224,10 +223,10 @@ class Experiment(object):
 
     def pca_transform(
         self,
-        X: NDArray | DaArray,
+        X: np.ndarray | DaArray,
         n_pcas: int | None = None,
         compute: bool = False,
-    ) -> NDArray:
+    ) -> np.ndarray:
         if n_pcas is None:
             return X
         transformed_file = self.path.joinpath(f"pca_{n_pcas}.npy")
@@ -244,10 +243,10 @@ class Experiment(object):
 
     def pca_inverse_transform(
         self,
-        X: NDArray | DaArray,
+        X: np.ndarray | DaArray,
         n_pcas: int | None = None,
         compute: bool = False,
-    ) -> NDArray[Shape["*, *"], Float]:
+    ) -> np.ndarray:
         if n_pcas is None:
             return X
         pca_path = self.compute_pcas(n_pcas)
@@ -259,13 +258,13 @@ class Experiment(object):
             return X
         return _compute(X, progress=True)
 
-    def labels_as_da(self, labels: NDArray) -> xr.DataArray:
+    def labels_as_da(self, labels: np.ndarray) -> xr.DataArray:
         sample_dims = self.data_handler.get_sample_dims()
         shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
         return xr.DataArray(labels, coords=sample_dims).rename("labels")
 
-    def _centers_realspace(self, centers: NDArray):
+    def _centers_realspace(self, centers: np.ndarray):
         feature_dims = self.data_handler.get_feature_dims()
         extra_dims = self.data_handler.get_extra_dims()
         n_pcas_tentative = centers.shape[1]
@@ -283,10 +282,10 @@ class Experiment(object):
 
     def _cluster_output(
         self,
-        centers: NDArray,
-        labels: NDArray,
+        centers: np.ndarray,
+        labels: np.ndarray,
         return_type: int = RAW_REALSPACE,
-        X: NDArray | None = None,
+        X: np.ndarray | None = None,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
         All the clustering methods are responsible for producing their centers in pca space and their labels in sample space. This function handles the rest
@@ -354,7 +353,7 @@ class Experiment(object):
         force: bool = False,
         train_kwargs: dict | None = None,
         **kwargs,
-    ) -> Tuple[XPySom, xr.DataArray, NDArray]:
+    ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
         pbc_flag = "_pbc" if PBC else ""
         init = "random" if self.data_handler.get_flat_shape()[1] > 5000 else "pca"
         net = XPySom(
@@ -406,7 +405,7 @@ class Experiment(object):
         self,
         other_exp: Path,  
         **kwargs,
-    ) -> Tuple[XPySom, xr.DataArray, NDArray]:
+    ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
         nx, ny = kwargs["nx"], kwargs["ny"]
         pbc = "pbc" in kwargs and kwargs["pbc"]
         pbc_flag = "_pbc" if pbc else ""
@@ -458,7 +457,7 @@ class Experiment(object):
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(
         self,
-        X: NDArray,
+        X: np.ndarray,
         lag_max: int,
     ) -> dict:
         autocorrs = compute_autocorrs(X, lag_max)
@@ -486,7 +485,7 @@ class Experiment(object):
             "OPPs": OPPs,
         }
 
-    def _compute_opps_T2(self, X: NDArray, lag_max: int) -> dict:
+    def _compute_opps_T2(self, X: np.ndarray, lag_max: int) -> dict:
         autocorrs = compute_autocorrs(X, lag_max)
         C0sqrt = linalg.sqrtm(autocorrs[0])
         C0minushalf = linalg.inv(C0sqrt)
@@ -497,7 +496,7 @@ class Experiment(object):
             factor1 = x.T @ C0minushalf @ autocorrs @ C0minushalf @ x
             return -2 * np.trapz(factor1**2) / normxsq**2
 
-        def minus_T2_gradient(x) -> NDArray:
+        def minus_T2_gradient(x) -> np.ndarray:
             normxsq = linalg.norm(x) ** 2
             factor1 = x.T @ C0minushalf @ autocorrs @ C0minushalf @ x
             factor2 = (
@@ -509,7 +508,7 @@ class Experiment(object):
         def norm0(x) -> float:
             return 10 - linalg.norm(x) ** 2
 
-        def jac_norm0(x) -> NDArray:
+        def jac_norm0(x) -> np.ndarray:
             return -2 * x
 
         Id = np.eye(X.shape[1])

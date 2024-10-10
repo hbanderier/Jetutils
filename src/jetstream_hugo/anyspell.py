@@ -3,7 +3,6 @@ from functools import partial
 from itertools import combinations, product
 from multiprocessing import Pool
 from pathlib import Path
-from nptyping import NDArray
 import warnings
 
 import numpy as np
@@ -74,7 +73,7 @@ def spells_from_da(
     time_before: np.timedelta64 = np.timedelta64(0, "D"),
     time_after: np.timedelta64 = np.timedelta64(0, "D"),
     output_type: Literal["arr"] | Literal["list"] | Literal["both"] = "arr",
-) -> xr.DataArray | Tuple[list[NDArray]]:
+) -> xr.DataArray | Tuple[list[np.ndarray]]:
     dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
     months = np.unique(da.time.dt.month.values)
     months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
@@ -113,7 +112,7 @@ def mask_from_spells(
     da: xr.DataArray,
     ds: xr.Dataset,
     spells_ts: list,
-    spells: NDArray,
+    spells: np.ndarray,
     time_before: np.timedelta64 = np.timedelta64(0, "D"),
 ) -> xr.Dataset:
     months = np.unique(ds.time.dt.month.values)
@@ -229,7 +228,7 @@ def spatial_agglomerative_clustering(
     mask: xr.DataArray | Literal["land"] | None = None,
     season: str | list | None = "JJA",
     metric: str = "jaccard",
-) -> NDArray:
+) -> np.ndarray:
     lon, lat = da.lon.values, da.lat.values
     if mask is not None and not isinstance(mask, xr.DataArray) and mask == "land":
         mask = get_land_mask()
@@ -398,7 +397,7 @@ def stacked_lstsq(
     return np.conj(x, x)
 
 
-def compute_r(triplet, season: str | list | None = "JJA") -> NDArray:
+def compute_r(triplet, season: str | list | None = "JJA") -> np.ndarray:
     (predictor, lag), predictor_, target_ = triplet
     if "timescale" in target_.dims:
         timescale = target_.timescale.item()
@@ -849,7 +848,7 @@ class ExtremeExperiment(object):
 
     def compute_linkage_quantile(
         self,
-    ) -> NDArray:
+    ) -> np.ndarray:
         Z_path = f"Z_{self.path_suffix}.npy"
         Z_path = self.path.joinpath(Z_path)
         if Z_path.is_file():

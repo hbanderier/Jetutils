@@ -115,7 +115,10 @@ def standardize(da):
             da = da.rename({key: value})
         except ValueError:
             pass
-    da["time"] = da.indexes["time"].to_datetimeindex()
+    try:
+        da["time"] = da.indexes["time"].to_datetimeindex()
+    except AttributeError:
+        pass
     da = da.astype(np.float32)
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
@@ -159,7 +162,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
         return da.squeeze()
 
     levels, level_names = unpack_levels(levels)
-
+    da.attrs["orig_lev"] = levels
     if not any([isinstance(level, tuple) for level in levels]):
         try:
             da = da.isel(lev=levels).squeeze()

@@ -1,6 +1,5 @@
 from itertools import product
 from typing import Any, Mapping, Sequence, Tuple, Union, Iterable
-from nptyping import NDArray, Object
 
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -200,7 +199,7 @@ def figtitle(
 
 def honeycomb_panel(
     ncol, nrow, ratio: float = 1.4, subplot_kw: dict = None
-) -> Tuple[Figure, NDArray[Any, Object]]:
+) -> Tuple[Figure, np.ndarray]:
     fig = plt.figure(figsize=(4.5 * nrow, 4.5 * ratio * nrow))
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=0, wspace=0)
     axes = np.empty((ncol, nrow), dtype=object)
@@ -299,7 +298,7 @@ def make_transparent(
 
 def create_levels(
     to_plot: list, levels: int | Sequence | None = None, q: float = 0.99
-) -> Tuple[NDArray, NDArray, str, int]:
+) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
         return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', 1
     extend = {-1: "min", 0: "both", 1: "max"}
@@ -346,8 +345,8 @@ def doubleit(thing: list | str | None, length: int, default: str) -> list:
 
 def setup_lon_lat(
     to_plot: list,
-    lon: NDArray | None,
-    lat: NDArray | None,
+    lon: np.ndarray | None,
+    lat: np.ndarray | None,
 ):
     if lon is None or lat is None:
         try:
@@ -359,13 +358,13 @@ def setup_lon_lat(
     return lon, lat
 
 
-def to_prettier_order(n: int | NDArray, width: int = 6, height: int = 4):
+def to_prettier_order(n: int | np.ndarray, width: int = 6, height: int = 4):
     col, row = divmod(n, height)
     row = height - 1 - row
     return 1 + width * row + col
 
 
-# def inv_prettier_order(n: int | NDArray, width: int = 6, height: int = 4):
+# def inv_prettier_order(n: int | np.ndarray, width: int = 6, height: int = 4):
 #     col, row = divmod(n, height)
 #     row = height - 1 - row
 #     return 1 + width * row + col
@@ -376,7 +375,7 @@ class Clusterplot:
         self,
         nrow: int,
         ncol: int,
-        region: NDArray | list | tuple = None,
+        region: np.ndarray | list | tuple = None,
         lambert_projection: bool = False,
         honeycomb: bool = False,
         numbering: bool = False,
@@ -483,8 +482,8 @@ class Clusterplot:
     def add_contour(
         self,
         to_plot: list,
-        lon: NDArray = None,
-        lat: NDArray = None,
+        lon: np.ndarray = None,
+        lat: np.ndarray = None,
         levels: int | Sequence | None = None,
         clabels: Union[bool, list] = False,
         draw_gridlines: bool = False,
@@ -551,7 +550,7 @@ class Clusterplot:
         cbar_kwargs: Mapping = None,
         q: float=0.99,
         **kwargs,
-    ) -> Tuple[Mapping, Mapping, ScalarMappable, NDArray]:
+    ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
         levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q)
 
         if isinstance(cmap, str):
@@ -597,8 +596,8 @@ class Clusterplot:
     def add_contourf(
         self,
         to_plot: list,
-        lon: NDArray = None,
-        lat: NDArray = None,
+        lon: np.ndarray = None,
+        lat: np.ndarray = None,
         levels: int | Sequence | None = None,
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
@@ -655,7 +654,7 @@ class Clusterplot:
     def add_stippling(
         self,
         da: DataArray,
-        mask: NDArray,
+        mask: np.ndarray,
         FDR: bool = True,
         color: str | list = "black",
         hatch: str = "..",
@@ -694,7 +693,7 @@ class Clusterplot:
     def add_any_contour_from_mask(
         self,
         da: DataArray,
-        mask: NDArray,
+        mask: np.ndarray,
         type: str = "contourf",
         stippling: bool | str = False,
         **kwargs,
@@ -740,8 +739,8 @@ class Clusterplot:
 
     def cluster_on_fig(
         self,
-        coords: NDArray,
-        clu_labs: NDArray,
+        coords: np.ndarray,
+        clu_labs: np.ndarray,
         cmap: str | Colormap = None,
     ) -> None:
         unique_labs = np.unique(clu_labs)
@@ -752,7 +751,7 @@ class Clusterplot:
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
         nabove = np.sum(unique_labs > 0)
-        if isinstance(cmap, list | NDArray):
+        if isinstance(cmap, list | np.ndarray):
             colors = cmap
         else:
             if sym:
@@ -824,15 +823,15 @@ class Clusterplot:
                 )
 
 
-def cdf(timeseries: Union[DataArray, NDArray]) -> Tuple[NDArray, NDArray]:
+def cdf(timeseries: Union[DataArray, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """Computes the cumulative distribution function of a 1D DataArray
 
     Args:
-        timeseries (xr.DataArray or npt.NDArray): will be cast to ndarray if DataArray.
+        timeseries (xr.DataArray or npt.np.ndarray): will be cast to ndarray if DataArray.
 
     Returns:
-        x (npt.NDArray): x values for plotting,
-        y (npt.NDArray): cdf of the timeseries,
+        x (npt.np.ndarray): x values for plotting,
+        y (npt.np.ndarray): cdf of the timeseries,
     """
     if isinstance(timeseries, DataArray):
         timeseries = timeseries.values

@@ -1,3 +1,12 @@
+from typing import Tuple
+
+import numpy as np
+import xarray as xr
+import polars as pl
+
+
+from jetstream_hugo.definitions import N_WORKERS, slice_1d
+from jetstream_hugo.jet_finding import haversine, create_mappable_iterator, map_maybe_parallel, get_index_columns
 
 
 def compute_one_wb_props(
@@ -85,7 +94,7 @@ def compute_wb_props_wrapper(args: Tuple) -> list:
 def compute_all_wb_props(
     all_jets_one_df: pl.DataFrame,
     da_pvs: xr.DataArray,
-    event_mask: NDArray,
+    event_mask: np.ndarray,
     processes: int = N_WORKERS,
     chunksize: int = 100,
 ) -> xr.Dataset:
@@ -93,7 +102,7 @@ def compute_all_wb_props(
     print("Computing RWB properties")
     all_props_dfs = map_maybe_parallel(
         iterator,
-        compute_jet_props_wrapper,
+        compute_wb_props_wrapper,
         len_=len_,
         processes=processes,
         chunksize=chunksize,
