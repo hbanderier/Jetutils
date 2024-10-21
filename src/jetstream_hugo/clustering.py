@@ -13,29 +13,27 @@ from dask.array import Array as DaArray, from_array
 import scipy.linalg as linalg
 from scipy.optimize import minimize
 
-try:
-    from dask_ml.decomposition import PCA
-    from dask_ml.cluster import KMeans
-except ModuleNotFoundError:
-    from sklearn.decomposition import PCA
-    from sklearn.cluster import KMeans
+from dask_ml.decomposition import PCA as da_PCA
+from dask_ml.cluster import KMeans as da_KMeans
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 # from simpsom import SOMNet
 from xpysom_dask.xpysom import XPySom
 
 from jetstream_hugo.definitions import (
     coarsen_da,
-    revert_zero_one,
     save_pickle,
     load_pickle,
     COMPUTE_KWARGS,
     degcos,
     labels_to_mask,
-    to_zero_one,
+    normalize,
+    revert_normalize,
     _compute,
 )
 
 from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import DataHandler
+from jetstream_hugo.data import DataHandler, determine_feature_dims, determine_sample_dims
 
 RAW_REALSPACE: int = 0
 RAW_PCSPACE: int = 1
@@ -65,18 +63,8 @@ def centers_realspace(centers: np.ndarray, feature_dims: Mapping) -> xr.DataArra
     return xr.DataArray(centers.reshape(shape), coords=coords)
 
 
-def get_sample_dims(da: xr.DataArray) -> Mapping:
-    included = ["time", "member"]
-    return {key: da[key].values for key in da.dims if key in included}
-
-
-def get_feature_dims(da: xr.DataArray) -> Mapping:
-    excluded = ["time", "member", "cluster"]
-    return {key: da[key].values for key in da.dims if key not in excluded}
-
-
 def centers_realspace_from_da(centers: np.ndarray, da: xr.DataArray) -> xr.DataArray:
-    return centers_realspace(centers, get_feature_dims(da))
+    return centers_realspace(centers, determine_feature_dims(da))
 
 
 def labels_from_projs(
@@ -117,13 +105,11 @@ def labels_from_projs(
 
 
 def labels_to_centers(
-    labels: list | np.ndarray | xr.DataArray,
+    labels: xr.DataArray,
     da: xr.DataArray | xr.Dataset,
     expected_nclu: int | None = None,
     coord: str = "cluster",
 ) -> xr.DataArray:
-    if isinstance(labels, xr.DataArray):
-        labels = labels.values
     if expected_nclu is not None:
         unique_labels = np.arange(expected_nclu)
         counts = np.zeros(expected_nclu)
@@ -131,11 +117,11 @@ def labels_to_centers(
         counts[unique_labels_] = counts_
     else:
         unique_labels, counts = np.unique(labels, return_counts=True)
-    counts = counts / float(len(labels))
-    dims = list(get_sample_dims(da))
+    counts = counts / float(np.prod(labels.shape))
+    dims = list(determine_sample_dims(da))
     extra_dims = [coord for coord in da.coords if coord not in da.dims]
     centers = [
-        _compute(da.isel(time=(labels == i)).mean(dim=dims)) for i in tqdm(unique_labels)
+        _compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
     ]
     for extra_dim in extra_dims:
         for i, center in enumerate(centers):
@@ -167,6 +153,9 @@ class Experiment(object):
         self.inner_norm = inner_norm
         self.da = self.data_handler.da
         self.path = self.data_handler.get_path()
+        
+    def load_da(self, **kwargs):
+        self.da = _compute(self.da, **kwargs)
 
     def get_norm_da(self):
         norm_path = self.path.joinpath(f"norm.nc")
@@ -259,7 +248,7 @@ class Experiment(object):
         return _compute(X, progress=True)
 
     def labels_as_da(self, labels: np.ndarray) -> xr.DataArray:
-        sample_dims = self.data_handler.get_sample_dims()
+        sample_dims = determine_sample_dims(self.da)
         shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
         return xr.DataArray(labels, coords=sample_dims).rename("labels")
@@ -302,8 +291,10 @@ class Experiment(object):
             }
             centers = xr.DataArray(centers, coords=coords_centers)
             centers = centers.assign_coords({"ratios": ("cluster", counts)})
+            labels = self.labels_as_da(labels)
 
         elif return_type == RAW_REALSPACE:
+            labels = self.labels_as_da(labels)
             centers = labels_to_centers(labels, self.da, expected_nclu=n_clu, coord="cluster")
 
         elif return_type in [ADJUST, ADJUST_TWOSIDED]:
@@ -311,12 +302,12 @@ class Experiment(object):
             neg = return_type == ADJUST_TWOSIDED
             newlabels = labels_from_projs(projection, neg=neg, adjust=True)
             centers = labels_to_centers(newlabels, self.da, coord="cluster")
+            labels = self.labels_as_da(labels)
 
         else:
             print("Wrong return specifier")
             raise ValueError
         
-        labels = self.labels_as_da(labels)
         return centers, labels
 
     def do_kmeans(
@@ -348,26 +339,24 @@ class Experiment(object):
         ny: int,
         n_pcas: int = 0,
         PBC: bool = True,
-        metric: str = "euclidean",
+        activation_distance: str = "euclidean",
         return_type: int = RAW_REALSPACE,
         force: bool = False,
         train_kwargs: dict | None = None,
         **kwargs,
     ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
         pbc_flag = "_pbc" if PBC else ""
-        init = "random" if self.data_handler.get_flat_shape()[1] > 5000 else "pca"
         net = XPySom(
             nx,
             ny,
             PBC=PBC,
-            activation_distance=metric,
-            init=init,
+            activation_distance=activation_distance,
             **kwargs,
         )
         if n_pcas:
             output_file_stem = f"som_{nx}_{ny}{pbc_flag}_{n_pcas}"
         else:
-            output_file_stem = f"som_{nx}_{ny}{pbc_flag}_{metric}"
+            output_file_stem = f"som_{nx}_{ny}{pbc_flag}_{activation_distance}"
         output_path_weights = self.path.joinpath(f"{output_file_stem}.npy")
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
@@ -378,7 +367,7 @@ class Experiment(object):
             net.latest_bmus = labels.values
             return net, centers, labels
         if train_kwargs is None:
-            train_kwargs = {}
+            train_kwargs = {"num_epochs": 15}
         train_kwargs["out_path"] = output_path_weights
         X, da_weighted = self.prepare_for_clustering()
         if n_pcas:
@@ -386,16 +375,21 @@ class Experiment(object):
         else:
             if (da_weighted.lon[1] - da_weighted.lon[0]).item() < 1:
                 da_weighted = coarsen_da(da_weighted, 1.5)
-                X = da_weighted.data.reshape(da_weighted.shape[0], -1)
-            X, Xmin, Xmax = to_zero_one(X)
-        net.train(X, 50, **train_kwargs)
+                X = da_weighted.data.reshape(self.data_handler.get_flat_shape()[0], -1)
+            X, meanX, stX = normalize(X)
+        if not force and output_path_weights.is_file():
+            net.load_weights(output_path_weights)
+        else:
+            X = _compute(X, progress=True)
+            net.train(X, **train_kwargs)
 
         labels = net.predict(X)
         if n_pcas:
             weights = net.weights
         else:
-            weights = revert_zero_one(net.weights, Xmin, Xmax)
-
+            weights = revert_normalize(net.weights, meanX, stX)
+            
+        X = _compute(X, progress=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
         centers.to_netcdf(output_path_centers)
         labels.to_netcdf(output_path_labels)
@@ -415,8 +409,8 @@ class Experiment(object):
             n_pcas = kwargs["n_pcas"]
             output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{n_pcas}.nc"
         else:
-            metric = kwargs["metric"]
-            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{metric}.nc"
+            activation_distance = kwargs["activation_distance"]
+            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{activation_distance}.nc"
         output_file = self.path.joinpath(output_file)
         if output_file.is_file():
             return net, centers, xr.open_dataarray(output_file)
@@ -433,7 +427,7 @@ class Experiment(object):
                 lat=other_da.lat.values,
                 kwargs={"fill_value": "extrapolate"}
             )
-            X = to_zero_one(
+            X = normalize(
                 da_weighted.data.reshape(
                     np.prod(da_weighted.shape[:2]), 
                     np.prod(da_weighted.shape[2:])

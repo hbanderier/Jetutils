@@ -198,19 +198,19 @@ def figtitle(
 
 
 def honeycomb_panel(
-    ncol, nrow, ratio: float = 1.4, subplot_kw: dict = None
+    nrow, ncol, ratio: float = 1.4, subplot_kw: dict = None
 ) -> Tuple[Figure, np.ndarray]:
     fig = plt.figure(figsize=(4.5 * nrow, 4.5 * ratio * nrow))
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=0, wspace=0)
-    axes = np.empty((ncol, nrow), dtype=object)
+    axes = np.empty((nrow, ncol), dtype=object)
     if subplot_kw is None:
         subplot_kw = {}
-    for i, j in product(range(ncol), range(nrow)): # TODO: new SOM ordering
+    for i, j in product(range(ncol), range(nrow)):
         if j % 2 == 0:
             slice_x = slice(2 * i, 2 * i + 2)
         else:
             slice_x = slice(2 * i + 1, 2 * i + 2 + 1)
-        axes[i, j] = fig.add_subplot(gs[nrow - j - 1, slice_x], **subplot_kw)
+        axes[j, i] = fig.add_subplot(gs[j, slice_x], **subplot_kw)
     return fig, axes
 
 
@@ -406,7 +406,7 @@ class Clusterplot:
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
-                self.ncol, self.nrow, ratio, subplot_kw={"projection": projection}
+                self.nrow, self.ncol, ratio, subplot_kw={"projection": projection}
             )
         else:
             self.fig, self.axes = plt.subplots(
@@ -431,8 +431,7 @@ class Clusterplot:
         if numbering:
             plt.draw()
             for i, ax in enumerate(self.axes):
-                j = to_prettier_order(i, ncol, nrow)
-                ax.annotate(str(j), (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
+                ax.annotate(str(i + 1), (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
 
     def _add_gridlines(self, step: int | tuple = None) -> None:
         for ax in self.axes:

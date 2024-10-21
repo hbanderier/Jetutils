@@ -6,6 +6,7 @@ from multiprocessing import Pool, current_process, get_context
 
 import numpy as np
 import polars as pl
+from polars.exceptions import ColumnNotFoundError
 import polars_ols as pls
 import xarray as xr
 from contourpy import contour_generator
@@ -321,8 +322,8 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             "int",
         ]
     else:
-        condition_expr = (pl.col("s") > 25) & (pl.col("alignment") > 0.4)
-        condition_expr2 = pl.col("int") > 1.2e8
+        condition_expr = (pl.col("s") > 22) & (pl.col("alignment") > 0.5)
+        condition_expr2 = pl.col("int") > 8e7
         drop = ["contour", "index", "cyclic", "condition", "int"]
 
     # smooth, compute sigma
@@ -342,7 +343,12 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
         .agg(index=pl.int_range(0, pl.col("lon").len()))
         .explode("index")["index"]
     )
-    all_contours = all_contours.cast({"time": df["time"].dtype}).join(
+    for index_column in index_columns:
+        try:
+            all_contours = all_contours.cast({index_column: df[index_column].dtype})
+        except ColumnNotFoundError:
+            pass
+    all_contours = all_contours.join(
         df, on=[*index_columns, "lon", "lat"], how="left"
     )
     all_contours = compute_alignment(all_contours)
@@ -777,6 +783,16 @@ def categorize_df_jets(props_as_df: pl.DataFrame):
                 how="cross",
             )
         )
+    elif "cluster" in index_columns:
+        dummy_indexer = (
+            props_as_df_cat["cluster"]
+            .unique(maintain_order=True)
+            .to_frame()
+            .join(
+                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
+                how="cross",
+            )
+        )
     else:
         dummy_indexer = (
             props_as_df_cat["time"]
@@ -1070,16 +1086,18 @@ def inner_jet_pos_as_da(args: Tuple):
 
 def jet_position_as_da(
     all_jets_one_df: pl.DataFrame,
-    basepath: Path,
+    basepath: Path | None = None,
 ) -> xr.DataArray:
-    ofile = basepath.joinpath("jet_pos.nc")
-    if ofile.is_file():
-        return xr.open_dataarray(ofile).load()
+    if basepath is not None:
+        ofile = basepath.joinpath("jet_pos.nc")
+        if ofile.is_file():
+            return xr.open_dataarray(ofile).load()
     
     index_columns = get_index_columns(all_jets_one_df, ("member", "time", "cluster"))
     all_jets_pandas = all_jets_one_df.group_by([*index_columns, "lon", "lat", "is_polar"], maintain_order=True).len().to_pandas()
     da_jet_pos = xr.Dataset.from_dataframe(all_jets_pandas.set_index([*index_columns, "lat", "lon", "is_polar"]))["len"].fillna(0)
-    da_jet_pos.to_netcdf(ofile)
+    if basepath is not None:
+        da_jet_pos.to_netcdf(ofile)
     return da_jet_pos
 
 

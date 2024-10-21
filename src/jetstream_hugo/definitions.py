@@ -202,6 +202,18 @@ def revert_zero_one(X, Xmin, Xmax):
     return Xmin[None, :] + (Xmax - Xmin)[None, :] * X
 
 
+def normalize(X):
+    meanX = X.mean(axis=0)
+    stdX = X.std(axis=0)
+    X = (X - meanX[None, :]) / stdX[None, :]
+    return X, meanX, stdX
+
+
+def revert_normalize(X, meanX, stdX):
+    X = X * stdX[None, :] + meanX[None, :]
+    return X
+
+
 def save_pickle(to_save: Any, filename: str | Path) -> None:
     with open(filename, "wb") as handle:
         pkl.dump(to_save, handle)
@@ -239,7 +251,7 @@ def labels_to_mask(labels: xr.DataArray | np.ndarray) -> np.ndarray:
     if isinstance(labels, xr.DataArray):
         labels = labels.values
     unique_labels = np.unique(labels)
-    return labels[:, None] == unique_labels[None, :]
+    return labels[..., None] == unique_labels[None, :]
 
 
 def get_region(da: xr.DataArray | xr.Dataset) -> tuple:

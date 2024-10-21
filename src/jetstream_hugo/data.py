@@ -54,6 +54,16 @@ def determine_file_structure(path: Path) -> str:
     raise RuntimeError
 
 
+def determine_sample_dims(da: xr.DataArray) -> Mapping:
+    included = ["member", "time"]
+    return {key: da[key].values for key in da.dims if key in included}
+
+
+def determine_feature_dims(da: xr.DataArray) -> Mapping:
+    excluded = ["member", "time", "cluster"]
+    return {key: da[key].values for key in da.dims if key not in excluded}
+
+
 def data_path(
     dataset: str,
     level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
@@ -133,9 +143,9 @@ def extract_period(da, period: list | tuple | Literal["all"] | int | str = "all"
         return da
     if isinstance(period, tuple):
         if len(period) == 2:
-            period = np.arange(period[0], period[1] + 1)
+            period = np.arange(period[0], period[1] + 1).tolist()
         elif len(period) == 3:
-            period = np.arange(period[0], period[1] + 1, period[2])
+            period = np.arange(period[0], period[1] + 1, period[2]).tolist()
     elif isinstance(period, int):
         period = [period]
     return da.isel(time=np.isin(da.time.dt.year, period))
@@ -300,11 +310,11 @@ def open_da(
     file_structure = determine_file_structure(path)
 
     if isinstance(period, tuple):
-        period = np.arange(int(period[0]), int(period[1] + 1))
+        period = np.arange(int(period[0]), int(period[1] + 1)).tolist()
     elif isinstance(period, list):
-        period = np.asarray(period).astype(int)
+        period = np.asarray(period).astype(int).tolist()
     elif period == "all":
-        period = YEARS
+        period = YEARS.tolist()
     elif isinstance(period, int | str):
         period = [int(period)]
 
@@ -492,10 +502,10 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
 
 
 def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
-    import flox
+    from flox.xarray import xarray_reduce
     da, coord = assign_clim_coord(da, clim_type)
     with ProgressBar():
-        clim = flox.xarray.xarray_reduce(
+        clim = xarray_reduce(
             da,
             coord,
             func="mean",
@@ -508,13 +518,13 @@ def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
 def compute_anom(
     anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False
 ):
-    import flox
+    from flox.xarray import xarray_reduce
     anom, coord = assign_clim_coord(anom, clim_type)
     this_gb = anom.groupby(coord)
     if not normalized:
         anom = this_gb - clim
     else:
-        variab = flox.xarray.xarray_reduce(
+        variab = xarray_reduce(
             anom,
             coord,
             func="std",
@@ -629,9 +639,9 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
 def compute_anomalies_ds(
     ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False
 ) -> xr.Dataset:
-    import flox
+    from flox.xarray import xarray_reduce
     ds, coord = assign_clim_coord(ds, clim_type)
-    clim = flox.xarray.xarray_reduce(
+    clim = xarray_reduce(
         ds,
         coord,
         func="nanmean",
@@ -644,7 +654,7 @@ def compute_anomalies_ds(
         if return_clim:
             return (this_gb - clim).reset_coords(clim_type, drop=True), clim
         return (this_gb - clim).reset_coords(clim_type, drop=True)
-    variab = flox.xarray.xarray_reduce(
+    variab = xarray_reduce(
         ds,
         coord,
         func="nanstd",
@@ -717,11 +727,11 @@ def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None =
     elif isinstance(da, xr.Dataset) and varname is None:
         varname = list(da.data_vars)
         varname.sort()
-    period = np.unique(da.time.dt.year)
-    season = np.unique(da.time.dt.month)
+    period = np.unique(da.time.dt.year).tolist()
+    season = np.unique(da.time.dt.month).tolist()
     nullseason = {None: list(range(1, 13))}
     for seasonname, monthlist in (SEASONS | nullseason).items():
-        if monthlist == season.tolist():
+        if monthlist == season:
             season = seasonname
             break
     region = get_region(da)
@@ -733,7 +743,7 @@ def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None =
         levels = None
     metadata = {
         "varname": varname,
-        "period": period.tolist(),
+        "period": period,
         "season": season,
         "region": region,
         "levels": levels,
@@ -758,19 +768,8 @@ class DataHandler(object):
         self.path = find_spot(basepath, self.metadata)
 
     def _setup_dims(self):
-        self.sample_dims = {"time": self.da.time.values}
-        try:
-            self.sample_dims["member"] = self.da.member.values
-        except AttributeError:
-            pass
-        self.lon, self.lat = self.da.lon.values, self.da.lat.values
-        if "lev" in self.da.dims:
-            self.feature_dims = {"lev": self.da.lev.values}
-            len(self.da.lev.values)
-        else:
-            self.feature_dims = {}
-        self.feature_dims["lat"] = self.lat
-        self.feature_dims["lon"] = self.lon
+        self.sample_dims = determine_sample_dims(self.da)
+        self.feature_dims = determine_feature_dims(self.da)
         self.extra_dims = {}
         for coordname, coord in self.da.coords.items():
             if coordname not in self.da.dims:

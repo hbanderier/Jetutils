@@ -7,13 +7,13 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 import xrft
 from tqdm.notebook import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
 from sklearn.metrics import pairwise_distances
-from xclim.indices.run_length import rle, run_bounds # TODO: replace with basic run_lengths to drop xclim dependency
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -680,6 +680,14 @@ def predict_all(
         ]
         # 3. Potentially shap (mean and mean_abs)
         if compute_shap:
+            if type_ == "xgb":
+                # to solve UnicodeDecodeError
+                mybooster = model.get_booster()    
+                model_bytearray = mybooster.save_raw()[4:]
+                def myfun(self=None):
+                    return model_bytearray
+                mybooster.save_raw = myfun
+
             shap_explainer = TreeExplainer if type_ == "rf" else Explainer
             shap_ = shap_explainer(model, n_jobs=N_WORKERS)(X, y, check_additivity=False)
             raw_shap[indexer_str] = shap_
@@ -839,12 +847,8 @@ class ExtremeExperiment(object):
         self.pred_path = self.path.joinpath("predictions")
         self.pred_path.mkdir(mode=0o777, parents=True, exist_ok=True)
 
-    def load_da(self):
-        try:
-            with ProgressBar():
-                self.da = self.da.load()
-        except AttributeError:
-            pass
+    def load_da(self, **kwargs):
+        self.da = _compute(self.da, **kwargs)
 
     def compute_linkage_quantile(
         self,
