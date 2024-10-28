@@ -10,7 +10,6 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 from tqdm import tqdm
-from dask.distributed import Client
 from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
@@ -117,7 +116,9 @@ def standardize(da):
         "level": "lev",
         "member_id": "member",
         "U": "u",
+        "u_component_of_wind": "u",
         "V": "v",
+        "v_component_of_wind": "v",
         "T": "t",
     }
     for key, value in standard_dict.items():
@@ -127,7 +128,7 @@ def standardize(da):
             pass
     try:
         da["time"] = da.indexes["time"].to_datetimeindex()
-    except AttributeError:
+    except (AttributeError, KeyError):
         pass
     da = da.astype(np.float32)
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
@@ -402,7 +403,7 @@ def _window_smoothing(
         dim = "time"
     for group in groups.groups.values():
         to_concat.append(
-            da.loc[{dim: da.hourofyear[group]}]
+            da.isel(**{dim: group})
             .rolling({dim: winsize // 4}, center=center, min_periods=1)
             .mean()
         )
@@ -1019,3 +1020,5 @@ class DataHandler(object):
 
         return cls(da, path.parent)
         
+        
+    

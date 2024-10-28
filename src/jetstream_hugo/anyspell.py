@@ -109,10 +109,10 @@ def spells_from_da(
 
 
 def mask_from_spells(
-    da: xr.DataArray,
     ds: xr.Dataset,
     spells_ts: list,
     spells: np.ndarray,
+    da: xr.DataArray | None = None,
     time_before: np.timedelta64 = np.timedelta64(0, "D"),
 ) -> xr.Dataset:
     months = np.unique(ds.time.dt.month.values)
@@ -120,7 +120,8 @@ def mask_from_spells(
     try:
         lengths = spells[:, 1] - spells[:, 0]
         longest_spell = np.argmax(lengths)
-        time_around_beg = spells_ts[longest_spell] - spells[longest_spell, 0]
+        dt = np.amin(np.unique(np.diff(spells_ts[0])))
+        time_around_beg = np.arange(- time_before, spells[longest_spell, 1] - spells[longest_spell, 0] + dt, dt, dtype="timedelta64[ns]")
     except ValueError:
         time_around_beg = np.atleast_1d(np.timedelta64(0, "ns"))
     ds_masked = (
@@ -129,6 +130,7 @@ def mask_from_spells(
         .copy(deep=True)
     )
     ds_masked.loc[dict()] = np.nan
+    ds_masked = ds_masked.load()
     ds_masked = ds_masked.expand_dims(
         spell=np.arange(len(spells)),
         time_around_beg=time_around_beg,
@@ -161,8 +163,9 @@ def mask_from_spells(
         )
         indexer = dict(spell=i, time_around_beg=this_tab)
         ds_masked.loc[indexer] = to_assign
-        ds_masked.avg_val.loc[indexer] = da.loc[dict(time=spell)].values
         ds_masked.absolute_time.loc[indexer] = spell
+        if da is not None:
+            ds_masked.avg_val.loc[indexer] = da.loc[dict(time=spell)].values
     return ds_masked
 
 
@@ -186,7 +189,7 @@ def mask_from_da(
     spells_ts, spells = spells_from_da(
         da, q, fill_holes, minlen, time_before, time_after, output_type="list"
     )
-    return mask_from_spells(da, ds, spells_ts, spells, time_before)
+    return mask_from_spells(ds, spells_ts, spells, da, time_before)
 
 
 def mask_from_spells_multi_region(
@@ -201,10 +204,10 @@ def mask_from_spells_multi_region(
         all_spells_ts, all_spells, targets.transpose("region", ...)
     ):
         masked_ts = mask_from_spells(
-            target,
             timeseries,
             spells_ts,
             spells,
+            target,
             time_before=time_before,
         )
         all_masked_ts.append(masked_ts)
