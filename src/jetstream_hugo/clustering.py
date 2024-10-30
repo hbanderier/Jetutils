@@ -29,7 +29,7 @@ from jetstream_hugo.definitions import (
     labels_to_mask,
     normalize,
     revert_normalize,
-    _compute,
+    compute,
 )
 
 from jetstream_hugo.stats import compute_autocorrs
@@ -121,7 +121,7 @@ def labels_to_centers(
     dims = list(determine_sample_dims(da))
     extra_dims = [coord for coord in da.coords if coord not in da.dims]
     centers = [
-        _compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
+        compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
     ]
     for extra_dim in extra_dims:
         for i, center in enumerate(centers):
@@ -155,7 +155,7 @@ class Experiment(object):
         self.path = self.data_handler.get_path()
         
     def load_da(self, **kwargs):
-        self.da = _compute(self.da, **kwargs)
+        self.da = compute(self.da, **kwargs)
 
     def get_norm_da(self):
         norm_path = self.path.joinpath(f"norm.nc")
@@ -177,7 +177,7 @@ class Experiment(object):
             norm_da = norm_da * (1 / stds)
         elif self.inner_norm and self.inner_norm not in [1, 2]:
             raise NotImplementedError()
-        norm_da = _compute(norm_da, progress=True)
+        norm_da = compute(norm_da, progress_flag=True)
         norm_da.to_netcdf(norm_path)
         return norm_da
 
@@ -206,7 +206,7 @@ class Experiment(object):
         X, _ = self.prepare_for_clustering()
         pca_path = self.path.joinpath(f"pca_{n_pcas}.pkl")
         results = PCA(n_components=n_pcas, whiten=False).fit(X)
-        results = _compute(results, progress=True)
+        results = compute(results, progress_flag=True)
         save_pickle(results, pca_path)
         return pca_path
 
@@ -226,7 +226,7 @@ class Experiment(object):
         X = pca_results.transform(X)[:, :n_pcas]
         if not compute:
             return X
-        X = _compute(X, progress=True)
+        X = compute(X, progress_flag=True)
         np.save(transformed_file, X)
         return X
 
@@ -245,7 +245,7 @@ class Experiment(object):
         X = pca_results.inverse_transform(X)
         if not compute:
             return X
-        return _compute(X, progress=True)
+        return compute(X, progress_flag=True)
 
     def labels_as_da(self, labels: np.ndarray) -> xr.DataArray:
         sample_dims = determine_sample_dims(self.da)
@@ -380,7 +380,7 @@ class Experiment(object):
         if not force and output_path_weights.is_file():
             net.load_weights(output_path_weights)
         else:
-            X = _compute(X, progress=True)
+            X = compute(X, progress_flag=True)
             net.train(X, **train_kwargs)
 
         labels = net.predict(X)
@@ -389,7 +389,7 @@ class Experiment(object):
         else:
             weights = revert_normalize(net.weights, meanX, stX)
             
-        X = _compute(X, progress=True)
+        X = compute(X, progress_flag=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
         centers.to_netcdf(output_path_centers)
         labels.to_netcdf(output_path_labels)
@@ -435,7 +435,7 @@ class Experiment(object):
             )[0]
         
         sample_shape = [len(co) for co in self.data_handler.sample_dims.values()]
-        X = _compute(X, progress=True)
+        X = compute(X, progress_flag=True)
         labels = net.predict(X).reshape(sample_shape)
         labels = xr.DataArray(labels, coords=self.data_handler.sample_dims)
         labels.attrs["som_from_exp"] = other_exp.path.as_posix()
@@ -446,7 +446,7 @@ class Experiment(object):
                 val = int(val)
             labels.attrs[key] = val
         labels.to_netcdf(output_file)
-        return net, centers, labels
+        return net, centers, labels, X
 
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(

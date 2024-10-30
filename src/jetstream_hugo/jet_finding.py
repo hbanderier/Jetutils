@@ -18,7 +18,7 @@ from jetstream_hugo.definitions import (
     RADIUS,
     labels_to_mask,
     to_zero_one,
-    _compute,
+    compute,
 )
 from jetstream_hugo.data import (
     SEASONS,
@@ -626,7 +626,7 @@ def create_mappable_iterator(
         (
             jets,
             *[
-                _compute(
+                compute(
                     da.sel(
                         {
                             dim: values
@@ -1173,7 +1173,7 @@ class JetFindingExperiment(object):
 
         if "member" not in self.data_handler.get_sample_dims():
             for indices in np.array_split(np.arange(len(self.ds.time)), 10):
-                ds_ = _compute(self.ds.isel(time=indices), progress=True)
+                ds_ = compute(self.ds.isel(time=indices), progress_flag=True)
                 df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
                 all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
 
@@ -1181,7 +1181,7 @@ class JetFindingExperiment(object):
             members = self.data_handler.get_sample_dims()["member"]
             for i, memb_list in enumerate(np.array_split(members, 10)):
                 print(i, " ", memb_list[0], "to", memb_list[-1])
-                ds_ = _compute(self.ds.sel(member=memb_list), progress=True)
+                ds_ = compute(self.ds.sel(member=memb_list), progress_flag=True)
                 df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
                 all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
                 print("tictac", file=stderr, end="\r")
@@ -1200,7 +1200,7 @@ class JetFindingExperiment(object):
         all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
         props_as_df = compute_jet_props(all_jets_one_df)
         print("Loading s")
-        da_ = _compute(self.ds["s"], progress=True)
+        da_ = compute(self.ds["s"], progress_flag=True)
         width = compute_widths_parallel(
             all_jets_one_df, da_, processes=processes, chunksize=chunksize
         )

@@ -10,7 +10,6 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 from tqdm import tqdm
-from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
     TIMERANGE,
@@ -21,7 +20,7 @@ from jetstream_hugo.definitions import (
     get_region,
     save_pickle,
     load_pickle,
-    _compute,
+    compute,
 )
 
 SEASONS = {
@@ -153,11 +152,11 @@ def extract_period(da, period: list | tuple | Literal["all"] | int | str = "all"
 
 
 def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
-    if isinstance(levels, int | str | tuple):
+    if isinstance(levels, int | str | tuple | np.int64 | np.int32):
         levels = [levels]
     to_sort = []
     for level in levels:
-        to_sort.append(float(level) if isinstance(level, int | str) else level[0])
+        to_sort.append(float(level) if isinstance(level, int | str | np.int64 | np.int32) else level[0])
     levels = [levels[i] for i in np.argsort(to_sort)]
     level_names = []
     for level in levels:
@@ -177,7 +176,7 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     if not any([isinstance(level, tuple) for level in levels]):
         try:
             da = da.isel(lev=levels).squeeze()
-        except ValueError:
+        except (ValueError, IndexError):
             da = da.sel(lev=levels).squeeze()
         if len(levels) == 1:
             return da.reset_coords("lev", drop=True)
@@ -505,15 +504,14 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
 def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
     from flox.xarray import xarray_reduce
     da, coord = assign_clim_coord(da, clim_type)
-    with ProgressBar():
-        clim = xarray_reduce(
-            da,
-            coord,
-            func="mean",
-            method="cohorts",
-            expected_groups=np.unique(coord.values),
-        ).compute(**COMPUTE_KWARGS)
-    return clim
+    clim = xarray_reduce(
+        da,
+        coord,
+        func="mean",
+        method="cohorts",
+        expected_groups=np.unique(coord.values),
+    )
+    return compute(clim, progress_flag=True)    
 
 
 def compute_anom(
@@ -578,7 +576,7 @@ def compute_all_smoothed_anomalies(
             if dest.is_file():
                 continue
             anom = standardize(_open_dataarray(source, varname))
-            anom = smooth(anom, smoothing).astype(np.float32).compute(**COMPUTE_KWARGS)
+            anom = compute(smooth(anom, smoothing).astype(np.float32))
             anom.to_netcdf(dest)
         return
     if dest_clim.is_file():
@@ -587,8 +585,17 @@ def compute_all_smoothed_anomalies(
         da = open_da(
             dataset, level_type, varname, resolution, period="all", levels="all"
         )
-        clim = compute_clim(da, clim_type)
-        clim = smooth(clim, clim_smoothing)
+        if "lev" in da.dims:
+            clims = []
+            for lev in tqdm(da["lev"].values):
+                da_ = extract_levels(da, lev)
+                clim = compute_clim(da_, clim_type)
+                clim = smooth(clim, clim_smoothing)
+                clims.append(clim)
+            clim = xr.concat(clims, dim="lev").assign_coords(lev=da["lev"])
+        else:
+            clim = compute_clim(da, clim_type)
+            clim = smooth(clim, clim_smoothing)
         clim.astype(np.float32).to_netcdf(dest_clim)
     if len(sources) > 1:
         iterator_ = tqdm(zip(sources, dests_anom), total=len(dests_anom))
@@ -599,7 +606,7 @@ def compute_all_smoothed_anomalies(
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)
-            anom = anom.astype(np.float32).compute(**COMPUTE_KWARGS)
+            anom = compute(anom.astype(np.float32))
         anom.to_netcdf(dest)
 
 
@@ -711,8 +718,7 @@ def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
     if ds["s"].chunks is not None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            with ProgressBar():
-                ds = ds.compute(**COMPUTE_KWARGS)
+            ds = compute(ds, progress_flag=True)
     ds[by] = ds[by].interpolate_na("time", method="linear", fill_value="extrapolate")
     levmax = ds[by].reduce(ope, dim="lev")
     ds = ds.isel(lev=levmax).reset_coords("lev")  # but not drop
@@ -786,7 +792,7 @@ class DataHandler(object):
         return self.path
 
     def load_da(self, progress: bool = False, **kwargs):
-        self.da = _compute(self.da, progress=progress, **kwargs)
+        self.da = compute(self.da, progress_flag=progress, **kwargs)
 
     def get_metadata(self) -> Mapping:
         return self.metadata

@@ -26,7 +26,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from xgboost import XGBClassifier, XGBRegressor
 from fasttreeshap import TreeExplainer, Explainer
-from dask.diagnostics import ProgressBar
 
 from jetstream_hugo.definitions import (
     DEFAULT_VALUES,
@@ -34,6 +33,7 @@ from jetstream_hugo.definitions import (
     COMPUTE_KWARGS,
     N_WORKERS,
     RESULTS,
+    compute,
     load_pickle,
     save_pickle,
     get_runs_fill_holes,
@@ -851,7 +851,7 @@ class ExtremeExperiment(object):
         self.pred_path.mkdir(mode=0o777, parents=True, exist_ok=True)
 
     def load_da(self, **kwargs):
-        self.da = _compute(self.da, **kwargs)
+        self.da = compute(self.da, **kwargs)
 
     def compute_linkage_quantile(
         self,
@@ -944,10 +944,9 @@ class ExtremeExperiment(object):
             coords={"time": self.da.time.values, "region": np.arange(n_clu)},
         )
         for i_clu in trange(n_clu):
-            targets.loc[:, i_clu] = (
+            targets.loc[:, i_clu] = compute(
                 self.da.where(clusters_da == i_clu)
                 .mean(["lon", "lat"])
-                .compute(**COMPUTE_KWARGS)
             )
         targets = extract_season(targets, self.season)
         length_targets = targets.copy(data=np.zeros(targets.shape, dtype=int))

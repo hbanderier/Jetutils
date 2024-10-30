@@ -10,7 +10,8 @@ import time
 import numpy as np
 import pandas as pd
 import xarray as xr
-from dask.diagnostics import ProgressBar
+from dask.diagnostics import ProgressBar  # if no client
+from dask.distributed import progress     # if client
 
 np.set_printoptions(precision=5, suppress=True)
 os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
@@ -368,14 +369,26 @@ def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
     return indices
 
 
-def _compute(obj, progress: bool = False, **kwargs):
+def compute(obj, progress_flag: bool = False, **kwargs):
     kwargs = COMPUTE_KWARGS | kwargs
     try:
-        if progress:
-            with ProgressBar():
+        client # in globals
+    except NameError:
+        try:
+            if progress_flag:
+                with ProgressBar():
+                    return obj.compute(**kwargs)
+            else:
                 return obj.compute(**kwargs)
+        except AttributeError:
+            return obj
+    try:
+        if progress_flag:
+            obj = client.gather(client.persist(obj))
+            progress(obj, notebook=False)
+            return obj
         else:
-            return obj.compute(**kwargs)
+            return client.compute(obj)
     except AttributeError:
         return obj
 
