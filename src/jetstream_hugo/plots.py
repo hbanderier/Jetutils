@@ -1,5 +1,5 @@
 from itertools import product
-from typing import Any, Mapping, Sequence, Tuple, Union, Iterable
+from typing import Any, Mapping, Sequence, Tuple, Union, Iterable, Callable
 
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -378,7 +378,7 @@ class Clusterplot:
         region: np.ndarray | list | tuple = None,
         lambert_projection: bool = False,
         honeycomb: bool = False,
-        numbering: bool = False,
+        numbering: bool | Callable | Sequence = False,
         coastline: bool = True,
     ) -> None:
         self.nrow = nrow
@@ -431,7 +431,13 @@ class Clusterplot:
         if numbering:
             plt.draw()
             for i, ax in enumerate(self.axes):
-                ax.annotate(str(i + 1), (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
+                if isinstance(numbering, Callable):
+                    j = str(numbering(i))
+                elif isinstance(numbering, Sequence):
+                    j = str(numbering[i])
+                else:
+                    j = str(i + 1)
+                ax.annotate(j, (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
 
     def _add_gridlines(self, step: int | tuple = None) -> None:
         for ax in self.axes:
