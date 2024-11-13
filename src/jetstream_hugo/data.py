@@ -129,7 +129,7 @@ def standardize(da):
         da["time"] = da.indexes["time"].to_datetimeindex()
     except (AttributeError, KeyError):
         pass
-    da = da.astype(np.float32)
+    # da = da.astype(np.float32)
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")
