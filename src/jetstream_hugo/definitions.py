@@ -195,23 +195,36 @@ def load_pickle(filename: str | Path) -> Any:
 def to_zero_one(X):
     Xmin = np.nanmin(X, axis=0)
     Xmax = np.nanmax(X, axis=0)
-
-    return (X - Xmin[None, :]) / (Xmax - Xmin)[None, :], Xmin, Xmax
+    try:
+        X = (X - Xmin[None, :]) / (Xmax - Xmin)[None, :]
+    except IndexError:
+        X = (X - Xmin) / (Xmax - Xmin)
+    return X, Xmin, Xmax
 
 
 def revert_zero_one(X, Xmin, Xmax):
-    return Xmin[None, :] + (Xmax - Xmin)[None, :] * X
+    try:
+        X = Xmin[None, :] + (Xmax - Xmin)[None, :] * X
+    except IndexError:
+        X = Xmin + (Xmax - Xmin) * X
+    return X
 
 
 def normalize(X):
     meanX = X.mean(axis=0)
     stdX = X.std(axis=0)
-    X = (X - meanX[None, :]) / stdX[None, :]
+    try:
+        X = (X - meanX[None, :]) / stdX[None, :]
+    except IndexError:
+        X = (X - meanX) / stdX
     return X, meanX, stdX
 
 
 def revert_normalize(X, meanX, stdX):
-    X = X * stdX[None, :] + meanX[None, :]
+    try:
+        X = X * stdX[None, :] + meanX[None, :]
+    except IndexError:
+        X = X * stdX + meanX
     return X
 
 
