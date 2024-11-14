@@ -563,7 +563,7 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
     return jets
 
 
-def compute_jet_props(df: pl.DataFrame, polar_cutoff: float = 0.8) -> pl.DataFrame:
+def compute_jet_props(df: pl.DataFrame, polar_cutoff: float = 0.2) -> pl.DataFrame:
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
@@ -933,12 +933,12 @@ def is_polar_gmix(
     return pl.concat(to_concat).sort(index_columns)
 
 
-def categorize_df_jets(props_as_df: pl.DataFrame, cutoff: float = 0.2):
+def categorize_df_jets(props_as_df: pl.DataFrame):
     index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet ID")
     )
     other_columns = [
-        col for col in props_as_df.columns if col not in [*index_columns, "is_polar"]
+        col for col in props_as_df.columns if col not in [*index_columns, "is_polar", "jet"]
     ]
     agg = {
         col: (pl.col(col) * pl.col("int")).sum() / pl.col("int").sum()
@@ -948,8 +948,10 @@ def categorize_df_jets(props_as_df: pl.DataFrame, cutoff: float = 0.2):
     agg["s_star"] = pl.col("s_star").max()
     agg["lon_ext"] = pl.col("lon_ext").max()
     agg["lat_ext"] = pl.col("lat_ext").max()
+    agg["exists"] = pl.col("int").len().cast(pl.Boolean())
+    
     gb_columns = get_index_columns(
-        props_as_df, ("member", "time", "cluster", "is_polar")
+        props_as_df, ("member", "time", "cluster", "jet")
     )
     props_as_df_cat = (
         props_as_df.group_by(gb_columns, maintain_order=True)
@@ -1000,6 +1002,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, cutoff: float = 0.2):
     props_as_df_cat = dummy_indexer.join(
         props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
     ).sort(new_index_columns, descending=sort_descending)
+    props_as_df_cat = props_as_df_cat.with_columns(pl.col("exists").cast(pl.UInt8).fill_null(0))
     return props_as_df_cat
 
 
