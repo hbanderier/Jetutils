@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 from dask.diagnostics import ProgressBar  # if no client
 from dask.distributed import progress     # if client
@@ -193,6 +194,12 @@ def load_pickle(filename: str | Path) -> Any:
 
 
 def to_zero_one(X):
+    if isinstance(X, pl.DataFrame):
+        Xmin = X.min()
+        Xmax = X.max()
+        expr = lambda col: (pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())
+        X = X.with_columns(expr(col) for col in X.columns)
+        return X, Xmin, Xmax
     Xmin = np.nanmin(X, axis=0)
     Xmax = np.nanmax(X, axis=0)
     try:
@@ -203,6 +210,10 @@ def to_zero_one(X):
 
 
 def revert_zero_one(X, Xmin, Xmax):
+    if isinstance(X, pl.DataFrame):
+        expr = lambda col: Xmin[0, col] + (Xmax[0, col] - Xmin[0, col]) * pl.col(col)
+        X = X.with_columns(expr(col).alias(col) for col in X.columns)
+        return X
     try:
         X = Xmin[None, :] + (Xmax - Xmin)[None, :] * X
     except IndexError:
@@ -211,6 +222,12 @@ def revert_zero_one(X, Xmin, Xmax):
 
 
 def normalize(X):
+    if isinstance(X, pl.DataFrame):
+        meanX = X.mean()
+        stdX = X.std()
+        expr = lambda col: (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
+        X = X.with_columns(expr(col) for col in X.columns)
+        return X, meanX, stdX
     meanX = X.mean(axis=0)
     stdX = X.std(axis=0)
     try:
@@ -221,6 +238,10 @@ def normalize(X):
 
 
 def revert_normalize(X, meanX, stdX):
+    if isinstance(X, pl.DataFrame):
+        expr = lambda col: meanX[0, col] + stdX[0, col] * pl.col(col)
+        X = X.with_columns(expr(col).alias(col) for col in X.columns)
+        return X
     try:
         X = X * stdX[None, :] + meanX[None, :]
     except IndexError:
@@ -234,15 +255,6 @@ def save_pickle(to_save: Any, filename: str | Path) -> None:
 
 
 def case_insensitive_equal(str1: str, str2: str) -> bool:
-    """case-insensitive string equality check
-
-    Args:
-        str1 (str): first string
-        str2 (str): second string
-
-    Returns:
-        bool: case insensitive string equality
-    """
     return str1.casefold() == str2.casefold()
 
 

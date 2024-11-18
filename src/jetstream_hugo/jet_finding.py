@@ -895,14 +895,11 @@ def one_gmix(X, n_components=3):
         n_components=n_components
     )  # to help with class imbalance, 1 for sub 2 for polar
     model = model.fit(X)
-    means = model.means_
-    stj_clus = np.argmax(means[:, 0] - means[:, 1])
-    labels = model.fit_predict(X)
-    masks = labels_to_mask(labels)
-    mls = []
-    for mask in masks.T:
-        mls.append(X[mask, 0].mean() - X[mask, 1].mean())
-    return labels != np.argmin(mls)
+    means = pl.DataFrame(model.means_, schema=X.columns)
+    stj_clus = np.argmin(means[:, "lat"] - means[:, "lon"])
+    probas = model.predict_proba(X)
+    probas_rest = np.sum(probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1)
+    return probas_rest
 
 
 def is_polar_gmix(
