@@ -17,6 +17,7 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     RADIUS,
     labels_to_mask,
+    normalize,
     to_zero_one,
     compute,
 )
@@ -474,6 +475,8 @@ def separate_jets(
 
 def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
     # process input
+    dl = np.radians(df["lon"].max() - df["lon"].min())
+    base_int_thresh = RADIUS * dl * 25 / 5
     if thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -482,9 +485,9 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             .rename({"s": "s_thresh"})
         )
         df = df.join(thresholds, on="time")
-        df = df.with_columns(int_thresh=pl.col("s_thresh") * 1.2e8 / 25)
+        df = df.with_columns(int_thresh=base_int_thresh * pl.col("s_thresh") / 25)
         condition_expr = (pl.col("s") > pl.col("s_thresh")) & (
-            pl.col("alignment") > 0.4
+            pl.col("alignment") > 0.6
         )
         condition_expr2 = pl.col("int") > pl.col("int_thresh")
         drop = [
@@ -495,11 +498,10 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             "int_thresh",
             "condition",
             "int",
-            "index_2",
         ]
     else:
-        condition_expr = (pl.col("s") > 30) & (pl.col("alignment") > 0.5)
-        condition_expr2 = pl.col("int") > 3e8
+        condition_expr = (pl.col("s") > 30) & (pl.col("alignment") > 0.6)
+        condition_expr2 = pl.col("int") > base_int_thresh
         drop = ["contour", "index", "cyclic", "condition", "int"]
 
     # smooth, compute sigma
@@ -530,7 +532,7 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
     all_contours = compute_alignment(all_contours, x_periodic)
 
     # jets from contours
-    conditional = do_rle_fill_hole(all_contours, condition_expr, 8)
+    conditional = do_rle_fill_hole(all_contours, condition_expr, 3)
     jets = conditional.join(all_contours, on=[*index_columns, "contour", "index"])
     jets = separate_jets(jets, 4, x_periodic)
     jets = jets.with_columns(
@@ -564,10 +566,11 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
 
 
 def compute_jet_props(df: pl.DataFrame, polar_cutoff: float = 0.2) -> pl.DataFrame:
+    position_columns = [col for col in ["lon", "lat", "lev", "theta"] if col in df.columns]
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
-            for col in ["lon", "lat", "lev"]
+            for col in position_columns
         ],
         pl.col("s").mean().alias("mean_s"),
         *[
@@ -875,23 +878,25 @@ def extract_season_from_df(
 
 
 def extract_features(
-    props_as_df: pl.DataFrame,
+    df: pl.DataFrame,
     feature_names: Sequence = None,
     season: list | str | tuple | int | None = None,
-) -> Tuple[np.ndarray, float]:
-    props_as_df = extract_season_from_df(props_as_df, season)
+) -> pl.DataFrame:
+    df = extract_season_from_df(df, season)
     if feature_names is None:
         feature_names = ["mean_lon", "mean_lat", "s_star"]
 
-    X = props_as_df[feature_names].to_numpy()
-    return X
+    return df[feature_names]
 
 
 def one_gmix(X, n_components=3):
-    X, _, _ = to_zero_one(X)
+    X, meanX, stdX = normalize(X)
     model = GaussianMixture(
         n_components=n_components
     )  # to help with class imbalance, 1 for sub 2 for polar
+    model = model.fit(X)
+    means = model.means_
+    stj_clus = np.argmax(means[:, 0] - means[:, 1])
     labels = model.fit_predict(X)
     masks = labels_to_mask(labels)
     mls = []
@@ -1379,11 +1384,13 @@ class JetFindingExperiment(object):
             kwargs["thresholds"] = qs.rename("s")
         except FileNotFoundError:
             pass
+        else:
+            print(f"Using thresholds at {qs_path}")
 
         all_jets_one_df = []
 
         if "member" not in self.data_handler.get_sample_dims():
-            for indices in np.array_split(np.arange(len(self.ds.time)), 10):
+            for indices in np.array_split(np.arange(len(self.ds.time)), max(1, len(self.ds.time) // 12000)):
                 ds_ = compute(self.ds.isel(time=indices), progress_flag=True)
                 df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
                 all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
@@ -1398,8 +1405,8 @@ class JetFindingExperiment(object):
                 print("tictac", file=stderr, end="\r")
 
         all_jets_one_df = pl.concat(all_jets_one_df)
-        # all_jets_one_df = is_polar_gmix(all_jets_one_df, ("lat", "lon", "lev"), mode="month")
-        # all_jets_one_df.write_parquet(ofile_ajdf)
+        all_jets_one_df = is_polar_gmix(all_jets_one_df, ("lat", "lon", "lev"), mode="month")
+        all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
 
     def compute_jet_props(
@@ -1530,9 +1537,9 @@ class JetFindingExperiment(object):
     def compute_extreme_clim(self, varname: str, subsample: int = 5):
         da = self.ds[varname]
         time = pl.Series("time", self.time)
-        years = time.dt.year.values
+        years = time.dt.year().to_numpy()
         mask = np.isin(years, np.unique(years)[::subsample])
-        opath = self.path.joinpath(f"q{varname}_clim_{subsample}.nc")
+        opath = self.path.joinpath(f"{varname}_q_clim.nc")
         compute_extreme_climatology(da.isel(time=mask), opath)
         quantiles_clim = xr.open_dataarray(opath)
         quantiles = xr.DataArray(
@@ -1546,5 +1553,5 @@ class JetFindingExperiment(object):
             dayofyear = qcl.dayofyear
             quantiles[quantiles.time.dt.dayofyear == dayofyear, :] = qcl.values
         quantiles.to_netcdf(
-            self.path.joinpath(f"q{varname}_{subsample}.nc")
-        )  # TODO: wrong name, fix
+            self.path.joinpath(f"{varname}_q.nc")
+        ) 
