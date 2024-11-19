@@ -222,15 +222,23 @@ def nearest_mapping(df1: pl.DataFrame, df2: pl.DataFrame, col: str):
     return df1.join_asof(
         df2, left_on=pl.col(col), right_on=pl.col(f"{col}_"), strategy="nearest"
     )
+    
+    
+def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
+    x_ = contour[:, 0]
+    y_ = contour[:, 1]
+    x_ = x[np.argmin(np.abs(x[:, None] - x_[None, :]), axis=0)]
+    y_ = y[np.argmin(np.abs(y[:, None] - y_[None, :]), axis=0)]
+    return np.stack([x_, y_], axis=1)
 
 
 def find_contours_maybe_periodic(x, y, z) -> Tuple[list, list]:
     dx = x[1] - x[0]
     if (-180 not in x) or ((180 - dx) not in x):
-        print("not periodic")
         contours, types = contour_generator(
             x=x, y=y, z=z, line_type="SeparateCode", quad_as_tri=False
         ).lines(0.0)
+        contours = [round_contour(contour, x, y) for contour in contours]
         cyclic = [79 in types_ for types_ in types]
         return contours, cyclic
 
@@ -256,16 +264,16 @@ def find_contours_maybe_periodic(x, y, z) -> Tuple[list, list]:
         if len(contour) < 20:
             continue
         if all(contour[:, 0] < 180):
-            contours.append(np.round(contour))
+            contours.append(round_contour(contour, x, y))
             cyclic.append(all_cyclic[i])
         if all(contour[:, 0] >= 180):
             continue
-        contour = np.round(contour)
+        contour = round_contour(contour, x, y)
         x_real = (contour[:, 0] + 180) % 360 - 180
         max_jump = np.abs(np.diff(x_real)).max()
         if max_jump > 180:
             contour = np.stack([x_real, contour[:, 1]], axis=-1)
-            unique, index, counts = np.unique(
+            _, index, counts = np.unique(
                 contour, return_counts=True, return_index=True, axis=0
             )
             this_cyclic = int(np.mean(counts) > 1.95) + all_cyclic[i]
@@ -290,7 +298,7 @@ def find_contours_maybe_periodic(x, y, z) -> Tuple[list, list]:
     return contours, cyclic
 
 
-def innter_compute_contours(args):
+def inner_compute_contours(args):
     indexer, df = args
     index_columns = get_index_columns(df)
     lon = df["lon"].unique().sort().to_numpy()
@@ -314,23 +322,10 @@ def compute_contours(df: pl.DataFrame):
     iterator = df.group_by(index_columns, maintain_order=True)
     len_ = iterator.first().shape[0]
     all_contours = map_maybe_parallel(
-        iterator, innter_compute_contours, len_, processes=1
+        iterator, inner_compute_contours, len_, processes=1
     )  # polars-sequential is much faster than 20 cores multiproc
     all_contours = pl.concat(all_contours)
     return all_contours
-    # .with_columns(
-    #     lon=round_polars("lon", 2), lat=round_polars("lat", 2)
-    # )[*index_columns, "contour", "lon", "lat", "cyclic"]
-    # lat_mapping = nearest_mapping(all_contours, df, "lat")
-    # lon_mapping = nearest_mapping(all_contours, df, "lon")
-    # all_contours = all_contours.join(lat_mapping, on="lat")
-    # all_contours = all_contours.join(lon_mapping, on="lon")
-    # ho = ["lon", "lat"]
-    # all_contours = all_contours.drop(ho).rename({f"{col}_": col for col in ho})
-    # all_contours = all_contours.unique(
-    #     [*index_columns, "lon", "lat"], maintain_order=True
-    # )
-    # return all_contours
 
 
 def compute_alignment(
@@ -500,7 +495,7 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             "int",
         ]
     else:
-        condition_expr = (pl.col("s") > 30) & (pl.col("alignment") > 0.6)
+        condition_expr = (pl.col("s") > 25) & (pl.col("alignment") > 0.5)
         condition_expr2 = pl.col("int") > base_int_thresh
         drop = ["contour", "index", "cyclic", "condition", "int"]
 
