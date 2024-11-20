@@ -2,7 +2,7 @@ import os
 import platform
 import pickle as pkl
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Dict, Optional
+from typing import Any, Callable, ClassVar, Dict, Optional, Sequence
 from itertools import groupby
 from dataclasses import dataclass, field
 import time
@@ -247,6 +247,20 @@ def revert_normalize(X, meanX, stdX):
     except IndexError:
         X = X * stdX + meanX
     return X
+
+
+def xarray_to_polars(da: xr.DataArray | xr.Dataset):
+    return pl.from_pandas(da.to_dataframe().reset_index())
+
+
+def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
+    ds = xr.Dataset.from_dataframe(
+        df.to_pandas().set_index(["persistent_spell", "relative_index", *index_columns])
+    )
+    data_vars = list(ds.data_vars)
+    if len(data_vars) == 1:
+        ds = ds[data_vars[0]]
+    return ds
 
 
 def save_pickle(to_save: Any, filename: str | Path) -> None:

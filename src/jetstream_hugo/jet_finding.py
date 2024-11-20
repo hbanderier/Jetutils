@@ -25,10 +25,11 @@ from jetstream_hugo.data import (
     SEASONS,
     compute_extreme_climatology,
     DataHandler,
+    open_da,
 )
 
 
-def get_index_columns(df, potentials: tuple = ("member", "time", "cluster", "jet ID")):
+def get_index_columns(df, potentials: tuple = ("member", "time", "cluster", "jet ID", "spell", "relative_index")):
     index_columns = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
@@ -198,7 +199,7 @@ def directional_diff(
 
 def compute_sigma(df: pl.DataFrame) -> pl.DataFrame:
     df = df.filter(pl.col("lat").is_in([-90.0, 90.0]).not_())
-    index_columns = get_index_columns(df, ("member", "time", "cluster"))
+    index_columns = get_index_columns(df, ("member", "time", "cluster", "spell", "relative_index"))
     periodic_x = has_periodic_x(df)
     x = pl.col("lon").radians() * RADIUS
     y = (
@@ -306,7 +307,7 @@ def inner_compute_contours(args):
     indexer = dict(zip(index_columns, [pl.lit(ind) for ind in indexer]))
     sigma = df["sigma"].to_numpy().reshape(len(lat), len(lon))
     contours, cyclic = find_contours_maybe_periodic(lon, lat, sigma)
-    valid_index = [i for i, contour in enumerate(contours) if len(contour) > 20]
+    valid_index = [i for i, contour in enumerate(contours) if len(contour) > 5]
     contours = [
         pl.DataFrame(contours[i], schema={"lon": pl.Float32, "lat": pl.Float32})
         .with_columns(**indexer)
@@ -314,8 +315,9 @@ def inner_compute_contours(args):
         .with_columns(contour=pl.lit(i))
         for i in valid_index
     ]
-    return pl.concat(contours)
-
+    if len(contours) > 0:
+        return pl.concat(contours)
+    return None
 
 def compute_contours(df: pl.DataFrame):
     index_columns = get_index_columns(df)
@@ -324,14 +326,14 @@ def compute_contours(df: pl.DataFrame):
     all_contours = map_maybe_parallel(
         iterator, inner_compute_contours, len_, processes=1
     )  # polars-sequential is much faster than 20 cores multiproc
-    all_contours = pl.concat(all_contours)
+    all_contours = pl.concat([contour for contour in all_contours if contour is not None])
     return all_contours
 
 
 def compute_alignment(
     all_contours: pl.DataFrame, periodic: bool = False
 ) -> pl.DataFrame:
-    index_columns = get_index_columns(all_contours, ("member", "time", "cluster"))
+    index_columns = get_index_columns(all_contours, ("member", "time", "cluster", "spell", "relative_index"))
     dlon = diff_maybe_periodic("lon", periodic)
     dlat = central_diff("lat")
     ds = (dlon.pow(2) + dlat.pow(2)).sqrt()
@@ -347,7 +349,7 @@ def compute_alignment(
 
 
 def do_rle(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
-    by = get_index_columns(df, ("member", "time", "cluster", "contour"))
+    by = get_index_columns(df, ("member", "time", "cluster", "contour", "spell", "relative_index"))
     conditional = (
         df.group_by(by, maintain_order=True)
         .agg(
@@ -373,7 +375,7 @@ def do_rle(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
 def do_rle_fill_hole(
     df: pl.DataFrame, condition_expr: pl.Expr, hole_size: int = 4
 ) -> pl.DataFrame:
-    by = get_index_columns(df, ("member", "time", "cluster", "contour"))
+    by = get_index_columns(df, ("member", "time", "cluster", "contour", "spell", "relative_index"))
     condition = (
         df.group_by(by, maintain_order=True)
         .agg(
@@ -710,7 +712,7 @@ def inner_compute_widths(args):
         .list.first()
     )
 
-    index_columns = get_index_columns(jets, ("member", "time", "cluster"))
+    index_columns = get_index_columns(jets, ("member", "time", "cluster", "spell", "relative_index"))
     agg_out = {ic: pl.col(ic).first() for ic in [*index_columns, "lon", "lat", "s"]}
 
     first_agg_out = agg_out | {
@@ -891,7 +893,10 @@ def one_gmix(X, n_components=3):
     )  # to help with class imbalance, 1 for sub 2 for polar
     model = model.fit(X)
     means = pl.DataFrame(model.means_, schema=X.columns)
-    stj_clus = np.argmin(means[:, "lat"] - means[:, "lon"])
+    try:
+        stj_clus = np.argmax(means[:, "theta"])
+    except ColumnNotFoundError:
+        stj_clus = np.argmin(means[:, "lat"])
     probas = model.predict_proba(X)
     probas_rest = np.sum(probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1)
     return probas_rest
@@ -932,7 +937,7 @@ def is_polar_gmix(
 
 def categorize_df_jets(props_as_df: pl.DataFrame):
     index_columns = get_index_columns(
-        props_as_df, ("member", "time", "cluster", "jet ID")
+        props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
     )
     other_columns = [
         col for col in props_as_df.columns if col not in [*index_columns, "is_polar", "jet"]
@@ -948,7 +953,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame):
     agg["exists"] = pl.col("int").len().cast(pl.Boolean())
     
     gb_columns = get_index_columns(
-        props_as_df, ("member", "time", "cluster", "jet")
+        props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
     )
     props_as_df_cat = (
         props_as_df.group_by(gb_columns, maintain_order=True)
@@ -991,7 +996,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame):
             )
         )
     new_index_columns = get_index_columns(
-        props_as_df_cat, ("member", "time", "cluster", "jet")
+        props_as_df_cat, ("member", "time", "cluster", "jet", "spell", "relative_index")
     )
 
     sort_descending = [False] * len(new_index_columns)
@@ -1290,7 +1295,7 @@ def jet_position_as_da(
         if ofile.is_file():
             return xr.open_dataarray(ofile).load()
 
-    index_columns = get_index_columns(all_jets_one_df, ("member", "time", "cluster"))
+    index_columns = get_index_columns(all_jets_one_df, ("member", "time", "cluster", "spell", "relative_index"))
     all_jets_pandas = (
         all_jets_one_df.group_by(
             [*index_columns, "lon", "lat", "is_polar"], maintain_order=True
@@ -1363,8 +1368,16 @@ class JetFindingExperiment(object):
         self.path = data_handler.path
         self.data_handler = data_handler
         self.time = data_handler.get_sample_dims()["time"]
+        
+    def find_low_wind(self): # relies on Ubelix storage logic, cannot be used elsewhere
+        metadata = self.data_handler.metadata
+        dataset = "CESM2" if "member" in metadata else "ERA5"
+        dt = self.time[1] - self.time[0]
+        resolution = "6H" if dt == np.timedelta64(6, "H") else "dailymean"
+        ds_ = open_da(dataset, "plev", "low_wind", resolution, metadata["period"], metadata["season"], *metadata["region"], metadata["levels"], None, None, None)
+        return ds_
 
-    def find_jets(self, **kwargs) -> pl.DataFrame:
+    def find_jets(self, low_wind: xr.Dataset | None = None, **kwargs) -> pl.DataFrame:
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
 
         if ofile_ajdf.is_file():
@@ -1397,6 +1410,25 @@ class JetFindingExperiment(object):
                 print("tictac", file=stderr, end="\r")
 
         all_jets_one_df = pl.concat(all_jets_one_df)
+        import dask 
+        # jets_upd = []
+        # for year in tqdm(YEARS):
+        #     these_jets = all_jets.filter(pl.col("time").dt.year() == year) 
+        #     with dask.config.set(**{'array.slicing.split_large_chunks': True}):
+        #         ds_low_ = compute(ds_low.sel(time=ds_low.time.dt.year == year), progress_flag=False)
+        #     b, a = signal.butter(1, [1 / (4 * 6), 1 / (4 * 2.5)], "bandpass")
+
+        #     u_filtered = ds_low_["u"].copy(data=signal.lfilter(b, a, ds_low_["u"].values, axis=0))
+        #     v_filtered = ds_low_["v"].copy(data=signal.lfilter(b, a, ds_low_["v"].values, axis=0))
+
+        #     EKE = 0.5 * (u_filtered ** 2 + v_filtered ** 2)
+        #     EKE = xarray_to_polars(EKE.rename("EKE"))
+        #     s_low = xarray_to_polars(ds_low_["s"])
+        #     these_jets = these_jets.join(s_low, on=["time", "lat", "lon"], how="left", suffix="_low")
+        #     these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
+        #     these_jets = these_jets.join(EKE, on=["time", "lat", "lon"], how="left")
+            
+        #     jets_upd.append(these_jets)
         all_jets_one_df = is_polar_gmix(all_jets_one_df, ("lat", "lon", "lev"), mode="month")
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df

@@ -129,7 +129,6 @@ def standardize(da):
         da["time"] = da.indexes["time"].to_datetimeindex()
     except (AttributeError, KeyError):
         pass
-    # da = da.astype(np.float32)
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")
@@ -221,7 +220,7 @@ def extract_season(
     return da
 
 
-def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
+def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray | xr.Dataset:
     if isinstance(filename, list) and len(filename) == 1:
         filename = filename[0]
     if isinstance(filename, list):
@@ -236,14 +235,14 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray:
         da = da[varname]
     except KeyError:
         try:
-            da = da[DEFAULT_VARNAME]
+            da = da[DEFAULT_VARNAME].rename(varname)
         except KeyError:
-            da = da[list(da.data_vars)[-1]]
-    return da.rename(varname)
+            pass
+    return da
 
 
 def extract(
-    da: xr.DataArray,
+    da: xr.DataArray | xr.Dataset,
     period: list | tuple | Literal["all"] | int | str = "all",
     season: list | str | tuple | None = None,
     minlon: Optional[int | float] = None,
@@ -252,7 +251,7 @@ def extract(
     maxlat: Optional[int | float] = None,
     levels: int | str | list | tuple | Literal["all"] = "all",
     members: str | list | Literal["all"] = "all",
-):
+) -> xr.DataArray | xr.Dataset:
     da = standardize(da)
     
     da = extract_period(da, period)
