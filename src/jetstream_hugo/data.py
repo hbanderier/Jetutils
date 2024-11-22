@@ -17,18 +17,12 @@ from jetstream_hugo.definitions import (
     DATADIR,
     YEARS,
     COMPUTE_KWARGS,
+    SEASONS,
     get_region,
     save_pickle,
     load_pickle,
     compute,
 )
-
-SEASONS = {
-    "DJF": [1, 2, 12],
-    "MAM": [3, 4, 5],
-    "JJA": [6, 7, 8],
-    "SON": [9, 10, 11],
-}
 
 
 def get_land_mask() -> xr.DataArray:
@@ -220,7 +214,7 @@ def extract_season(
     return da
 
 
-def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray | xr.Dataset:
+def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> xr.DataArray | xr.Dataset:
     if isinstance(filename, list) and len(filename) == 1:
         filename = filename[0]
     if isinstance(filename, list):
@@ -231,13 +225,12 @@ def _open_dataarray(filename: Path | list[Path], varname: str) -> xr.DataArray |
         da = da.unify_chunks()
     if "expver" in da.dims:
         da = da.sel(expver=1).reset_coords("expver", drop=True)
+    if varname is None or len(da.data_vars) > 1:
+        return da
     try:
         da = da[varname]
     except KeyError:
-        try:
-            da = da[DEFAULT_VARNAME].rename(varname)
-        except KeyError:
-            pass
+        da = da[DEFAULT_VARNAME].rename(varname)            
     return da
 
 
@@ -283,7 +276,7 @@ def open_da(
     level_type: (
         Literal["plev"] | Literal["thetalev"] | Literal["2PVU"] | Literal["surf"]
     ),
-    varname: str,
+    varname: str | Tuple[str],
     resolution: str,
     period: list | tuple | Literal["all"] | int | str = "all",
     season: list | str | tuple | None = None,
@@ -296,10 +289,14 @@ def open_da(
     clim_smoothing: Mapping | None = None,
     smoothing: Mapping | None = None,
 ) -> xr.DataArray:
+    if isinstance(varname, Tuple):
+        varname_in_path, varname_in_file = varname
+    else:
+        varname_in_path, varname_in_file = varname, varname
     path = data_path(
         dataset,
         level_type,
-        varname,
+        varname_in_path,
         resolution,
         clim_type,
         clim_smoothing,
@@ -350,7 +347,7 @@ def open_da(
 
     files_to_load = [fn for fn in files_to_load if fn.is_file()]
 
-    da = _open_dataarray(files_to_load, varname)
+    da = _open_dataarray(files_to_load, varname_in_file)
     da = extract(
         da,
         period=period,
@@ -700,7 +697,7 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
             break
 
     if not found:
-        seq = [int(dir.name) for dir in basepath.iterdir() if dir.is_dir()]
+        seq = [int(dir.name) for dir in basepath.iterdir() if dir.is_dir() and dir.name.isnumeric()]
         id = max(seq) + 1 if len(seq) != 0 else 1
         newpath = basepath.joinpath(str(id))
         newpath.mkdir()
@@ -757,21 +754,36 @@ def metadata_from_da(da: xr.DataArray | xr.Dataset, varname: str | list | None =
     if "member" in da.dims:
         metadata["members"] = np.unique(da.member).tolist()
     if "flattened" in da.attrs:
-        metadata["flattened"] = da.attrs["flattened"]
+        metadata["flattened"] = int(da.attrs["flattened"])
     return metadata
 
 
 class DataHandler(object):
     def __init__(
         self,
-        da: xr.DataArray | xr.Dataset,
-        basepath: Path | str,
+        path: Path | str,
+        da: xr.DataArray | xr.Dataset | None = None,
     ) -> None:
-        basepath = Path(basepath)
-        self.da = da
+        self.path = Path(path)
+        if da is None:
+            try:
+                self.da = xr.open_dataset(self.path.joinpath("da.nc"))
+            except FileNotFoundError:
+                self.da = xr.open_dataarray(self.path.joinpath("da.nc"))
+        else:
+            self.da = da
         self._setup_dims()
-        self.metadata = metadata_from_da(self.da)
-        self.path = find_spot(basepath, self.metadata)
+        self.metadata = load_pickle(self.path.joinpath("metadata.pkl"))
+        
+    def from_basepath_and_da(
+        cls,
+        basepath: Path | str,
+        da: xr.DataArray | xr.Dataset,
+    ) -> "DataHandler":
+        basepath = Path(basepath)
+        metadata = metadata_from_da(da)
+        path = find_spot(basepath, metadata)
+        return cls(path, da)
 
     def _setup_dims(self):
         self.sample_dims = determine_sample_dims(self.da)
@@ -814,7 +826,7 @@ class DataHandler(object):
         cls,
         dataset: str,
         level_type: Literal["plev"] | Literal["thetalev"] | Literal["surf"],
-        varname: str,
+        varname: str | Tuple[str],
         resolution: str,
         period: list | tuple | Literal["all"] | int | str = "all",
         season: list | str = None,
@@ -828,10 +840,14 @@ class DataHandler(object):
         smoothing: Mapping = None,
         reduce_da: bool = True,
     ) -> "DataHandler":
+        if isinstance(varname, Tuple):
+            varname_in_path, varname_in_file = varname
+        else:
+            varname_in_path, varname_in_file = varname, varname
         path = data_path(
             dataset,
             level_type,
-            varname,
+            varname_in_path,
             resolution,
             clim_type,
             clim_smoothing,
@@ -871,23 +887,27 @@ class DataHandler(object):
             "region": region,
             "levels": levels,
         }
-        if varname in ["u", "v", "s"]:
-            metadata["flattened"] = reduce_da
+        if varname_in_file in ["u", "v", "s", "high_wind", "low_wind"]:
+            metadata["flattened"] = int(reduce_da)
         path = find_spot(path, metadata)
         da_path = path.joinpath("da.nc")
         if da_path.is_file():
-            da = xr.open_dataarray(
+            da = xr.open_dataset(
                 da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1}
             )
+            if len(da.data_vars) == 1:
+                da = da[list(da.data_vars)[0]]
         else:
             da = open_da(*open_da_args)
             da = smooth(da, smoothing)
-            with ProgressBar():
-                da = da.load(**COMPUTE_KWARGS)
+            da = compute(da, progress_flag=True)
             if reduce_da:
-                da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
+                if isinstance(da, xr.DataArray):
+                    da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
+                else:
+                    da = flatten_by(da, "s") # hacky ugly bah
             da.to_netcdf(da_path, format="NETCDF4")
-        return cls(da, path.parent)
+        return cls(path, da)
     
     @classmethod
     def from_several_dhs(
@@ -915,7 +935,7 @@ class DataHandler(object):
         } | all_mdas[0]
         
         if any([varname in ["u", "v", "s"] for varname in varnames]):
-            metadata["flattened"] = flatten_ds
+            metadata["flattened"] = int(flatten_ds)
 
         path = find_spot(path, metadata)
         
@@ -928,12 +948,11 @@ class DataHandler(object):
         for varname, dh in data_handlers.items():
             ds[varname] = dh.da
         ds = xr.Dataset(ds)
-        with ProgressBar():
-            ds = ds.load(**COMPUTE_KWARGS)
+        ds = compute(ds, progress_flag=True)
         if flatten_ds:
             ds = flatten_by(ds, "s")
         ds.to_netcdf(dspath)
-        return cls(ds, path.parent)
+        return cls(path, ds)
     
     @classmethod
     def from_intake(
@@ -1023,7 +1042,7 @@ class DataHandler(object):
         if reduce_da:
             da = da.max("lev")
 
-        return cls(da, path.parent)
+        return cls(path, da)
         
         
     
