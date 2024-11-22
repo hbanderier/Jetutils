@@ -7,6 +7,7 @@ from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import center_of_mass
 import xarray as xr
 from xarray import DataArray, Dataset
+import polars as pl
 from contourpy import contour_generator
 from tqdm import tqdm, trange
 
@@ -36,10 +37,14 @@ from matplotlib.ticker import MaxNLocator
 import colormaps
 import cartopy.crs as ccrs
 import cartopy.feature as feat
+from IPython.display import clear_output
 
 from jetstream_hugo.definitions import (
     DATADIR,
+    FIGURES,
     PRETTIER_VARNAME,
+    UNITS,
+    SEASONS,
     infer_direction,
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
@@ -844,3 +849,162 @@ def cdf(timeseries: Union[DataArray, np.ndarray]) -> Tuple[np.ndarray, np.ndarra
     y = np.cumsum(idxs) / np.sum(idxs)
     x = timeseries[idxs]
     return x, y
+
+
+def trends_and_pvalues(
+    props_as_df: pl.DataFrame,
+    data_vars: list,
+    season: str | None = None,
+    std: bool = False,
+    bootstrap_len: int = 4,
+    n_boostraps: int = 10000,
+):
+    if season is not None:
+        month_list = SEASONS[season]
+        props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
+    else:
+        season = "all_year"
+
+
+    if season is not None:
+        month_list = SEASONS[season]
+        props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
+    else:
+        season = "all_year"
+    if std:
+        props_as_df = props_as_df.group_by(
+            pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
+        ).std()
+    else:
+        props_as_df = props_as_df.group_by(
+            pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
+        ).mean()
+        
+    x = props_as_df["year"].unique()
+    n = len(x)
+    num_blocks = n // bootstrap_len
+
+    rng = np.random.default_rng()
+
+    sample_indices = rng.choice(n - bootstrap_len, size=(n_boostraps, n // bootstrap_len))
+    sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
+    sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
+    sample_indices = np.append(sample_indices, np.arange(64)[None, :], axis=0)
+    sample_indices = 2 * np.repeat(sample_indices.flatten(), 2)
+    sample_indices[1::2] = sample_indices[1::2] + 1
+
+    ts_bootstrapped = props_as_df[sample_indices]
+    ts_bootstrapped = ts_bootstrapped.with_columns(
+        sample_index=np.arange(len(ts_bootstrapped)) // (2 * num_blocks * bootstrap_len),
+        inside_index=np.arange(len(ts_bootstrapped)) % (2 * num_blocks * bootstrap_len),
+    )
+
+    slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
+        **{
+            data_var: pl.col(data_var)
+            .least_squares.ols(
+                pl.int_range(0, pl.col("year").len()).alias("year"),
+                mode="coefficients",
+                add_intercept=True,
+            )
+            .struct.field("year")
+            for data_var in data_vars
+        }
+    )
+
+    constants = props_as_df.group_by("jet", maintain_order=True).agg(
+        **{
+            data_var: pl.col(data_var)
+            .least_squares.ols(pl.col("year"), mode="coefficients", add_intercept=True)
+            .struct.field("const")
+            for data_var in data_vars
+        }
+    )
+
+    pvals = slopes.group_by("jet", maintain_order=True).agg(
+        **{
+            data_var: pl.col(data_var)
+            .head(n_boostraps)
+            .sort()
+            .search_sorted(pl.col(data_var).get(-1))
+            / n_boostraps
+            for data_var in data_vars
+        }
+    )
+    return x, slopes, constants, pvals
+
+
+def plot_trends(
+    props_as_df: pl.DataFrame,
+    data_vars: list,
+    season: str | None = None,
+    bootstrap_len: int = 4,
+    n_boostraps: int = 10000,
+    std: bool = False,
+    nrows: int = 3,
+    ncols: int = 4,
+    clear: bool = True,
+    suffix: str = "",
+):
+    if clear:
+        plt.ioff()
+    else:
+        plt.ion()
+        plt.show()
+        clear_output()
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(ncols * 3.5, nrows * 2.4),
+        tight_layout=True,
+        sharex="all",
+    )
+    axes = axes.flatten()
+    
+    x, slopes, constants, pvals = trends_and_pvalues(
+        props_as_df=props_as_df,
+        data_vars=data_vars,
+        season=season,
+        std=std,
+        bootstrap_len=bootstrap_len,
+        n_boostraps=n_boostraps
+    )
+
+    for i, (varname, ax) in enumerate(zip(data_vars, axes)):
+        dji = varname == "double_jet_index"
+        if varname == "mean_lev":
+            ax.invert_yaxis()
+        ax.set_title(
+            f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+        )
+
+        for j, jet in enumerate(["STJ", "EDJ"]):
+            c1 = slopes[2 * n_boostraps + j, varname]
+            c0 = constants[j, varname]
+            p = pvals[j, varname]
+            p = min(p, 1 - p) * 2
+            this_da = props_as_df.filter(pl.col("jet") == jet)[varname]
+            color = "black" if dji else COLORS[2 - j]
+            ls = "dashed" if p < 0.05 else "dotted"
+            if dji:
+                label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            else:
+                label = f"{jet}, {p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            ax.plot(x, this_da.to_numpy(), lw=2, color=color)
+            ax.plot(
+                x,
+                c1 * x + c0,
+                lw=1.5,
+                color=color,
+                ls=ls,
+                label=label,
+            )
+            if dji:
+                break
+        ax.legend(ncol=1, fontsize=10)
+    subtitle = "std" if std else "trends"
+    fig.savefig(f"{FIGURES}/jet_props_trends/jet_props_{subtitle}_{season}{suffix}.png")
+    if clear:
+        del fig
+        plt.close()
+        clear_output()
