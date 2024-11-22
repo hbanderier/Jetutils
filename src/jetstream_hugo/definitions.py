@@ -174,6 +174,13 @@ LATEXY_VARNAME = {
     "persistence": "$\Delta t$",
 }
 
+SEASONS = {
+    "DJF": [1, 2, 12],
+    "MAM": [3, 4, 5],
+    "JJA": [6, 7, 8],
+    "SON": [9, 10, 11],
+}
+
 RADIUS = 6.371e6  # m
 OMEGA = 7.2921e-5  # rad.s-1
 KAPPA = 0.2854
@@ -185,6 +192,11 @@ def degcos(x: float) -> float:
 
 def degsin(x: float) -> float:
     return np.sin(x / 180 * np.pi)
+
+
+def save_pickle(to_save: Any, filename: str | Path) -> None:
+    with open(filename, "wb") as handle:
+        pkl.dump(to_save, handle)
 
 
 def load_pickle(filename: str | Path) -> Any:
@@ -255,17 +267,12 @@ def xarray_to_polars(da: xr.DataArray | xr.Dataset):
 
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
     ds = xr.Dataset.from_dataframe(
-        df.to_pandas().set_index(["persistent_spell", "relative_index", *index_columns])
+        df.to_pandas().set_index(index_columns)
     )
     data_vars = list(ds.data_vars)
     if len(data_vars) == 1:
         ds = ds[data_vars[0]]
     return ds
-
-
-def save_pickle(to_save: Any, filename: str | Path) -> None:
-    with open(filename, "wb") as handle:
-        pkl.dump(to_save, handle)
 
 
 def case_insensitive_equal(str1: str, str2: str) -> bool:
