@@ -11,7 +11,7 @@ from polars.exceptions import ColumnNotFoundError
 import polars_ols as pls
 import xarray as xr
 from contourpy import contour_generator
-from sklearn.mixture import GaussianMixture
+from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 from tqdm import tqdm, trange
 import dask
 
@@ -568,7 +568,7 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
     return jets
 
 
-def compute_jet_props(df: pl.DataFrame, polar_cutoff: float = 0.2) -> pl.DataFrame:
+def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     position_columns = [col for col in ["lon", "lat", "lev", "theta"] if col in df.columns]
     aggregations = [
         *[
@@ -634,14 +634,6 @@ def compute_jet_props(df: pl.DataFrame, polar_cutoff: float = 0.2) -> pl.DataFra
         props_as_df = gb.agg(*aggregations)
         collected.append(props_as_df.collect())
     props_as_df = pl.concat(collected).sort("member")
-    props_as_df = props_as_df.with_columns(
-        pl.when(pl.col("is_polar") > 1 - polar_cutoff)
-        .then(pl.lit("EDJ"))
-        .when(pl.col("is_polar") < polar_cutoff)
-        .then(pl.lit("STJ"))
-        .otherwise(pl.lit("NA"))
-        .alias("jet")
-    )
     return props_as_df
 
 
@@ -682,9 +674,7 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str = "s
     return s_interp
 
 
-def compute_widths(args):
-    jets, da = args
-
+def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     dn = 1
     ns_df = pl.Series("n", np.delete(np.arange(-12, 12 + dn, dn), 12)).to_frame()
 
@@ -730,7 +720,7 @@ def compute_widths(args):
         "width": (pl.col("half_width") * pl.col("s")).sum() / pl.col("s").sum()
     }
 
-    da_df = xarray_to_polars(da_df)
+    da_df = xarray_to_polars(da)
     da_df = da_df.drop([ic for ic in index_columns if ic in da_df.columns])
     jets = jets[[*index_columns, "lon", "lat", "u", "v", "s"]]
 
@@ -878,7 +868,7 @@ def one_gmix(
 ):
     X, meanX, stdX = normalize(X)
     model = GaussianMixture(
-        n_components=n_components, init_params=init_params, n_init=n_init
+        n_components=n_components, init_params=init_params, n_init=n_init, covariance_type="diag"
     )  # to help with class imbalance, 1 for sub 2 for polar
     model = model.fit(X)
     means = pl.DataFrame(model.means_, schema=X.columns)
@@ -895,19 +885,19 @@ def is_polar_gmix(
     props_as_df: pl.DataFrame,
     feature_names: list,
     mode: Literal["year"] | Literal["season"] | Literal["month"] = "year",
+    **kwargs,
 ) -> xr.Dataset:
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
     if mode == "year":
         X = extract_features(props_as_df, feature_names, None)
-        labels = one_gmix(X)
+        labels = one_gmix(X, **kwargs)
         return props_as_df.with_columns(is_polar=labels)
     index_columns = get_index_columns(props_as_df)
     to_concat = []
     if mode == "season":
         for season in tqdm(["DJF", "MAM", "JJA", "SON"]):
             X = extract_features(props_as_df, feature_names, season)
-            n_components = 2 if season == "MAM" else 3
-            labels = one_gmix(X, n_components=n_components)
+            labels = one_gmix(X, **kwargs)
             to_concat.append(
                 extract_season_from_df(props_as_df, season).with_columns(
                     is_polar=labels
@@ -916,26 +906,34 @@ def is_polar_gmix(
     elif mode == "month":
         for month in trange(1, 13):
             X = extract_features(props_as_df, feature_names, month)
-            # n_components = 2 if month in [3, 4, 5, 6] else 3
-            labels = one_gmix(X, n_components=2)
+            labels = one_gmix(X, **kwargs)
             to_concat.append(
                 extract_season_from_df(props_as_df, month).with_columns(is_polar=labels)
             )
     return pl.concat(to_concat).sort(index_columns)
 
 
-def categorize_df_jets(props_as_df: pl.DataFrame):
+def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float = 0.2):
+    props_as_df = props_as_df.with_columns(
+        pl.when(pl.col("is_polar") > 1 - polar_cutoff)
+        .then(pl.lit("EDJ"))
+        .when(pl.col("is_polar") < polar_cutoff)
+        .then(pl.lit("STJ"))
+        .otherwise(pl.lit("NA"))
+        .alias("jet")
+    )
     index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
     )
     other_columns = [
-        col for col in props_as_df.columns if col not in [*index_columns, "is_polar", "jet"]
+        col for col in props_as_df.columns if col not in [*index_columns, "jet"]
     ]
     agg = {
         col: (pl.col(col) * pl.col("int")).sum() / pl.col("int").sum()
         for col in other_columns
     }
     agg["int"] = pl.col("int").mean()
+    agg["is_polar"] = pl.col("is_polar").mean()
     agg["s_star"] = pl.col("s_star").max()
     agg["lon_ext"] = pl.col("lon_ext").max()
     agg["lat_ext"] = pl.col("lat_ext").max()
@@ -1279,26 +1277,18 @@ def inner_jet_pos_as_da(args: Tuple):
 
 def jet_position_as_da(
     all_jets_one_df: pl.DataFrame,
-    basepath: Path | None = None,
 ) -> xr.DataArray:
-    if basepath is not None:
-        ofile = basepath.joinpath("jet_pos.nc")
-        if ofile.is_file():
-            return xr.open_dataarray(ofile).load()
-
     index_columns = get_index_columns(all_jets_one_df, ("member", "time", "cluster", "spell", "relative_index"))
     all_jets_pandas = (
         all_jets_one_df.group_by(
-            [*index_columns, "lon", "lat", "is_polar"], maintain_order=True
+            [*index_columns, "lon", "lat"], maintain_order=True
         )
-        .len()
+        .agg(pl.col("is_polar").mean())
         .to_pandas()
     )
     da_jet_pos = xr.Dataset.from_dataframe(
-        all_jets_pandas.set_index([*index_columns, "lat", "lon", "is_polar"])
-    )["len"].fillna(0)
-    if basepath is not None:
-        da_jet_pos.to_netcdf(ofile)
+        all_jets_pandas.set_index([*index_columns, "lat", "lon"])
+    )["is_polar"]
     return da_jet_pos
 
 
@@ -1470,7 +1460,6 @@ class JetFindingExperiment(object):
             return pl.read_parquet(jet_props_incomplete_path)
         all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
         props_as_df = compute_jet_props(all_jets_one_df)
-        print("Loading s")
         width = []
         da = self.ds["s"]
         indexer = iterate_over_year_maybe_member(all_jets_one_df, da)
@@ -1591,6 +1580,16 @@ class JetFindingExperiment(object):
             {"time": com_speed["time"].dtype, "jet ID": com_speed["jet ID"].dtype}
         ).join(com_speed, on=index_exprs)
         return props_as_df.sort(get_index_columns(props_as_df))
+    
+    def jet_position_as_da(self):
+        ofile = self.path.joinpath("jet_pos.nc")
+        if ofile.is_file():
+            return xr.open_dataarray(ofile)
+        
+        all_jets_one_df = self.find_jets()
+        da_jet_pos = jet_position_as_da(all_jets_one_df)
+        da_jet_pos.to_netcdf(ofile)
+        return da_jet_pos
 
     def compute_extreme_clim(self, varname: str, subsample: int = 5):
         da = self.ds[varname]
