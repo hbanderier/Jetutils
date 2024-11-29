@@ -33,7 +33,17 @@ from jetstream_hugo.data import (
 )
 
 
-def get_index_columns(df, potentials: tuple = ("member", "time", "cluster", "jet ID", "spell", "relative_index")):
+def get_index_columns(
+    df,
+    potentials: tuple = (
+        "member",
+        "time",
+        "cluster",
+        "jet ID",
+        "spell",
+        "relative_index",
+    ),
+):
     index_columns = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
@@ -203,7 +213,9 @@ def directional_diff(
 
 def compute_sigma(df: pl.DataFrame) -> pl.DataFrame:
     df = df.filter(pl.col("lat").is_in([-90.0, 90.0]).not_())
-    index_columns = get_index_columns(df, ("member", "time", "cluster", "spell", "relative_index"))
+    index_columns = get_index_columns(
+        df, ("member", "time", "cluster", "spell", "relative_index")
+    )
     periodic_x = has_periodic_x(df)
     x = pl.col("lon").radians() * RADIUS
     y = (
@@ -227,8 +239,8 @@ def nearest_mapping(df1: pl.DataFrame, df2: pl.DataFrame, col: str):
     return df1.join_asof(
         df2, left_on=pl.col(col), right_on=pl.col(f"{col}_"), strategy="nearest"
     )
-    
-    
+
+
 def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
     x_ = contour[:, 0]
     y_ = contour[:, 1]
@@ -255,7 +267,7 @@ def find_contours_maybe_periodic(x, y, z) -> Tuple[list, list]:
     ).lines(0.0)
     all_cyclic = [int(79 in types_) for types_ in all_types]
     all_lens = [len(contour) for contour in all_contours]
-    
+
     sorted_order = np.argsort(all_lens)[::-1]
     all_contours = [all_contours[i] for i in sorted_order]
     all_cyclic = [all_cyclic[i] for i in sorted_order]
@@ -294,7 +306,9 @@ def find_contours_maybe_periodic(x, y, z) -> Tuple[list, list]:
     to_del = []
     for i, periodic_contour in enumerate(periodics):
         for j, contour in enumerate(contours):
-            overlap = (periodic_contour == contour[:, None, :]).all(axis=-1).any(axis=-1)
+            overlap = (
+                (periodic_contour == contour[:, None, :]).all(axis=-1).any(axis=-1)
+            )
             if np.mean(overlap) > 0.1:
                 to_del.append(j)
     contours = [contour for i, contour in enumerate(contours) if i not in to_del]
@@ -324,6 +338,7 @@ def inner_compute_contours(args):
         return pl.concat(contours)
     return None
 
+
 def compute_contours(df: pl.DataFrame):
     index_columns = get_index_columns(df)
     iterator = df.group_by(index_columns, maintain_order=True)
@@ -331,14 +346,18 @@ def compute_contours(df: pl.DataFrame):
     all_contours = map_maybe_parallel(
         iterator, inner_compute_contours, len_, processes=1
     )  # polars-sequential is much faster than 20 cores multiproc
-    all_contours = pl.concat([contour for contour in all_contours if contour is not None])
+    all_contours = pl.concat(
+        [contour for contour in all_contours if contour is not None]
+    )
     return all_contours
 
 
 def compute_alignment(
     all_contours: pl.DataFrame, periodic: bool = False
 ) -> pl.DataFrame:
-    index_columns = get_index_columns(all_contours, ("member", "time", "cluster", "spell", "relative_index"))
+    index_columns = get_index_columns(
+        all_contours, ("member", "time", "cluster", "spell", "relative_index")
+    )
     dlon = diff_maybe_periodic("lon", periodic)
     dlat = central_diff("lat")
     ds = (dlon.pow(2) + dlat.pow(2)).sqrt()
@@ -354,7 +373,9 @@ def compute_alignment(
 
 
 def do_rle(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
-    by = get_index_columns(df, ("member", "time", "cluster", "contour", "spell", "relative_index"))
+    by = get_index_columns(
+        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+    )
     conditional = (
         df.group_by(by, maintain_order=True)
         .agg(
@@ -380,7 +401,9 @@ def do_rle(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
 def do_rle_fill_hole(
     df: pl.DataFrame, condition_expr: pl.Expr, hole_size: int = 4
 ) -> pl.DataFrame:
-    by = get_index_columns(df, ("member", "time", "cluster", "contour", "spell", "relative_index"))
+    by = get_index_columns(
+        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+    )
     condition = (
         df.group_by(by, maintain_order=True)
         .agg(
@@ -475,10 +498,16 @@ def separate_jets(
     return jets
 
 
-def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
+def find_all_jets(
+    df: pl.DataFrame,
+    thresholds: xr.DataArray | None = None,
+    base_s_thresh: float = 25.,
+    alignment_thresh: float = 0.6,
+):
     # process input
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * 25 / 5
+    base_int_thresh = RADIUS * dl * base_s_thresh / 5
+    index_columns = get_index_columns(df)
     if thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -486,10 +515,10 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             .cast({"s": pl.Float32})
             .rename({"s": "s_thresh"})
         )
-        df = df.join(thresholds, on="time")
-        df = df.with_columns(int_thresh=base_int_thresh * pl.col("s_thresh") / 25)
+        df = df.join(thresholds, on=index_columns)
+        df = df.with_columns(int_thresh=base_int_thresh * pl.col("s_thresh") / base_s_thresh)
         condition_expr = (pl.col("s") > pl.col("s_thresh")) & (
-            pl.col("alignment") > 0.6
+            pl.col("alignment") > alignment_thresh
         )
         condition_expr2 = pl.col("int") > pl.col("int_thresh")
         drop = [
@@ -503,13 +532,12 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
             "ds",
         ]
     else:
-        condition_expr = (pl.col("s") > 25) & (pl.col("alignment") > 0.5)
+        condition_expr = (pl.col("s") > base_s_thresh) & (pl.col("alignment") > alignment_thresh)
         condition_expr2 = pl.col("int") > base_int_thresh
         drop = ["contour", "index", "cyclic", "condition", "int"]
 
     # smooth, compute sigma
     x_periodic = has_periodic_x(df)
-    index_columns = get_index_columns(df)
     df = coarsen(df, {"lon": 1, "lat": 1})
     df = smooth_in_space(df, 11)
     df = compute_sigma(df)
@@ -569,7 +597,9 @@ def find_all_jets(df: pl.DataFrame, thresholds: xr.DataArray | None = None):
 
 
 def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
-    position_columns = [col for col in ["lon", "lat", "lev", "theta"] if col in df.columns]
+    position_columns = [
+        col for col in ["lon", "lat", "lev", "theta"] if col in df.columns
+    ]
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
@@ -708,7 +738,9 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
         .list.first()
     )
 
-    index_columns = get_index_columns(jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID"))
+    index_columns = get_index_columns(
+        jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
+    )
     agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
 
     first_agg_out = agg_out | {
@@ -863,21 +895,24 @@ def extract_features(
     return df[feature_names]
 
 
-def one_gmix(
-    X, n_components=2, init_params="k-means++", n_init=20
-):
+def one_gmix(X, n_components=2, init_params="k-means++", n_init=20):
+    X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.75), theta=pl.col("theta").clip(318, 355))
     X, meanX, stdX = normalize(X)
     model = GaussianMixture(
-        n_components=n_components, init_params=init_params, n_init=n_init, covariance_type="diag"
+        n_components=n_components, init_params=init_params, n_init=n_init, covariance_type="full"
     )  # to help with class imbalance, 1 for sub 2 for polar
-    model = model.fit(X)
+    # X_train = X.unique()
+    X_train = pl.concat([X.filter(pl.col("theta") < 350).sample(fraction=.2), X.filter(pl.col("theta") >= 350)])
+    model = model.fit(X_train)
+    probas = model.predict_proba(X)
     means = pl.DataFrame(model.means_, schema=X.columns)
     try:
         stj_clus = np.argmax(means[:, "theta"])
     except ColumnNotFoundError:
         stj_clus = np.argmin(means[:, "lat"])
-    probas = model.predict_proba(X)
-    probas_rest = np.sum(probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1)
+    probas_rest = np.sum(
+        probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1
+    )
     return probas_rest
 
 
@@ -938,7 +973,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float = 0.2):
     agg["lon_ext"] = pl.col("lon_ext").max()
     agg["lat_ext"] = pl.col("lat_ext").max()
     agg["exists"] = pl.col("int").len().cast(pl.Boolean())
-    
+
     gb_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
     )
@@ -991,7 +1026,9 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float = 0.2):
     props_as_df_cat = dummy_indexer.join(
         props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
     ).sort(new_index_columns, descending=sort_descending)
-    props_as_df_cat = props_as_df_cat.with_columns(pl.col("exists").cast(pl.UInt8).fill_null(0))
+    props_as_df_cat = props_as_df_cat.with_columns(
+        pl.col("exists").cast(pl.UInt8).fill_null(0)
+    )
     return props_as_df_cat
 
 
@@ -1278,11 +1315,11 @@ def inner_jet_pos_as_da(args: Tuple):
 def jet_position_as_da(
     all_jets_one_df: pl.DataFrame,
 ) -> xr.DataArray:
-    index_columns = get_index_columns(all_jets_one_df, ("member", "time", "cluster", "spell", "relative_index"))
+    index_columns = get_index_columns(
+        all_jets_one_df, ("member", "time", "cluster", "spell", "relative_index")
+    )
     all_jets_pandas = (
-        all_jets_one_df.group_by(
-            [*index_columns, "lon", "lat"], maintain_order=True
-        )
+        all_jets_one_df.group_by([*index_columns, "lon", "lat"], maintain_order=True)
         .agg(pl.col("is_polar").mean())
         .to_pandas()
     )
@@ -1340,45 +1377,70 @@ def get_double_jet_index(df: pl.DataFrame, pos_as_da: xr.DataArray):
 #     py = (coeff / (RADIUS * RADIUS)) * (((u_c) / cos_lat) * termxv + v_c * termyv)
 
 
-def iterate_over_year_maybe_member(df: pl.DataFrame | None = None, da: xr.DataArray | xr.Dataset | None = None, several_years: int = 1, several_members: int = 1): # if only chunking existed lol. 
+def iterate_over_year_maybe_member(
+    df: pl.DataFrame | None = None,
+    da: xr.DataArray | xr.Dataset | None = None,
+    several_years: int = 1,
+    several_members: int = 1,
+):  # if only chunking existed lol.
     if df is None and da is None:
         return 0
     if da is None and df is not None:
         years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
         year_lists = np.array_split(years, len(years) // several_years)
-        indexer_polars = (pl.col("time").dt.year().is_in(year_list) for year_list in year_lists)
+        indexer_polars = (
+            pl.col("time").dt.year().is_in(year_list) for year_list in year_lists
+        )
         if "member" not in df.columns:
             return zip(indexer_polars)
         members = df["member"].unique(maintain_order=True).to_numpy()
         member_lists = np.array_split(members, len(members) // several_members)
-        indexer_polars_2 = (pl.col("member").is_in(member_list) for member_list in member_lists)
+        indexer_polars_2 = (
+            pl.col("member").is_in(member_list) for member_list in member_lists
+        )
         indexer_polars = product(indexer_polars, indexer_polars_2)
         return indexer_polars
     elif da is not None and df is None:
         years = np.unique(da["time"].dt.year.values)
         year_lists = np.array_split(years, len(years) // several_years)
-        indexer_xarray = ({"time": np.isin(da["time"].dt.year.values, year_list)} for year_list in year_lists)
+        indexer_xarray = (
+            {"time": np.isin(da["time"].dt.year.values, year_list)}
+            for year_list in year_lists
+        )
         if "member" not in da.dims:
             return indexer_xarray
         members = np.unique(da["member"].values)
         member_lists = np.array_split(members, len(members) // several_members)
-        indexer_xarray_2 = ({"member": np.isin(da["member"].values, member_list)} for member_list in member_lists)
+        indexer_xarray_2 = (
+            {"member": np.isin(da["member"].values, member_list)}
+            for member_list in member_lists
+        )
         indexer_xarray = zip(indexer_xarray, indexer_xarray_2)
         return indexer_xarray
     years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
     year_lists = np.array_split(years, len(years) // several_years)
-    indexer_polars = (pl.col("time").dt.year().is_in(year_list) for year_list in year_lists)
-    indexer_xarray = ({"time": np.isin(da["time"].dt.year.values, year_list)} for year_list in year_lists)
+    indexer_polars = (
+        pl.col("time").dt.year().is_in(year_list) for year_list in year_lists
+    )
+    indexer_xarray = (
+        {"time": np.isin(da["time"].dt.year.values, year_list)}
+        for year_list in year_lists
+    )
     if "member" not in df.columns:
-        return zip(zip(indexer_polars), indexer_xarray) 
+        return zip(zip(indexer_polars), indexer_xarray)
     """
         weird inner zip: don't worry lol. I want to always be able call for idx in indexer: df.filter(*idx), so I need to put it in zip by itself if it's not out of product, so it's always a tuple.
     """
     members = df["member"].unique(maintain_order=True).to_numpy()
     member_lists = np.array_split(members, len(members) // several_members)
-    indexer_polars_2 = (pl.col("member").is_in(member_list) for member_list in member_lists)
+    indexer_polars_2 = (
+        pl.col("member").is_in(member_list) for member_list in member_lists
+    )
     indexer_polars = product(indexer_polars, indexer_polars_2)
-    indexer_xarray_2 = ({"member": np.isin(da["member"].values, member_list)} for member_list in member_lists)
+    indexer_xarray_2 = (
+        {"member": np.isin(da["member"].values, member_list)}
+        for member_list in member_lists
+    )
     indexer_xarray = product(indexer_xarray, indexer_xarray_2)
     indexer_xarray = (indexer[0] | indexer[1] for indexer in indexer_xarray)
     return zip(indexer_polars, indexer_xarray)
@@ -1393,13 +1455,25 @@ class JetFindingExperiment(object):
         self.path = data_handler.path
         self.data_handler = data_handler
         self.time = data_handler.get_sample_dims()["time"]
-        
-    def find_low_wind(self): # relies on Ubelix storage logic, cannot be used elsewhere
+
+    def find_low_wind(self):  # relies on Ubelix storage logic, cannot be used elsewhere
         metadata = self.data_handler.metadata
         dataset = "CESM2" if "member" in metadata else "ERA5"
         dt = self.time[1] - self.time[0]
         resolution = "6H" if dt == np.timedelta64(6, "H") else "dailymean"
-        ds_ = open_da(dataset, "plev", "low_wind", resolution, metadata["period"], metadata["season"], *metadata["region"], metadata["levels"], None, None, None)
+        ds_ = open_da(
+            dataset,
+            "plev",
+            "low_wind",
+            resolution,
+            metadata["period"],
+            metadata["season"],
+            *metadata["region"],
+            metadata["levels"],
+            None,
+            None,
+            None,
+        )
         return ds_
 
     def find_jets(self, **kwargs) -> pl.DataFrame:
@@ -1419,7 +1493,9 @@ class JetFindingExperiment(object):
 
         all_jets_one_df = []
         several_years = 15 if "member" not in self.metadata else 1
-        iterator = iterate_over_year_maybe_member(da=self.ds, several_years=several_years)
+        iterator = iterate_over_year_maybe_member(
+            da=self.ds, several_years=several_years
+        )
         for indexer in iterator:
             ds_ = compute(self.ds.isel(**indexer), progress_flag=True)
             df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
@@ -1433,22 +1509,26 @@ class JetFindingExperiment(object):
         if "is_polar" in all_jets_one_df.columns:
             return all_jets_one_df
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
-         
+
         jets_upd = []
         if isinstance(low_wind, xr.Dataset):
             low_wind = low_wind["s"]
-            
+
         indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
         for idx1, idx2 in indexer:
             these_jets = all_jets_one_df.filter(*idx1)
-            with dask.config.set(**{'array.slicing.split_large_chunks': True}):
+            with dask.config.set(**{"array.slicing.split_large_chunks": True}):
                 low_wind_ = compute(low_wind.sel(**idx2), progress_flag=False)
             low_wind_ = xarray_to_polars(low_wind_)
-            these_jets = these_jets.join(low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low")
+            these_jets = these_jets.join(
+                low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low"
+            )
             these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
             jets_upd.append(these_jets)
         all_jets_one_df = pl.concat(jets_upd)
-        all_jets_one_df = is_polar_gmix(all_jets_one_df, ("ratio", "theta"), mode="month")
+        all_jets_one_df = is_polar_gmix(
+            all_jets_one_df, ("ratio", "theta"), mode="month"
+        )
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
 
@@ -1580,12 +1660,12 @@ class JetFindingExperiment(object):
             {"time": com_speed["time"].dtype, "jet ID": com_speed["jet ID"].dtype}
         ).join(com_speed, on=index_exprs)
         return props_as_df.sort(get_index_columns(props_as_df))
-    
+
     def jet_position_as_da(self):
         ofile = self.path.joinpath("jet_pos.nc")
         if ofile.is_file():
             return xr.open_dataarray(ofile)
-        
+
         all_jets_one_df = self.find_jets()
         da_jet_pos = jet_position_as_da(all_jets_one_df)
         da_jet_pos.to_netcdf(ofile)
@@ -1609,6 +1689,4 @@ class JetFindingExperiment(object):
         for qcl in quantiles_clim.transpose():
             dayofyear = qcl.dayofyear
             quantiles[quantiles.time.dt.dayofyear == dayofyear, :] = qcl.values
-        quantiles.to_netcdf(
-            self.path.joinpath(f"{varname}_q.nc")
-        ) 
+        quantiles.to_netcdf(self.path.joinpath(f"{varname}_q.nc"))

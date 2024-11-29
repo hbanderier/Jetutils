@@ -767,9 +767,9 @@ class DataHandler(object):
         self.path = Path(path)
         if da is None:
             try:
-                self.da = xr.open_dataset(self.path.joinpath("da.nc"))
-            except FileNotFoundError:
                 self.da = xr.open_dataarray(self.path.joinpath("da.nc"))
+            except ValueError:
+                self.da = xr.open_dataset(self.path.joinpath("da.nc"))
         else:
             self.da = da
         self._setup_dims()

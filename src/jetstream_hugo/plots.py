@@ -211,7 +211,7 @@ def honeycomb_panel(
     if subplot_kw is None:
         subplot_kw = {}
     for i, j in product(range(ncol), range(nrow)):
-        if j % 2 == 0:
+        if j % 2 == 1:
             slice_x = slice(2 * i, 2 * i + 2)
         else:
             slice_x = slice(2 * i + 1, 2 * i + 2 + 1)

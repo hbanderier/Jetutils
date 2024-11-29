@@ -147,10 +147,8 @@ class Experiment(object):
     def __init__(
         self,
         data_handler: DataHandler,
-        inner_norm: str | None = None,
     ) -> None:
         self.data_handler = data_handler
-        self.inner_norm = inner_norm
         self.da = self.data_handler.da
         self.path = self.data_handler.get_path()
         
@@ -164,19 +162,6 @@ class Experiment(object):
 
         norm_da = np.sqrt(degcos(self.da.lat))  # lat as da to simplify mult
 
-        if self.inner_norm and self.inner_norm == 1:  # Grams et al. 2017
-            stds = (
-                (self.da * norm_da)
-                .rolling({"time": 30}, center=True, min_periods=1)
-                .std()
-                .mean(dim=["lon", "lat"])
-            )
-            norm_da = norm_da * (1 / stds)
-        elif self.inner_norm and self.inner_norm == 2:
-            stds = (self.da * norm_da).std(dim="time")
-            norm_da = norm_da * (1 / stds)
-        elif self.inner_norm and self.inner_norm not in [1, 2]:
-            raise NotImplementedError()
         norm_da = compute(norm_da, progress_flag=True)
         norm_da.to_netcdf(norm_path)
         return norm_da
@@ -314,13 +299,21 @@ class Experiment(object):
         self,
         n_clu: int,
         n_pcas: int,
+        weigh_grams: bool = False,
         return_type: int = RAW_REALSPACE,
     ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
-        X, _ = self.prepare_for_clustering()
+        X, da = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
-        results = KMeans(n_clu)
+        if weigh_grams:
+            roll_std = da.rolling({"time": 30 * 4}, min_periods=3, center=False).std()
+            roll_std = compute(roll_std.chunk({"time": -1, "lon": 1}).mean(["lon", "lat"]).interpolate_na("time", "nearest", fill_value="extrapolate"))
+            X = X / roll_std.values[:, None]
+            suffix = "_grams"
+        else:
+            suffix = ""
+        results = KMeans(n_clu, n_init=20)
 
-        results_path = self.path.joinpath(f"k_{n_clu}_{n_pcas}.pkl")
+        results_path = self.path.joinpath(f"k_{n_clu}_{n_pcas}{suffix}.pkl")
         if results_path.is_file():
             results = load_pickle(results_path)
         else:
