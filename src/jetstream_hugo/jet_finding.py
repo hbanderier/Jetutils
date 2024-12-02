@@ -24,6 +24,7 @@ from jetstream_hugo.definitions import (
     to_zero_one,
     compute,
     xarray_to_polars,
+    get_index_columns,
 )
 from jetstream_hugo.data import (
     SEASONS,
@@ -31,21 +32,6 @@ from jetstream_hugo.data import (
     DataHandler,
     open_da,
 )
-
-
-def get_index_columns(
-    df,
-    potentials: tuple = (
-        "member",
-        "time",
-        "cluster",
-        "jet ID",
-        "spell",
-        "relative_index",
-    ),
-):
-    index_columns = [ic for ic in potentials if ic in df.columns]
-    return index_columns
 
 
 def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.Expr:
@@ -896,13 +882,19 @@ def extract_features(
 
 
 def one_gmix(X, n_components=2, init_params="k-means++", n_init=20):
-    X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.75), theta=pl.col("theta").clip(318, 355))
+    if "ratio" in X.columns:
+        X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.75))
+    if "theta" in X.columns:
+        X = X.with_columns(theta=pl.col("theta").clip(318, 355))
     X, meanX, stdX = normalize(X)
     model = GaussianMixture(
         n_components=n_components, init_params=init_params, n_init=n_init, covariance_type="full"
     )  # to help with class imbalance, 1 for sub 2 for polar
     # X_train = X.unique()
-    X_train = pl.concat([X.filter(pl.col("theta") < 350).sample(fraction=.2), X.filter(pl.col("theta") >= 350)])
+    if "theta" in X.columns:
+        X_train = pl.concat([X.filter(pl.col("theta") < 350).sample(fraction=.2), X.filter(pl.col("theta") >= 350)])
+    else:
+        X_train = X
     model = model.fit(X_train)
     probas = model.predict_proba(X)
     means = pl.DataFrame(model.means_, schema=X.columns)

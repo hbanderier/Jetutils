@@ -48,6 +48,7 @@ from jetstream_hugo.definitions import (
     infer_direction,
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
+from jetstream_hugo.data import periodic_rolling_pl
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 
@@ -1004,6 +1005,77 @@ def plot_trends(
         ax.legend(ncol=1, fontsize=10)
     subtitle = "std" if std else "trends"
     fig.savefig(f"{FIGURES}/jet_props_trends/jet_props_{subtitle}_{season}{suffix}.png")
+    if clear:
+        del fig
+        plt.close()
+        clear_output()
+        
+        
+def plot_seasonal(
+    data_vars: list,
+    props_as_df: pl.DataFrame,
+    nrows: int = 3,
+    ncols: int = 4,
+    clear: bool = True,
+    suffix: str = "",
+):
+    if clear:
+        plt.ioff()
+    else:
+        plt.ion()
+        plt.show()
+        clear_output()
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(ncols * 3.5, nrows * 2.4),
+        tight_layout=True,
+        sharex="all",
+    )
+    axes = axes.flatten()
+    jets = props_as_df["jet"].unique().to_numpy()
+    gb = props_as_df.group_by(
+        [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")], maintain_order=True
+    )
+    means = periodic_rolling(means, 15, data_vars)
+    x = means["dayofyear"].unique()
+    medians = periodic_rolling(medians, 15, data_vars)
+    q025 = gb.quantile(0.25)
+    q075 = gb.quantile(0.75)
+    for varname, ax in zip(data_vars, axes.ravel()):
+        dji = varname == "double_jet_index"
+        ys = means[varname].to_numpy().reshape(366, 2)
+        qs = np.stack(
+            [
+                q025[varname].to_numpy().reshape(366, 2),
+                q075[varname].to_numpy().reshape(366, 2),
+            ],
+            axis=2,
+        )
+        median = medians[varname].to_numpy().reshape(366, 2)
+        for i in range(2):
+            color = "black" if dji else COLORS[2 - i]
+            ax.fill_between(
+                x, qs[:, i, 0], qs[:, i, 1], color=color, alpha=0.2, zorder=-10
+            )
+            ax.plot(x, median[:, i], lw=2, color=color, ls="dotted", zorder=0)
+            ax.plot(x, ys[:, i], lw=3, color=color, label=jets[i], zorder=10)
+            if dji:
+                break
+        ax.set_title(
+            f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+        )
+        ax.xaxis.set_major_locator(MonthLocator(range(0, 13, 3)))
+        ax.xaxis.set_major_formatter(DateFormatter("%b"))
+        ax.set_xlim(min(x), max(x))
+        if varname == "mean_lev":
+            ax.invert_yaxis()
+        ylim = ax.get_ylim()
+        # wherex = np.isin(x.month, [6, 7, 8])
+        # ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
+        ax.set_ylim(ylim)
+    axes.ravel()[0].legend().set_zorder(102)
+    plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
     if clear:
         del fig
         plt.close()

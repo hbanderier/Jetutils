@@ -22,6 +22,7 @@ from jetstream_hugo.definitions import (
     save_pickle,
     load_pickle,
     compute,
+    get_index_columns,
 )
 
 
@@ -214,23 +215,15 @@ def extract_season(
     return da
 
 
-def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> xr.DataArray | xr.Dataset:
-    if isinstance(filename, list) and len(filename) == 1:
-        filename = filename[0]
-    if isinstance(filename, list):
-        da = xr.open_mfdataset(filename, chunks=None)
-        da = da.unify_chunks()
-    else:
-        da = xr.open_dataset(filename, chunks="auto")
-        da = da.unify_chunks()
-    if "expver" in da.dims:
-        da = da.sel(expver=1).reset_coords("expver", drop=True)
-    if varname is None or len(da.data_vars) > 1:
-        return da
-    try:
-        da = da[varname]
-    except KeyError:
-        da = da[DEFAULT_VARNAME].rename(varname)            
+def extract_region(
+    da: xr.DataArray | xr.Dataset,
+    minlon: Optional[int | float] = None,
+    maxlon: Optional[int | float] = None,
+    minlat: Optional[int | float] = None,
+    maxlat: Optional[int | float] = None
+)  -> xr.DataArray | xr.Dataset:
+    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
+        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
     return da
 
 
@@ -257,9 +250,8 @@ def extract(
             da = da.isel(member=members)
         except ValueError:
             da = da.sel(member=members)
-        
-    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
-        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+    
+    da = extract_region(da, minlon, maxlon, minlat, maxlat)
 
     if "lev" in da.dims:
         if len(da.lev) == 1:
@@ -268,6 +260,26 @@ def extract(
     if "lev" in da.dims and levels != "all":
         da = extract_levels(da, levels)
 
+    return da
+
+
+def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> xr.DataArray | xr.Dataset:
+    if isinstance(filename, list) and len(filename) == 1:
+        filename = filename[0]
+    if isinstance(filename, list):
+        da = xr.open_mfdataset(filename, chunks=None)
+        da = da.unify_chunks()
+    else:
+        da = xr.open_dataset(filename, chunks="auto")
+        da = da.unify_chunks()
+    if "expver" in da.dims:
+        da = da.sel(expver=1).reset_coords("expver", drop=True)
+    if varname is None or len(da.data_vars) > 1:
+        return da
+    try:
+        da = da[varname]
+    except KeyError:
+        da = da[DEFAULT_VARNAME].rename(varname)            
     return da
 
 
@@ -671,6 +683,65 @@ def compute_anomalies_ds(
             clim_type, drop=True
         ), clim
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)
+
+
+def periodic_rolling_pl(df: pl.DataFrame, winsize: int, data_vars: list):
+    df = df.cast({"dayofyear": pl.Int32})
+    halfwinsize = winsize // 2
+    other_columns = get_index_columns(df, ("member", "jet"))
+    descending = [False, *[col == "jet" for col in other_columns]]
+    len_ = [df[col].unique().len() for col in other_columns]
+    len_ = np.prod(len_)
+    max_doy = df["dayofyear"].max()
+    df = df.sort(["dayofyear", *other_columns], descending=descending)
+    df = pl.concat(
+        [
+            df.tail(halfwinsize * len_).with_columns(pl.col("dayofyear") - max_doy),
+            df,
+            df.head(halfwinsize * len_).with_columns(pl.col("dayofyear") + max_doy),
+        ]
+    )
+    df = df.rolling(
+        pl.col("dayofyear"),
+        period=f"{winsize}i",
+        offset=f"-{halfwinsize + 1}i",
+        group_by=other_columns,
+    ).agg(*[pl.col(col).mean() for col in data_vars])
+    df = df.sort(["dayofyear", *other_columns], descending=descending)
+    df = df.slice(halfwinsize * len_, max_doy * len_)
+    return df
+
+
+def compute_anomalies_pl(
+    df: pl.DataFrame,
+    other_index_columns: Tuple = ("jet",),
+    smooth_clim: int = 0,
+    normalize: bool = False,
+):
+    data_columns = [
+        col for col in df.columns if col not in ["time", *other_index_columns]
+    ]
+    df = df.with_columns(dayofyear=pl.col("time").dt.ordinal_day().cast(pl.Int32))
+    clim = df.group_by(pl.col("dayofyear"), *other_index_columns).mean().drop("time")
+    if smooth_clim > 1:
+        clim = periodic_rolling_pl(clim, smooth_clim, data_columns)
+    df = df.join(clim, on=["dayofyear", *other_index_columns], suffix="_clim")
+    if not normalize:
+        df = df.select(
+            *["time", *other_index_columns],
+            **{col: pl.col(col) - pl.col(f"{col}_clim") for col in data_columns},
+        )
+        return df
+    std = df.group_by(pl.col("dayofyear"), *other_index_columns).agg(*[pl.col(col).std() for col in data_columns])
+    if smooth_clim > 1:
+        std = periodic_rolling_pl(std, smooth_clim, data_columns)
+    df = df.join(std, on=["dayofyear", *other_index_columns], suffix="_std")
+    df = df.select(
+        *["time", *other_index_columns],
+        **{col: (pl.col(col) - pl.col(f"{col}_clim")) / pl.col(f"{col}_std") for col in data_columns},
+    )
+    return df
+    
 
 
 def _fix_dict_lists(dic: dict) -> dict:

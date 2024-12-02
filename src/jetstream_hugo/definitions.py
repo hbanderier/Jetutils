@@ -275,6 +275,21 @@ def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
     return ds
 
 
+def get_index_columns(
+    df,
+    potentials: tuple = (
+        "member",
+        "time",
+        "cluster",
+        "jet ID",
+        "spell",
+        "relative_index",
+    ),
+):
+    index_columns = [ic for ic in potentials if ic in df.columns]
+    return index_columns
+
+
 def case_insensitive_equal(str1: str, str2: str) -> bool:
     return str1.casefold() == str2.casefold()
 
