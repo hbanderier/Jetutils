@@ -782,7 +782,7 @@ def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
     unique_levs = np.unique(ds.lev.values)
     ope = np.nanargmin if by[0] == "-" else np.nanargmax
     by = by.lstrip("-")
-    if ds["s"].chunks is not None:
+    if ds[by].chunks is not None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             ds = compute(ds, progress_flag=True)
