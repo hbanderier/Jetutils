@@ -108,12 +108,14 @@ def standardize(da):
         "longitude": "lon",
         "latitude": "lat",
         "level": "lev",
+        "pres": "lev",
         "member_id": "member",
         "U": "u",
         "u_component_of_wind": "u",
         "V": "v",
         "v_component_of_wind": "v",
         "T": "t",
+        "pt": "theta",
     }
     for key, value in standard_dict.items():
         try:
@@ -129,6 +131,17 @@ def standardize(da):
         da = da.sortby("lon")
     if np.diff(da.lat.values)[0] < 0:
         da = da.reindex(lat=da.lat[::-1])
+    if isinstance(da, xr.Dataset):
+        for var in da.data_vars:
+            if da[var].chunks is None and da[var].dtype == np.float64:
+                da[var] = da[var].astype(np.float32)
+            if da[var].chunks is None and da[var].dtype == np.int64:
+                da[var] = da[var].astype(np.int32)
+    else:
+        if da.chunks is None and da.dtype == np.float64:
+            da = da.astype(np.float32)
+        if da.chunks is None and da.dtype == np.int64:
+            da = da.astype(np.int32)
     return da.unify_chunks()
 
 
@@ -279,7 +292,10 @@ def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> 
     try:
         da = da[varname]
     except KeyError:
-        da = da[DEFAULT_VARNAME].rename(varname)            
+        try:
+            da = da["dummy"].rename(varname)
+        except KeyError:
+            da = da[DEFAULT_VARNAME].rename(varname)            
     return da
 
 
