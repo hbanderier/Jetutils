@@ -644,6 +644,13 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     if "member" not in get_index_columns(df):
         gb = df_lazy.group_by(index_columns, maintain_order=True)
         props_as_df = gb.agg(*aggregations)
+        props_as_df = props_as_df.with_columns(
+            (
+                pl.col("tilt")
+                .replace([float("inf"), float("-inf")], None)
+                .clip(pl.col("tilt").quantile(0.001), pl.col("tilt").quantile(0.999))
+            )
+        )
         return props_as_df.collect()
 
     # streaming mode doesn't work well
@@ -786,7 +793,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     )
     jets = jets.group_by([*index_columns, "index"]).agg(**second_agg_out)
     jets = jets.group_by(index_columns, maintain_order=True).agg(**third_agg_out)
-    return jets.drop("s").cast({"width": pl.Float32})
+    return jets.drop("lon", "lat", "s").cast({"width": pl.Float32})
 
 
 def map_maybe_parallel(
@@ -923,7 +930,10 @@ def one_gmix(
     try:
         stj_clus = np.argmax(means[:, "theta"])
     except ColumnNotFoundError:
-        stj_clus = np.argmin(means[:, "lat"])
+        try:
+            stj_clus = np.argmin(means[:, "lat"])
+        except ColumnNotFoundError:
+            stj_clus = np.argmin(means[:, "lev"])
     probas_rest = np.sum(
         probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1
     )
@@ -1079,15 +1089,27 @@ def is_polar_indirect_gmix(
     return pl.concat(to_concat).sort(index_columns)
 
 
-def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float = 0.2):
-    props_as_df = props_as_df.with_columns(
-        pl.when(pl.col("is_polar") > 1 - polar_cutoff)
-        .then(pl.lit("EDJ"))
-        .when(pl.col("is_polar") < polar_cutoff)
-        .then(pl.lit("STJ"))
-        .otherwise(pl.lit("NA"))
-        .alias("jet")
-    )
+def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = None, allow_hybrid: bool = False):
+    if allow_hybrid and polar_cutoff is None:
+        polar_cutoff = 0.15
+    elif polar_cutoff is None:
+        polar_cutoff = 0.9
+    if allow_hybrid:
+        props_as_df = props_as_df.with_columns(
+            pl.when(pl.col("is_polar") > 1 - polar_cutoff)
+            .then(pl.lit("EDJ"))
+            .when(pl.col("is_polar") < polar_cutoff)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("Hybrid"))
+            .alias("jet")
+        )
+    else:
+        props_as_df = props_as_df.with_columns(
+            pl.when(pl.col("is_polar") >= polar_cutoff)
+            .then(pl.lit("EDJ"))
+            .otherwise(pl.lit("STJ"))
+            .alias("jet")
+        )
     index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
     )
@@ -1460,8 +1482,8 @@ def jet_position_as_da(
     return da_jet_pos
 
 
-def get_double_jet_index(df: pl.DataFrame, pos_as_da: xr.DataArray):
-    overlap = (pos_as_da > 0).any("lat").all("is_polar")
+def get_double_jet_index(df: pl.DataFrame, jet_pos_da: xr.DataArray):
+    overlap = (~xr.ufuncs.isnan(jet_pos_da)).sum("lat") >= 2
     dji = pl.concat(
         [
             df.select("time").unique(maintain_order=True),
@@ -1644,21 +1666,23 @@ class JetFindingExperiment(object):
         jets_upd = []
         if isinstance(low_wind, xr.Dataset):
             low_wind = low_wind["s"]
-
-        indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
-        for idx1, idx2 in indexer:
-            these_jets = all_jets_one_df.filter(*idx1)
-            with dask.config.set(**{"array.slicing.split_large_chunks": True}):
-                low_wind_ = compute(low_wind.sel(**idx2), progress_flag=False)
-            low_wind_ = xarray_to_polars(low_wind_)
-            these_jets = these_jets.join(
-                low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low"
-            )
-            these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
-            jets_upd.append(these_jets)
-        all_jets_one_df = pl.concat(jets_upd)
-        all_jets_one_df = is_polar_gmix(
-            all_jets_one_df, ("ratio", "theta"), mode="month"
+            
+        if "ratio" not in all_jets_one_df.columns:
+            indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
+            for idx1, idx2 in indexer:
+                these_jets = all_jets_one_df.filter(*idx1)
+                with dask.config.set(**{"array.slicing.split_large_chunks": True}):
+                    low_wind_ = compute(low_wind.sel(**idx2), progress_flag=False)
+                low_wind_ = xarray_to_polars(low_wind_)
+                these_jets = these_jets.join(
+                    low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low"
+                )
+                these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
+                jets_upd.append(these_jets)
+            all_jets_one_df = pl.concat(jets_upd)
+            
+        all_jets_one_df = is_polar_indirect_gmix(
+            all_jets_one_df, ("ratio", "theta"), mode="week"
         )
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
@@ -1680,7 +1704,8 @@ class JetFindingExperiment(object):
             width_ = compute_widths(these_jets, da_)
             width.append(width_)
         width = pl.concat(width)
-        props_as_df = props_as_df.with_columns(width=width["width"])
+        index_columns = get_index_columns(width)
+        props_as_df = props_as_df.join(width, on=index_columns, how="inner").sort(index_columns)
         props_as_df.write_parquet(jet_props_incomplete_path)
         return props_as_df
 

@@ -1,5 +1,6 @@
 from itertools import product
 from typing import Any, Mapping, Sequence, Tuple, Union, Iterable, Callable
+from math import log10, floor
 
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -10,7 +11,7 @@ from xarray import DataArray, Dataset
 import polars as pl
 from contourpy import contour_generator
 from tqdm import tqdm, trange
-
+        
 import matplotlib as mpl
 from matplotlib import path as mpath
 from matplotlib import pyplot as plt
@@ -33,7 +34,8 @@ from matplotlib.colors import (
 )
 from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, FormatStrFormatter
+from matplotlib.dates import MonthLocator, DateFormatter
 import colormaps
 import cartopy.crs as ccrs
 import cartopy.feature as feat
@@ -45,7 +47,7 @@ from jetstream_hugo.definitions import (
     PRETTIER_VARNAME,
     UNITS,
     SEASONS,
-    infer_direction,
+    infer_direction
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
 from jetstream_hugo.data import periodic_rolling_pl
@@ -860,18 +862,14 @@ def trends_and_pvalues(
     bootstrap_len: int = 4,
     n_boostraps: int = 10000,
 ):
-    if season is not None:
-        month_list = SEASONS[season]
-        props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
-    else:
-        season = "all_year"
-
+    ncat = props_as_df["jet"].n_unique()
 
     if season is not None:
         month_list = SEASONS[season]
         props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
     else:
         season = "all_year"
+
     if std:
         props_as_df = props_as_df.group_by(
             pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
@@ -891,13 +889,14 @@ def trends_and_pvalues(
     sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
     sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
     sample_indices = np.append(sample_indices, np.arange(64)[None, :], axis=0)
-    sample_indices = 2 * np.repeat(sample_indices.flatten(), 2)
-    sample_indices[1::2] = sample_indices[1::2] + 1
+    sample_indices = ncat * np.repeat(sample_indices.flatten(), ncat)
+    for k in range(ncat):
+        sample_indices[k::ncat] = sample_indices[k::ncat] + k
 
     ts_bootstrapped = props_as_df[sample_indices]
     ts_bootstrapped = ts_bootstrapped.with_columns(
-        sample_index=np.arange(len(ts_bootstrapped)) // (2 * num_blocks * bootstrap_len),
-        inside_index=np.arange(len(ts_bootstrapped)) % (2 * num_blocks * bootstrap_len),
+        sample_index=np.arange(len(ts_bootstrapped)) // (ncat * num_blocks * bootstrap_len),
+        inside_index=np.arange(len(ts_bootstrapped)) % (ncat * num_blocks * bootstrap_len),
     )
 
     slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
@@ -932,7 +931,7 @@ def trends_and_pvalues(
             for data_var in data_vars
         }
     )
-    return x, slopes, constants, pvals
+    return x, props_as_df, slopes, constants, pvals
 
 
 def plot_trends(
@@ -962,7 +961,7 @@ def plot_trends(
     )
     axes = axes.flatten()
     
-    x, slopes, constants, pvals = trends_and_pvalues(
+    x, y, slopes, constants, pvals = trends_and_pvalues(
         props_as_df=props_as_df,
         data_vars=data_vars,
         season=season,
@@ -970,6 +969,7 @@ def plot_trends(
         bootstrap_len=bootstrap_len,
         n_boostraps=n_boostraps
     )
+    ncat = props_as_df["jet"].n_unique()
 
     for i, (varname, ax) in enumerate(zip(data_vars, axes)):
         dji = varname == "double_jet_index"
@@ -980,17 +980,23 @@ def plot_trends(
         )
 
         for j, jet in enumerate(["STJ", "EDJ"]):
-            c1 = slopes[2 * n_boostraps + j, varname]
+            c1 = slopes[ncat * n_boostraps + j, varname]
             c0 = constants[j, varname]
             p = pvals[j, varname]
             p = min(p, 1 - p) * 2
-            this_da = props_as_df.filter(pl.col("jet") == jet)[varname]
+            this_da = y.filter(pl.col("jet") == jet)[varname]
             color = "black" if dji else COLORS[2 - j]
             ls = "dashed" if p < 0.05 else "dotted"
-            if dji:
-                label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            if c1 is not None:
+                if dji:
+                    label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+                else:
+                    label = f"{jet}, {p_to_tex(c1, c0, True)}, $p={p:.2f}$"
             else:
-                label = f"{jet}, {p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+                if dji:
+                    label = ""
+                else:
+                    label = f"{jet}"
             ax.plot(x, this_da.to_numpy(), lw=2, color=color)
             ax.plot(
                 x,
@@ -1012,8 +1018,8 @@ def plot_trends(
         
         
 def plot_seasonal(
-    data_vars: list,
     props_as_df: pl.DataFrame,
+    data_vars: list,
     nrows: int = 3,
     ncols: int = 4,
     clear: bool = True,
@@ -1034,27 +1040,34 @@ def plot_seasonal(
     )
     axes = axes.flatten()
     jets = props_as_df["jet"].unique().to_numpy()
+    njets = len(jets)
     gb = props_as_df.group_by(
         [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")], maintain_order=True
     )
-    means = periodic_rolling(means, 15, data_vars)
+    means = gb.agg([pl.col(col).mean() for col in data_vars])
+    means = periodic_rolling_pl(means, 15, data_vars)
     x = means["dayofyear"].unique()
-    medians = periodic_rolling(medians, 15, data_vars)
+    medians = gb.agg([pl.col(col).median() for col in data_vars])
+    medians = periodic_rolling_pl(medians, 15, data_vars)
     q025 = gb.quantile(0.25)
     q075 = gb.quantile(0.75)
+    if njets == 3:
+        color_order = [2, 3, 1]
+    else:
+        color_order = [2, 1]
     for varname, ax in zip(data_vars, axes.ravel()):
         dji = varname == "double_jet_index"
-        ys = means[varname].to_numpy().reshape(366, 2)
+        ys = means[varname].to_numpy().reshape(366, njets)
         qs = np.stack(
             [
-                q025[varname].to_numpy().reshape(366, 2),
-                q075[varname].to_numpy().reshape(366, 2),
+                q025[varname].to_numpy().reshape(366, njets),
+                q075[varname].to_numpy().reshape(366, njets),
             ],
             axis=2,
         )
-        median = medians[varname].to_numpy().reshape(366, 2)
-        for i in range(2):
-            color = "black" if dji else COLORS[2 - i]
+        median = medians[varname].to_numpy().reshape(366, njets)
+        for i in range(njets):
+            color = "black" if dji else COLORS[color_order[i]]
             ax.fill_between(
                 x, qs[:, i, 0], qs[:, i, 1], color=color, alpha=0.2, zorder=-10
             )
@@ -1076,6 +1089,82 @@ def plot_seasonal(
         ax.set_ylim(ylim)
     axes.ravel()[0].legend().set_zorder(102)
     plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
+    if clear:
+        del fig
+        plt.close()
+        clear_output()
+
+# OLD
+def props_histogram(
+    props_as_ds: xr.Dataset,
+    data_vars: list,
+    season: str | None = None,
+    nrows: int = 3,
+    ncols: int = 4,
+    clear: bool = True,
+    suffix: str = "",
+):
+    if clear:
+        plt.ioff()
+    else:
+        plt.ion()
+        plt.show()
+        clear_output()
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True
+    )
+    axes = axes.flatten()
+    if season is not None:
+        month_list = SEASONS[season]
+        season_mask = np.isin(props_as_ds.time.dt.month.values, month_list)
+        props_as_ds_ = props_as_ds.sel(time=season_mask)
+    else:
+        props_as_ds_ = props_as_ds
+
+    for i, (varname, ax) in enumerate(zip(data_vars, axes)):
+        if varname == "mean_lev":
+            ax.invert_xaxis()
+        try:
+            ax.set_title(f"{PRETTIER_VARNAME[varname]} [{UNITS[varname]}]")
+        except KeyError:
+            ax.set_title(varname)
+        maxx = {}
+        for j, jet in enumerate(["subtropical", "polar"]):
+            try:
+                this_da = props_as_ds_[varname].sel(jet=jet)
+                x = np.linspace(this_da.min(), this_da.max(), 1000)
+                y = gaussian_kde(
+                    this_da.interpolate_na("time", fill_value="extrapolate").values
+                )(x) * len(this_da)
+                ax.plot(x, y, color=COLORS[2 - j], linewidth=2)
+                ax.fill_between(x, 0, y, color=COLORS[2 - j], linewidth=1, alpha=0.3)
+                maxx_ = x[np.argmax(y)]
+                maxx[jet] = round(maxx_, -int(floor(log10(abs(maxx_)))) + 2)
+            except KeyError:
+                this_da = props_as_ds_[varname]
+                x = np.linspace(this_da.min(), this_da.max(), 1000)
+                y = gaussian_kde(
+                    this_da.interpolate_na("time", fill_value="extrapolate").values
+                )(x) * len(this_da)
+                ax.plot(x, y, color="black", linewidth=2)
+                ax.fill_between(x, 0, y, color="black", linewidth=1, alpha=0.3)
+                break
+        if len(maxx) > 0:
+            current_ticks = ax.get_xticks()
+            xticks = ax.set_xticks(np.concatenate([current_ticks, list(maxx.values())]))
+            xticks[-1]._apply_params(
+                color=COLORS[1], labelcolor=COLORS[1], length=12, width=3, pad=14
+            )
+            pad = (
+                14
+                if varname in ["mean_lat", "mean_lev", "spe_star", "waviness1"]
+                else 25
+            )
+            xticks[-2]._apply_params(
+                color=COLORS[2], labelcolor=COLORS[2], length=12, width=3, pad=pad
+            )
+            ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
+    fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
     if clear:
         del fig
         plt.close()

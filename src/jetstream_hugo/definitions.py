@@ -181,6 +181,8 @@ SEASONS = {
     "SON": [9, 10, 11],
 }
 
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
 RADIUS = 6.371e6  # m
 OMEGA = 7.2921e-5  # rad.s-1
 KAPPA = 0.2854
