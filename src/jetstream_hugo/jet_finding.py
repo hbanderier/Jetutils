@@ -1093,7 +1093,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = N
     if allow_hybrid and polar_cutoff is None:
         polar_cutoff = 0.15
     elif polar_cutoff is None:
-        polar_cutoff = 0.9
+        polar_cutoff = 0.5
     if allow_hybrid:
         props_as_df = props_as_df.with_columns(
             pl.when(pl.col("is_polar") > 1 - polar_cutoff)
@@ -1125,7 +1125,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = N
     agg["s_star"] = pl.col("s_star").max()
     agg["lon_ext"] = pl.col("lon_ext").max()
     agg["lat_ext"] = pl.col("lat_ext").max()
-    agg["exists"] = pl.col("int").len().cast(pl.Boolean())
+    agg["njets"] = pl.col("int").len().cast(pl.UInt8())
 
     gb_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
@@ -1180,7 +1180,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = N
         props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
     ).sort(new_index_columns, descending=sort_descending)
     props_as_df_cat = props_as_df_cat.with_columns(
-        pl.col("exists").cast(pl.UInt8).fill_null(0)
+        pl.col("njets").fill_null(0)
     )
     return props_as_df_cat
 
@@ -1484,9 +1484,10 @@ def jet_position_as_da(
 
 def get_double_jet_index(df: pl.DataFrame, jet_pos_da: xr.DataArray):
     overlap = (~xr.ufuncs.isnan(jet_pos_da)).sum("lat") >= 2
+    index_columns = get_index_columns(df, ["member", "time", "cluster"])
     dji = pl.concat(
         [
-            df.select("time").unique(maintain_order=True),
+            df.select(index_columns).unique(maintain_order=True),
             pl.Series(
                 "double_jet_index",
                 overlap.sel(lon=slice(-20, None, None)).mean("lon").values,
@@ -1494,7 +1495,7 @@ def get_double_jet_index(df: pl.DataFrame, jet_pos_da: xr.DataArray):
         ],
         how="horizontal",
     )
-    df = df.join(dji, on="time", how="left")
+    df = df.join(dji, on=index_columns, how="left")
     return df
 
 

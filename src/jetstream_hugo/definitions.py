@@ -55,6 +55,8 @@ DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGE = pd.date_range("19590101", "20221231")
 TIMERANGE = pd.date_range("19590101", "20230101", freq="6h", inclusive="left")
+LEAPYEAR = pd.date_range("19600101", "19601231")
+JJADOYS = LEAPYEAR[np.isin(LEAPYEAR.month, [6, 7, 8])].dayofyear
 YEARS = np.unique(DATERANGE.year)
 DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
 
@@ -92,10 +94,10 @@ PRETTIER_VARNAME = {
     "int": "Integrated speed",
     "int_low": "Intd. speed low level",
     "int_over_europe": "Intd. speed over Eur.",
-    "persistence": "Jet lifetime",
-    "exists": "Exists",
+    "persistence": "Lifetime",
+    "njets": "\# Jets",
     "int_ratio": "Ratio low / high ints",
-    "com_speed": "Speed of COM",
+    "com_speed": "COM speed",
     "double_jet_index": "Double jet index",
 }
 
@@ -120,7 +122,7 @@ UNITS = {
     "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
     "persistence": r"$\mathrm{day}$",
-    "exists": r"$~$",
+    "njets": r"$~$",
     "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
     "double_jet_index": "$~$",
 }
@@ -146,7 +148,7 @@ DEFAULT_VALUES = {
     "int_low": 0,
     "int_over_europe": 0,
     "persistence": 1,
-    "exists": 0,
+    "njets": 0,
     "com_speed": 0,
     "double_jet_index": 0,
 }

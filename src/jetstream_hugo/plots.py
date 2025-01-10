@@ -47,6 +47,7 @@ from jetstream_hugo.definitions import (
     PRETTIER_VARNAME,
     UNITS,
     SEASONS,
+    JJADOYS,
     infer_direction
 )
 from jetstream_hugo.stats import field_significance, field_significance_v2
@@ -1084,8 +1085,8 @@ def plot_seasonal(
         if varname == "mean_lev":
             ax.invert_yaxis()
         ylim = ax.get_ylim()
-        # wherex = np.isin(x.month, [6, 7, 8])
-        # ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
+        wherex = np.isin(x, JJADOYS)
+        ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
     axes.ravel()[0].legend().set_zorder(102)
     plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
