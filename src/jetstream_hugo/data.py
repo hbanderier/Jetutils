@@ -108,6 +108,7 @@ def standardize(da):
         "longitude": "lon",
         "latitude": "lat",
         "level": "lev",
+        "plev": "lev",
         "pres": "lev",
         "member_id": "member",
         "U": "u",
@@ -122,6 +123,9 @@ def standardize(da):
             da = da.rename({key: value})
         except ValueError:
             pass
+    if da["time"].dt.year[0] < 1800:
+        new_time_range = pd.date_range("19590101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
+        da["time"] = new_time_range
     try:
         da["time"] = da.indexes["time"].to_datetimeindex()
     except (AttributeError, KeyError):

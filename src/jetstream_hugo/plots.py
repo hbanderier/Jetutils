@@ -865,7 +865,7 @@ def trends_and_pvalues(
 ):
     ncat = props_as_df["jet"].n_unique()
 
-    if season is not None:
+    if season is not None and season != "Year":
         month_list = SEASONS[season]
         props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
     else:
@@ -889,7 +889,7 @@ def trends_and_pvalues(
     sample_indices = rng.choice(n - bootstrap_len, size=(n_boostraps, n // bootstrap_len))
     sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
     sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
-    sample_indices = np.append(sample_indices, np.arange(64)[None, :], axis=0)
+    sample_indices = np.append(sample_indices, np.arange(sample_indices.shape[1])[None, :], axis=0)
     sample_indices = ncat * np.repeat(sample_indices.flatten(), ncat)
     for k in range(ncat):
         sample_indices[k::ncat] = sample_indices[k::ncat] + k

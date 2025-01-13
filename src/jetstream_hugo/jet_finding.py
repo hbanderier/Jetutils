@@ -967,6 +967,16 @@ def is_polar_gmix(
             to_concat.append(
                 extract_season_from_df(df, month).with_columns(is_polar=labels)
             )
+    elif mode == "week":
+        weeks = df["time"].dt.week().unique().sort().to_numpy()
+        for week in tqdm(weeks, total=len(weeks)):
+            X = df.filter(pl.col("time").dt.week() == week)
+            X_ = extract_features(X, feature_names)
+            labels = one_gmix(X_, **kwargs)
+            to_concat.append(
+                X.with_columns(is_polar=labels)
+            )
+
     return pl.concat(to_concat).sort(index_columns)
 
 
