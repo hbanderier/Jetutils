@@ -105,11 +105,13 @@ def data_path(
 
 def standardize(da):
     standard_dict = {
+        "valid_time": "time",
         "longitude": "lon",
         "latitude": "lat",
         "level": "lev",
         "plev": "lev",
         "pres": "lev",
+        "pressure_level": "lev",
         "member_id": "member",
         "U": "u",
         "u_component_of_wind": "u",
@@ -121,6 +123,11 @@ def standardize(da):
     for key, value in standard_dict.items():
         try:
             da = da.rename({key: value})
+        except ValueError:
+            pass
+    for to_del in ["number", "expver"]:
+        try:
+            da = da.reset_coords(to_del, drop=True)
         except ValueError:
             pass
     if da["time"].dt.year[0] < 1800:
@@ -179,7 +186,9 @@ def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
 
 
 def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal["all"]):
-    if levels == "all" or (isinstance(levels, Sequence) and "all" in levels):
+    if levels == "all":
+        if len(da.lev) == 1:
+            return da.reset_index("lev").reset_coords("lev", drop=True).squeeze()
         return da.squeeze()
 
     levels, level_names = unpack_levels(levels)
@@ -189,8 +198,8 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
             da = da.isel(lev=levels).squeeze()
         except (ValueError, IndexError):
             da = da.sel(lev=levels).squeeze()
-        if len(levels) == 1:
-            return da.reset_coords("lev", drop=True)
+        if isinstance(da.lev.item(), int) or (isinstance(da.lev.item(), Sequence) and da.lev.shape[0] <= 1):
+            return da.reset_coords("lev", drop=True).squeeze()
         return da
 
     newcoords = {dim: da.coords[dim] for dim in ["time", "lat", "lon"]}
@@ -269,12 +278,8 @@ def extract(
             da = da.sel(member=members)
     
     da = extract_region(da, minlon, maxlon, minlat, maxlat)
-
-    if "lev" in da.dims:
-        if len(da.lev) == 1:
-            da = da.reset_coords("lev", drop=True)
             
-    if "lev" in da.dims and levels != "all":
+    if "lev" in da.dims:
         da = extract_levels(da, levels)
 
     return da
@@ -705,30 +710,31 @@ def compute_anomalies_ds(
     return ((this_gb - clim).groupby(coord) / variab).reset_coords(clim_type, drop=True)
 
 
-def periodic_rolling_pl(df: pl.DataFrame, winsize: int, data_vars: list):
-    df = df.cast({"dayofyear": pl.Int32})
+def periodic_rolling_pl(df: pl.DataFrame, winsize: int, data_vars: list, dim: str = "dayofyear"):
+    df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
     other_columns = get_index_columns(df, ("member", "jet"))
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df[col].unique().len() for col in other_columns]
     len_ = np.prod(len_)
-    max_doy = df["dayofyear"].max()
-    df = df.sort(["dayofyear", *other_columns], descending=descending)
+    min_doy = df[dim].min()
+    max_doy = df[dim].max()
+    df = df.sort([dim, *other_columns], descending=descending)
     df = pl.concat(
         [
-            df.tail(halfwinsize * len_).with_columns(pl.col("dayofyear") - max_doy),
+            df.tail(halfwinsize * len_).with_columns(pl.col(dim) - max_doy + min_doy - 1),
             df,
-            df.head(halfwinsize * len_).with_columns(pl.col("dayofyear") + max_doy),
+            df.head(halfwinsize * len_).with_columns(pl.col(dim) + max_doy - min_doy + 1),
         ]
     )
     df = df.rolling(
-        pl.col("dayofyear"),
+        pl.col(dim),
         period=f"{winsize}i",
         offset=f"-{halfwinsize + 1}i",
         group_by=other_columns,
     ).agg(*[pl.col(col).mean() for col in data_vars])
-    df = df.sort(["dayofyear", *other_columns], descending=descending)
-    df = df.slice(halfwinsize * len_, max_doy * len_)
+    df = df.sort([dim, *other_columns], descending=descending)
+    df = df.slice(halfwinsize * len_, (max_doy - min_doy + 1) * len_)
     return df
 
 
@@ -968,12 +974,16 @@ class DataHandler(object):
             
         region = (minlon, maxlon, minlat, maxlat)
         
-        if period == "all":
+        if isinstance(period, str) and period == "all":
             period = YEARS
+        elif isinstance(period, np.ndarray):
+            period = period.tolist()
+        elif isinstance(period, tuple):
+            period = np.arange(period[0], period[-1]).tolist()
         
         metadata = {
             "varname": varname,
-            "period": period.tolist(),
+            "period": period,
             "season": season,
             "region": region,
             "levels": levels,

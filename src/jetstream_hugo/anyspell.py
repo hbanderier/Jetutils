@@ -4,6 +4,7 @@ from itertools import combinations, product
 from multiprocessing import Pool
 from pathlib import Path
 import warnings
+import datetime
 
 import numpy as np
 import pandas as pd
@@ -25,7 +26,7 @@ from sklearn.metrics import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from xgboost import XGBClassifier, XGBRegressor
-from fasttreeshap import TreeExplainer, Explainer
+from shap import TreeExplainer, Explainer
 
 from jetstream_hugo.definitions import (
     DEFAULT_VALUES,
@@ -37,6 +38,10 @@ from jetstream_hugo.definitions import (
     load_pickle,
     save_pickle,
     get_runs_fill_holes,
+    xarray_to_polars,
+    polars_to_xarray,
+    get_index_columns,
+    extract_season_from_df,
 )
 from jetstream_hugo.data import (
     find_spot,
@@ -167,6 +172,101 @@ def mask_from_spells(
         if da is not None:
             ds_masked.avg_val.loc[indexer] = da.loc[dict(time=spell)].values
     return ds_masked
+
+
+def get_persistent_jet_spells(props_as_df, metric: Literal["persistence", "com_speed"], jet: Literal["EDJ", "STJ"], season: list | str | None = None, q: float = 0.2, daily: bool = False):
+    props_as_df = extract_season_from_df(props_as_df, season)
+    times = props_as_df["time"].unique()
+    onejet = props_as_df.filter(pl.col("jet") == jet)
+    out = onejet[metric] 
+    if metric == "com_speed":
+        out = (out < out.quantile(q))
+    else:
+        out = (out > out.quantile(1 - q))
+    out = out.rle().struct.unnest()
+    out = out.with_columns(start=pl.lit(0).append(pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)))
+    nt_before, nt_after = 8, 8
+    out = out.filter(pl.col("value"), pl.col("len") >= 4).with_columns(
+        range=pl.int_ranges(pl.col("start") - nt_before, pl.col("start") + pl.col("len") + nt_after),
+        relative_index=pl.int_ranges(-nt_before, pl.col("len") + nt_after),
+    )
+    out = out.with_row_index("spell").explode(["range", "relative_index"])
+    indices = out["range"].to_numpy()
+    mask_valid = (indices < len(times)) & (indices >= 0)
+    indices = indices[mask_valid]
+    out = (
+        out
+        .filter(mask_valid)
+        .with_columns(time=times[indices])
+        .drop("value", "start", "range")
+        .sort("spell", "relative_index")
+        .cast({"time": pl.Datetime("ns")})
+        .with_columns(pl.col("spell").rle_id())
+    )
+    out = out.with_columns(
+        out.group_by("spell", maintain_order=True)
+        .agg(
+            relative_time=pl.col("time")
+            - pl.col("time").get(pl.arg_where(pl.col("relative_index") == 0).first())
+        )
+        .explode("relative_time")
+    )
+    min_rel_index = out["relative_index"].min()
+    max_rel_index = out["relative_index"].max()
+    out = out.filter(
+        pl.col("relative_time") >= pl.duration(days=min_rel_index),
+        pl.col("relative_time") <= pl.duration(days=max_rel_index)
+    )
+    if not daily:
+        return out
+    
+    ratio = out.filter(pl.col("relative_index") == 1)[0, "relative_time"] / datetime.timedelta(days=1)
+    out = out.with_columns(pl.col("time").dt.round("1d")).unique(["spell", "time"], maintain_order=True)
+    out = out.with_columns(out.group_by("spell", maintain_order=True).agg(pl.col("relative_index").rle_id() + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)).explode("relative_index"))
+    out = out.with_columns(relative_time=pl.col("relative_index") * pl.duration(days=1))
+    return out
+
+
+def mask_from_spells_pl(spells: pl.DataFrame, to_mask: xr.DataArray | xr.Dataset | pl.DataFrame, force_pl: bool = False):
+    unique_times_spells = spells["time"].unique().to_numpy()
+    unique_times_to_mask = np.unique(to_mask["time"].to_numpy())
+    unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask) 
+    spells = spells.filter(pl.col("time").is_in(unique_times))
+    if isinstance(to_mask, xr.DataArray | xr.Dataset):
+        to_mask = compute(to_mask.sel(time=unique_times), progress=True)
+        to_mask = xarray_to_polars(to_mask)
+        index_columns_xarray = get_index_columns(to_mask, ["lat", "lon", "jet", "jet ID"])
+    else:
+        to_mask = to_mask.cast({"time": pl.Datetime("ns")})
+        to_mask = to_mask.filter(pl.col("time").is_in(unique_times))
+        index_columns_xarray = None
+    to_mask = to_mask.cast({"time": pl.Datetime("ns")})
+    spells = spells.cast({"time": pl.Datetime("ns"), "relative_time": pl.Duration("ns")})
+    index_columns = get_index_columns(to_mask, ["member", "time"])
+    masked = spells.join(to_mask, on=index_columns)
+    if not index_columns_xarray or (masked.shape[0] == 0) or force_pl:
+        return masked
+    index_to_mask = ["spell", "relative_index"]
+    masked = polars_to_xarray(masked, [*index_to_mask, *index_columns_xarray])
+    index_to_mask = ["spell", "relative_index"]
+    i0 = np.argmax(np.asarray(list(masked.dims)) == "relative_index") 
+    j0 = np.argmax(masked["relative_index"].values == 0)
+    ndim = masked["time"].ndim
+    indexer = [0 if i >= len(index_to_mask) else slice(None) for i in range(ndim)]
+    masked["time"] = masked["time"][*indexer]
+    masked["relative_time"] = masked["relative_time"][*indexer]
+    indexer[i0] = j0
+    masked["len"] = masked["len"][*indexer]
+    coords = ["time", "relative_time", "len"]
+    if "value" in spells.columns:
+        masked["value"] = masked["value"][*indexer]
+        coords.append("value")
+    masked["relative_time"] = masked["relative_time"].max(dim="spell", skipna=True)
+    masked = masked.set_coords(coords)
+    data_vars = list(masked.data_vars)
+    if len(data_vars) == 1:
+        masked = masked[data_vars[0]]
+    return masked
 
 
 def mask_name(mask: xr.DataArray | Literal["land"] | None = None) -> str:
@@ -895,7 +995,7 @@ class ExtremeExperiment(object):
             clusters_da = mask_flat.copy(data=clusters_da)
             clusters_da[mask_flat] = clusters
         else:
-            clusters_da = self.da.copy(data=np.zeros(da.shape))
+            clusters_da = self.da.copy(data=np.zeros(self.da.shape))
             clusters_da = clusters_da.stack(stack_dims)
             clusters_da[:] = clusters
         clusters_da = clusters_da.unstack()

@@ -20,12 +20,11 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     RADIUS,
     YEARS,
-    labels_to_mask,
     normalize,
-    to_zero_one,
     compute,
     xarray_to_polars,
     get_index_columns,
+    extract_season_from_df,
 )
 from jetstream_hugo.data import (
     SEASONS,
@@ -530,9 +529,9 @@ def find_all_jets(
     # smooth, compute sigma
     x_periodic = has_periodic_x(df)
     df = coarsen(df, {"lon": 1, "lat": 1})
-    df = smooth_in_space(df, 11)
+    df = smooth_in_space(df, 3)
     df = compute_sigma(df)
-    df = smooth_in_space(df, 9)
+    df = smooth_in_space(df, 3)
     df = df.with_columns(
         lon=round_polars("lon").cast(pl.Float32),
         lat=round_polars("lat").cast(pl.Float32),
@@ -868,19 +867,6 @@ def round_half(x):
     return np.round(x * 2) / 2
 
 
-def extract_season_from_df(
-    df: pl.DataFrame,
-    season: list | str | tuple | int | None = None,
-) -> pl.DataFrame:
-    if season is None:
-        return df
-    if isinstance(season, str):
-        season = SEASONS[season]
-    if isinstance(season, int):
-        season = [season]
-    return df.filter(pl.col("time").dt.month().is_in(season))
-
-
 def extract_features(
     df: pl.DataFrame,
     feature_names: Sequence = None,
@@ -896,7 +882,7 @@ def extract_features(
 def one_gmix(
     X,
     n_components=2,
-    init_params="k-means++",
+    init_params="random_from_data",
     n_init=20,
     means_init: np.ndarray | None = None,
 ):
@@ -904,40 +890,17 @@ def one_gmix(
     #     X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.75))
     # if "theta" in X.columns:
     #     X = X.with_columns(theta=pl.col("theta").clip(318, 355))
-    X, meanX, stdX = normalize(X)
-    if means_init is not None:
-        means_init = (means_init - meanX.to_numpy()) / stdX.to_numpy()
-    model = GaussianMixture(
-        n_components=n_components,
-        init_params=init_params,
-        n_init=n_init,
-        covariance_type="full",
-        means_init=means_init,
-    )  # to help with class imbalance, 1 for sub 2 for polar
-    # X_train = X.unique()
-    if "theta" in X.columns:
-        X_train = pl.concat(
-            [
-                X.filter(pl.col("theta") < 350).sample(fraction=0.2),
-                X.filter(pl.col("theta") >= 350),
-            ]
-        )
-    else:
-        X_train = X
-    model = model.fit(X_train)
-    probas = model.predict_proba(X)
-    means = pl.DataFrame(model.means_, schema=X.columns)
-    try:
-        stj_clus = np.argmax(means[:, "theta"])
-    except ColumnNotFoundError:
-        try:
-            stj_clus = np.argmin(means[:, "lat"])
-        except ColumnNotFoundError:
-            stj_clus = np.argmin(means[:, "lev"])
-    probas_rest = np.sum(
-        probas[:, [i for i in range(probas.shape[1]) if i != stj_clus]], axis=1
-    )
-    return probas_rest
+    # if "ratio" in X.columns:
+    #     X = X.with_columns(ratio=pl.col("ratio").clip(0, 1.5))
+    model = GaussianMixture(n_components=n_components, init_params=init_params, n_init=n_init)
+    if "ratio" in X.columns:
+        X = X.with_columns(ratio=pl.col("ratio").fill_null(0))
+    model = model.fit(X)
+    if X.columns[0] == "ratio":
+        return model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
+    elif X.columns[1] == "lat":
+        return model.predict_proba(X)[:, np.argmax(model.means_[:, 1])]
+    return model.predict_proba(X)[:, np.argmin(model.means_[:, 0])]
 
 
 def is_polar_gmix(
@@ -1231,7 +1194,7 @@ def _track_jets(df: pl.DataFrame):
     time_index_df = unique_times["index"]
     unique_times = unique_times["time"]
     df = df.with_columns(df.select(pl.col(["lon", "lat"]).map_batches(round_half)))
-    guess_nflags = max(50, 2 * len(unique_times) // 3)
+    guess_nflags = max(50, len(unique_times))
     n_hemispheres = len(np.unique(np.sign([df["lat"].min(), df["lat"].max()])))
     guess_nflags = guess_nflags * n_hemispheres
     guess_len = 1000
@@ -1276,6 +1239,7 @@ def _track_jets(df: pl.DataFrame):
             (last_valid_index_abs >= (it - 4)) & (last_valid_index_abs >= 0)
         )[0]
         if len(potential_flags) == 0:
+            print("artificially filling")
             n_new = current_df["jet ID"].unique().len()
             for j in range(n_new):
                 last_flag += 1
@@ -1334,7 +1298,7 @@ def _track_jets(df: pl.DataFrame):
         except ValueError:
             pass
         index_start_flags = time_index_flags[it]
-        connected_mask = (overlaps > 0.5) & (dist_mat < 10)
+        connected_mask = (overlaps > 0.4) & (dist_mat < 12)
         potentials_isp = potentials_df["is_polar"].to_numpy()
         current_isp = current_df["is_polar"].to_numpy()
         connected_mask = (
@@ -1347,7 +1311,7 @@ def _track_jets(df: pl.DataFrame):
             )
             for j in js:
                 if not connected_mask[i, j]:
-                    break
+                    continue
                 if flagged[j]:
                     continue
                 this_flag = potential_flags[i]
@@ -1357,15 +1321,15 @@ def _track_jets(df: pl.DataFrame):
                 flagged[j] = True
                 flags[int(index_start_flags + j), "flag"] = this_flag
                 break
-        pass
         for j in range(n_new):
-            if not flagged[j]:
-                last_flag += 1
-                last_valid_index_rel[last_flag] = 0
-                last_valid_index_abs[last_flag] = it
-                all_jets_over_time[last_flag, 0] = (t, j)
-                flags[int(index_start_flags + j), "flag"] = last_flag
-                flagged[j] = True
+            if flagged[j]:
+                continue
+            last_flag += 1
+            last_valid_index_rel[last_flag] = 0
+            last_valid_index_abs[last_flag] = it
+            all_jets_over_time[last_flag, 0] = (t, j)
+            flags[int(index_start_flags + j), "flag"] = last_flag
+            flagged[j] = True
         if current.name == "MainProcess":
             pbar.set_description(f"last_flag: {last_flag}")
     ajot_df = []
@@ -1393,6 +1357,7 @@ def track_jets(all_jets_one_df: pl.DataFrame, processes: int = N_WORKERS):
     )
     levels = all_jets_one_df.columns[:index_indices]
     outer = [level for level in levels if level not in inner]
+    all_jets_one_df = coarsen(all_jets_one_df, {"lon": 1, "lat": 1})
     if len(outer) == 0:
         return _track_jets(all_jets_one_df)
     len_, iterator = create_mappable_iterator(all_jets_one_df, potentials=tuple(outer))
@@ -1618,6 +1583,7 @@ class JetFindingExperiment(object):
         self.ds = data_handler.da
         self.path = data_handler.path
         self.data_handler = data_handler
+        self.metadata = self.data_handler.metadata
         self.time = data_handler.get_sample_dims()["time"]
 
     def find_low_wind(self):  # relies on Ubelix storage logic, cannot be used elsewhere
@@ -1678,6 +1644,22 @@ class JetFindingExperiment(object):
         if isinstance(low_wind, xr.Dataset):
             low_wind = low_wind["s"]
             
+        if "theta" not in all_jets_one_df.columns:
+            theta = self.ds["theta"]
+            indexer = iterate_over_year_maybe_member(all_jets_one_df, theta)
+            for idx1, idx2 in indexer:
+                these_jets = all_jets_one_df.filter(*idx1)
+                with dask.config.set(**{"array.slicing.split_large_chunks": True}):
+                    theta_ = compute(theta.sel(**idx2), progress_flag=False)
+                theta_ = xarray_to_polars(theta_)
+                these_jets = these_jets.join(
+                    theta_, on=["time", "lat", "lon"], how="left"
+                )
+                jets_upd.append(these_jets)
+            all_jets_one_df = pl.concat(jets_upd)
+            all_jets_one_df.write_parquet(ofile_ajdf)
+            
+        jets_upd = []
         if "ratio" not in all_jets_one_df.columns:
             indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
             for idx1, idx2 in indexer:
@@ -1691,9 +1673,10 @@ class JetFindingExperiment(object):
                 these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
                 jets_upd.append(these_jets)
             all_jets_one_df = pl.concat(jets_upd)
+            all_jets_one_df.write_parquet(ofile_ajdf)
             
-        all_jets_one_df = is_polar_indirect_gmix(
-            all_jets_one_df, ("ratio", "theta"), mode="week"
+        all_jets_one_df = is_polar_gmix(
+            all_jets_one_df, ("ratio", "theta"), "week", n_components=2, n_init=20, init_params="k-means++"
         )
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
@@ -1734,6 +1717,7 @@ class JetFindingExperiment(object):
                 all_jets_over_time,
                 flags,
             )
+        
         all_jets_over_time, flags = track_jets(all_jets_one_df)
 
         all_jets_over_time.write_parquet(ofile_ajot)

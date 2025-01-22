@@ -293,6 +293,18 @@ def get_index_columns(
     index_columns = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
+def extract_season_from_df(
+    df: pl.DataFrame,
+    season: list | str | tuple | int | None = None,
+) -> pl.DataFrame:
+    if season is None:
+        return df
+    if isinstance(season, str):
+        season = SEASONS[season]
+    if isinstance(season, int):
+        season = [season]
+    return df.filter(pl.col("time").dt.month().is_in(season))
+
 
 def case_insensitive_equal(str1: str, str2: str) -> bool:
     return str1.casefold() == str2.casefold()
