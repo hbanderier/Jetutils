@@ -501,7 +501,7 @@ def find_all_jets(
             .cast({"s": pl.Float32})
             .rename({"s": "s_thresh"})
         )
-        df = df.join(thresholds, on=index_columns)
+        df = df.join(thresholds, on="time")
         df = df.with_columns(
             int_thresh=base_int_thresh * pl.col("s_thresh") / base_s_thresh
         )
@@ -1544,7 +1544,8 @@ def iterate_over_year_maybe_member(
             {"member": np.isin(da["member"].values, member_list)}
             for member_list in member_lists
         )
-        indexer_xarray = zip(indexer_xarray, indexer_xarray_2)
+        indexer_xarray = product(indexer_xarray, indexer_xarray_2)
+        indexer_xarray = (indexer[0] | indexer[1] for indexer in indexer_xarray)
         return indexer_xarray
     years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
     year_lists = np.array_split(years, len(years) // several_years)
@@ -1622,7 +1623,7 @@ class JetFindingExperiment(object):
             print(f"Using thresholds at {qs_path}")
 
         all_jets_one_df = []
-        several_years = 15 if "member" not in self.metadata else 1
+        several_years = 20 if "member" not in self.metadata else 5
         iterator = iterate_over_year_maybe_member(
             da=self.ds, several_years=several_years
         )

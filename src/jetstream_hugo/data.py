@@ -119,6 +119,7 @@ def standardize(da):
         "v_component_of_wind": "v",
         "T": "t",
         "pt": "theta",
+        "Z3": "z",
     }
     for key, value in standard_dict.items():
         try:
@@ -872,6 +873,7 @@ class DataHandler(object):
         self._setup_dims()
         self.metadata = load_pickle(self.path.joinpath("metadata.pkl"))
         
+    @classmethod
     def from_basepath_and_da(
         cls,
         basepath: Path | str,
