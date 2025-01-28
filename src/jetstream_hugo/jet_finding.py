@@ -12,7 +12,6 @@ import polars_ols as pls
 import xarray as xr
 from contourpy import contour_generator
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
-from skimage.feature import peak_local_max
 from tqdm import tqdm, trange
 import dask
 
@@ -943,123 +942,123 @@ def is_polar_gmix(
     return pl.concat(to_concat).sort(index_columns)
 
 
-def nan_helper(y: np.ndarray) -> Tuple[np.ndarray, Callable]:
-    return np.isnan(y), lambda z: z.nonzero()[0]
+# def nan_helper(y: np.ndarray) -> Tuple[np.ndarray, Callable]:
+#     return np.isnan(y), lambda z: z.nonzero()[0]
 
 
-def interp_nan(y: np.ndarray) -> np.ndarray:
-    nans, x = nan_helper(y)
-    y[nans] = np.interp(x(nans), x(~nans), y[~nans])
-    return y
+# def interp_nan(y: np.ndarray) -> np.ndarray:
+#     nans, x = nan_helper(y)
+#     y[nans] = np.interp(x(nans), x(~nans), y[~nans])
+#     return y
 
 
-def get_local_max(
-    X: pl.DataFrame,
-    feature_names: Tuple = ("ratio", "theta"),
-) -> pl.DataFrame:
-    if "ratio" in X.columns:
-        X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.9))
-    if "theta" in X.columns:
-        X = X.with_columns(theta=pl.col("theta").clip(318, 365))
-    h, xe, ye = np.histogram2d(X[feature_names[0]], X[feature_names[1]], bins=41)
-    xe = (xe[:-1] + xe[1:]) / 2
-    ye = (ye[:-1] + ye[1:]) / 2
-    xy = peak_local_max(h, min_distance=3, num_peaks=2, p_norm=1, exclude_border=True)
-    xy_ = []
-    for i in np.argsort(xy[:, 1]):
-        xy_.append([xe[xy[i, 0]], ye[xy[i, 1]]])
-    if len(xy_) == 1:
-        xy_.append([np.nan, np.nan])
-    return xy_
+# def get_local_max(
+#     X: pl.DataFrame,
+#     feature_names: Tuple = ("ratio", "theta"),
+# ) -> pl.DataFrame:
+#     if "ratio" in X.columns:
+#         X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.9))
+#     if "theta" in X.columns:
+#         X = X.with_columns(theta=pl.col("theta").clip(318, 365))
+#     h, xe, ye = np.histogram2d(X[feature_names[0]], X[feature_names[1]], bins=41)
+#     xe = (xe[:-1] + xe[1:]) / 2
+#     ye = (ye[:-1] + ye[1:]) / 2
+#     xy = peak_local_max(h, min_distance=3, num_peaks=2, p_norm=1, exclude_border=True)
+#     xy_ = []
+#     for i in np.argsort(xy[:, 1]):
+#         xy_.append([xe[xy[i, 0]], ye[xy[i, 1]]])
+#     if len(xy_) == 1:
+#         xy_.append([np.nan, np.nan])
+#     return xy_
 
 
-def one_indirect_gmix(
-    X: pl.DataFrame,
-    means_init: np.ndarray,
-    tol: float = 1e-3,
-    inner_means_init: Tuple = ([-1], [1]),
-    weights_init: Tuple = (0.9, 0.1),
-) -> np.ndarray:
-    X, meanX, stdX = normalize(X)
-    if means_init is not None:
-        means_init = (means_init - meanX.to_numpy()) / stdX.to_numpy()
-    dists = []
-    for i, center in enumerate(means_init):
-        X_ = X.with_columns(
-            [
-                (pl.col(col) - pl.lit(center[j])).pow(2)
-                for j, col in enumerate(X.columns)
-            ]
-        )
-        dists.append(X_.select((pl.col("ratio") + pl.col("theta")).sqrt()))
-    X_1D = np.log(dists[0] / dists[1])
-    model = GaussianMixture(
-        2, tol=tol, means_init=inner_means_init, weights_init=weights_init
-    ).fit(X_1D)
-    probas = model.predict_proba(X_1D)
-    k = np.argmin(model.means_)
-    return probas[:, k]
+# def one_indirect_gmix(
+#     X: pl.DataFrame,
+#     means_init: np.ndarray,
+#     tol: float = 1e-3,
+#     inner_means_init: Tuple = ([-1], [1]),
+#     weights_init: Tuple = (0.9, 0.1),
+# ) -> np.ndarray:
+#     X, meanX, stdX = normalize(X)
+#     if means_init is not None:
+#         means_init = (means_init - meanX.to_numpy()) / stdX.to_numpy()
+#     dists = []
+#     for i, center in enumerate(means_init):
+#         X_ = X.with_columns(
+#             [
+#                 (pl.col(col) - pl.lit(center[j])).pow(2)
+#                 for j, col in enumerate(X.columns)
+#             ]
+#         )
+#         dists.append(X_.select((pl.col("ratio") + pl.col("theta")).sqrt()))
+#     X_1D = np.log(dists[0] / dists[1])
+#     model = GaussianMixture(
+#         2, tol=tol, means_init=inner_means_init, weights_init=weights_init
+#     ).fit(X_1D)
+#     probas = model.predict_proba(X_1D)
+#     k = np.argmin(model.means_)
+#     return probas[:, k]
 
 
-def is_polar_indirect_gmix(
-    df: pl.DataFrame,
-    feature_names: Tuple = ("ratio", "theta"),
-    mode: Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"] = "year",
-    **kwargs,
-) -> pl.DataFrame:
-    if mode == "year":
-        X = extract_features(df, feature_names)
-        means_init = np.asarray(get_local_max(X, feature_names=feature_names))
-        is_polar = one_indirect_gmix(X, means_init, **kwargs)
-        return df.with_columns(is_polar=is_polar)
+# def is_polar_indirect_gmix(
+#     df: pl.DataFrame,
+#     feature_names: Tuple = ("ratio", "theta"),
+#     mode: Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"] = "year",
+#     **kwargs,
+# ) -> pl.DataFrame:
+#     if mode == "year":
+#         X = extract_features(df, feature_names)
+#         means_init = np.asarray(get_local_max(X, feature_names=feature_names))
+#         is_polar = one_indirect_gmix(X, means_init, **kwargs)
+#         return df.with_columns(is_polar=is_polar)
 
-    xys = []
-    if mode == "season":
-        for season in SEASONS:
-            X = extract_features(df, feature_names, season=season)
-            xys.append(get_local_max(X, feature_names=feature_names))
-    elif mode == "month":
-        for month in range(1, 13):
-            X = extract_features(df, feature_names, season=month)
-            xys.append(get_local_max(X, feature_names=feature_names))
-    elif mode == "week":
-        weeks = df["time"].dt.week().unique().sort().to_numpy()
-        for week in weeks:
-            X = df.filter(pl.col("time").dt.week() == week)
-            X = extract_features(X, feature_names)
-            xys.append(get_local_max(X, feature_names=feature_names))
+#     xys = []
+#     if mode == "season":
+#         for season in SEASONS:
+#             X = extract_features(df, feature_names, season=season)
+#             xys.append(get_local_max(X, feature_names=feature_names))
+#     elif mode == "month":
+#         for month in range(1, 13):
+#             X = extract_features(df, feature_names, season=month)
+#             xys.append(get_local_max(X, feature_names=feature_names))
+#     elif mode == "week":
+#         weeks = df["time"].dt.week().unique().sort().to_numpy()
+#         for week in weeks:
+#             X = df.filter(pl.col("time").dt.week() == week)
+#             X = extract_features(X, feature_names)
+#             xys.append(get_local_max(X, feature_names=feature_names))
 
-    xys = np.array(xys)
-    xys[:, 1, 0] = interp_nan(xys[:, 1, 0])
-    xys[:, 1, 1] = interp_nan(xys[:, 1, 1])
-    index_columns = get_index_columns(df)
+#     xys = np.array(xys)
+#     xys[:, 1, 0] = interp_nan(xys[:, 1, 0])
+#     xys[:, 1, 1] = interp_nan(xys[:, 1, 1])
+#     index_columns = get_index_columns(df)
 
-    to_concat = []
-    if mode == "season":
-        for i, season in enumerate(tqdm(SEASONS)):
-            X = extract_features(df, feature_names, season=season)
-            means_init = xys[i]
-            is_polar = one_indirect_gmix(X, means_init, **kwargs)
-            to_concat.append(
-                extract_season_from_df(df, season).with_columns(is_polar=is_polar)
-            )
-    elif mode == "month":
-        for i, month in enumerate(trange(1, 13)):
-            X = extract_features(df, feature_names, season=month)
-            means_init = xys[i]
-            is_polar = one_indirect_gmix(X, means_init, **kwargs)
-            to_concat.append(
-                extract_season_from_df(df, month).with_columns(is_polar=is_polar)
-            )
-    elif mode == "week":
-        for i, week in enumerate(tqdm(weeks)):
-            X = df.filter(pl.col("time").dt.week() == week)
-            means_init = xys[i]
-            is_polar = one_indirect_gmix(extract_features(X, feature_names), means_init, **kwargs)
-            to_concat.append(
-                X.with_columns(is_polar=is_polar)
-            )
-    return pl.concat(to_concat).sort(index_columns)
+#     to_concat = []
+#     if mode == "season":
+#         for i, season in enumerate(tqdm(SEASONS)):
+#             X = extract_features(df, feature_names, season=season)
+#             means_init = xys[i]
+#             is_polar = one_indirect_gmix(X, means_init, **kwargs)
+#             to_concat.append(
+#                 extract_season_from_df(df, season).with_columns(is_polar=is_polar)
+#             )
+#     elif mode == "month":
+#         for i, month in enumerate(trange(1, 13)):
+#             X = extract_features(df, feature_names, season=month)
+#             means_init = xys[i]
+#             is_polar = one_indirect_gmix(X, means_init, **kwargs)
+#             to_concat.append(
+#                 extract_season_from_df(df, month).with_columns(is_polar=is_polar)
+#             )
+#     elif mode == "week":
+#         for i, week in enumerate(tqdm(weeks)):
+#             X = df.filter(pl.col("time").dt.week() == week)
+#             means_init = xys[i]
+#             is_polar = one_indirect_gmix(extract_features(X, feature_names), means_init, **kwargs)
+#             to_concat.append(
+#                 X.with_columns(is_polar=is_polar)
+#             )
+#     return pl.concat(to_concat).sort(index_columns)
 
 
 def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = None, allow_hybrid: bool = False):

@@ -106,25 +106,35 @@ def data_path(
 def standardize(da):
     standard_dict = {
         "valid_time": "time",
+        "time_counter": "time",
         "longitude": "lon",
+        "lon_um_atmos_grid_uv": "lon",
         "latitude": "lat",
+        "lat_um_atmos_grid_uv": "lat",
         "level": "lev",
         "plev": "lev",
         "pres": "lev",
         "pressure_level": "lev",
+        "um_atmos_PLEV19": "lev",
         "member_id": "member",
         "U": "u",
+        "U500": "u",
         "u_component_of_wind": "u",
+        "m01s30i201_3": "u",
         "V": "v",
+        "V500": "v",
         "v_component_of_wind": "v",
+        "m01s30i202_3": "v",
         "T": "t",
+        "m01s30i204_3": "t",
         "pt": "theta",
+        "PRECL": "tp",
         "Z3": "z",
     }
     for key, value in standard_dict.items():
-        try:
+        if key in da:
             da = da.rename({key: value})
-        except ValueError:
+        else:
             pass
     for to_del in ["number", "expver"]:
         try:
@@ -136,7 +146,7 @@ def standardize(da):
         da["time"] = new_time_range
     try:
         da["time"] = da.indexes["time"].to_datetimeindex()
-    except (AttributeError, KeyError):
+    except (AttributeError, KeyError, ValueError):
         pass
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
