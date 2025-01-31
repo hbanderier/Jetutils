@@ -492,7 +492,7 @@ def find_all_jets(
 ):
     # process input
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * base_s_thresh / 5
+    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
     index_columns = get_index_columns(df)
     if thresholds is not None:
         thresholds = (
@@ -529,9 +529,9 @@ def find_all_jets(
     # smooth, compute sigma
     x_periodic = has_periodic_x(df)
     df = coarsen(df, {"lon": 1, "lat": 1})
-    df = smooth_in_space(df, 3)
+    df = smooth_in_space(df, 5)
     df = compute_sigma(df)
-    df = smooth_in_space(df, 3)
+    df = smooth_in_space(df, 5)
     df = df.with_columns(
         lon=round_polars("lon").cast(pl.Float32),
         lat=round_polars("lat").cast(pl.Float32),
@@ -590,6 +590,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     position_columns = [
         col for col in ["lon", "lat", "lev", "theta"] if col in df.columns
     ]
+    dl = lambda col: (pl.col(col).max() - pl.col(col).min())
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
@@ -601,29 +602,32 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
             for col in ["lon", "lat", "s"]
         ],
         *[
-            (pl.col(col).max() - pl.col(col).min()).alias(f"{col}_ext")
+            dl(col).alias(f"{col}_ext")
             for col in ["lon", "lat"]
         ],
-        pl.col("lat")
-        .least_squares.ols(pl.col("lon"), mode="coefficients", add_intercept=True)
-        .struct.field("lon")
-        .alias("tilt"),
+        (
+            pl.col("lat")
+            .least_squares.ols(pl.col("lon"), mode="coefficients", add_intercept=True)
+            .struct.field("lon")
+            .alias("tilt")    
+        ),
         (
             pl.col("lat")
             .least_squares.ols(pl.col("lon"), mode="residuals", add_intercept=True)
             .pow(2)
             .sum()
-            / (pl.col("lat") - pl.col("lat").mean()).pow(2).sum()
+            / dl("lon")
         ).alias("waviness1"),
         (pl.col("lat") - pl.col("lat").mean()).pow(2).sum().alias("waviness2"),
         (
             pl.col("lat").gather(pl.col("lon").arg_sort()).diff().abs().sum()
-            / (pl.col("lon").max() - pl.col("lon").min())
+            / dl("lon")
         ).alias("wavinessR16"),
         (
             jet_integral_haversine(pl.col("lon"), pl.col("lat"), x_is_one=True)
             / pl.lit(RADIUS)
-            * pl.col("lat").mean().radians().cos()
+            / pl.col("lat").mean().radians().cos()
+            / dl("lon")
         ).alias("wavinessDC16"),
         (
             ((pl.col("v") - pl.col("v").mean()) * pl.col("v").abs() / pl.col("s")).sum()
@@ -644,11 +648,12 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
         gb = df_lazy.group_by(index_columns, maintain_order=True)
         props_as_df = gb.agg(*aggregations)
         props_as_df = props_as_df.with_columns(
-            (
-                pl.col("tilt")
+            [
+                pl.col(col)
                 .replace([float("inf"), float("-inf")], None)
-                .clip(pl.col("tilt").quantile(0.001), pl.col("tilt").quantile(0.999))
-            )
+                .clip(pl.col(col).quantile(0.00001), pl.col(col).quantile(0.99999))
+                for col in ["tilt", "waviness1", "wavinessDC16"]
+            ]
         )
         return props_as_df.collect()
 
@@ -884,7 +889,6 @@ def one_gmix(
     n_components=2,
     init_params="random_from_data",
     n_init=20,
-    means_init: np.ndarray | None = None,
 ):
     # if "ratio" in X.columns:
     #     X = X.with_columns(ratio=pl.col("ratio").clip(0, 0.75))
@@ -894,7 +898,7 @@ def one_gmix(
     #     X = X.with_columns(ratio=pl.col("ratio").clip(0, 1.5))
     model = GaussianMixture(n_components=n_components, init_params=init_params, n_init=n_init)
     if "ratio" in X.columns:
-        X = X.with_columns(ratio=pl.col("ratio").fill_null(0))
+        X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
     model = model.fit(X)
     if X.columns[0] == "ratio":
         return model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
@@ -1615,7 +1619,7 @@ class JetFindingExperiment(object):
             return all_jets_one_df
         try:
             qs_path = self.path.joinpath("s_q.nc")
-            qs = xr.open_dataarray(qs_path).sel(quantile=0.65)
+            qs = xr.open_dataarray(qs_path).sel(quantile=0.75)
             kwargs["thresholds"] = qs.rename("s")
         except FileNotFoundError:
             pass

@@ -11,6 +11,7 @@ from xarray import DataArray, Dataset
 import polars as pl
 from contourpy import contour_generator
 from tqdm import tqdm, trange
+from string import ascii_lowercase
         
 import matplotlib as mpl
 from matplotlib import path as mpath
@@ -946,6 +947,7 @@ def plot_trends(
     ncols: int = 4,
     clear: bool = True,
     suffix: str = "",
+    numbering: bool = False,
 ):
     if clear:
         plt.ioff()
@@ -972,13 +974,18 @@ def plot_trends(
     )
     ncat = props_as_df["jet"].n_unique()
 
-    for i, (varname, ax) in enumerate(zip(data_vars, axes)):
+    for letter, varname, ax in zip(ascii_lowercase, data_vars, axes):
         dji = varname == "double_jet_index"
         if varname == "mean_lev":
             ax.invert_yaxis()
-        ax.set_title(
-            f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
-        )
+        if numbering:
+            ax.set_title(
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+            )
+        else:
+            ax.set_title(
+                f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+            )
 
         for j, jet in enumerate(["STJ", "EDJ"]):
             c1 = slopes[ncat * n_boostraps + j, varname]
@@ -1025,6 +1032,7 @@ def plot_seasonal(
     ncols: int = 4,
     clear: bool = True,
     suffix: str = "",
+    numbering: bool = False,
 ):
     if clear:
         plt.ioff()
@@ -1056,7 +1064,7 @@ def plot_seasonal(
         color_order = [2, 3, 1]
     else:
         color_order = [2, 1]
-    for varname, ax in zip(data_vars, axes.ravel()):
+    for letter, varname, ax in zip(ascii_lowercase, data_vars, axes.ravel()):
         dji = varname == "double_jet_index"
         ys = means[varname].to_numpy().reshape(366, njets)
         qs = np.stack(
@@ -1076,9 +1084,14 @@ def plot_seasonal(
             ax.plot(x, ys[:, i], lw=3, color=color, label=jets[i], zorder=10)
             if dji:
                 break
-        ax.set_title(
-            f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
-        )
+        if numbering:
+            ax.set_title(
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+            )
+        else:
+            ax.set_title(
+                f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+            )
         ax.xaxis.set_major_locator(MonthLocator(range(0, 13, 3)))
         ax.xaxis.set_major_formatter(DateFormatter("%b"))
         ax.set_xlim(min(x), max(x))
