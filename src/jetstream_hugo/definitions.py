@@ -15,7 +15,6 @@ from dask.diagnostics import ProgressBar  # if no client
 from dask.distributed import progress     # if client
 
 np.set_printoptions(precision=5, suppress=True)
-os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
 
 pf = platform.platform()
 if pf.find("cray") >= 0:
@@ -32,6 +31,7 @@ elif (pf.find("el7") >= 0) or (pf.find("el9") >= 0):  # find better later
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
+    os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "150000")) // N_WORKERS
     MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
