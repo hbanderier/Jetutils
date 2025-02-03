@@ -143,10 +143,10 @@ def num2tex(x: float, force: bool = False, ncomma: int = 1) -> str:
 def p_to_tex(c1: float, c0: float, no_intercept: bool=True) -> str:
     coef1 = num2tex(c1)
     if no_intercept:
-        return f"$y\sim {coef1}\cdot x$"
+        return rf"$y\sim {coef1}\cdot x$"
     coef0 = num2tex(c0)
     sign = "+" if np.sign(c0) else "-"
-    return f"$y={coef1}\cdot x {sign} {coef0}$"
+    return rf"$y={coef1}\cdot x {sign} {coef0}$"
 
 def make_boundary_path(
     minlon: float, maxlon: float, minlat: float, maxlat: float, n: int = 50
