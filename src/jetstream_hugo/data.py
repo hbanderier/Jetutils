@@ -131,11 +131,18 @@ def standardize(da):
         "PRECL": "tp",
         "Z3": "z",
     }
-    for key, value in standard_dict.items():
-        if key in da:
-            da = da.rename({key: value})
-        else:
-            pass
+    if isinstance(da, xr.Dataset):
+        for key, value in standard_dict.items():
+            if key in da:
+                da = da.rename({key: value})
+            else:
+                pass
+    elif isinstance(da, xr.DataArray):
+        for key, value in standard_dict.items():
+            if key in da.coords:
+                da = da.rename({key: value})
+            else:
+                pass
     for to_del in ["number", "expver"]:
         try:
             da = da.reset_coords(to_del, drop=True)

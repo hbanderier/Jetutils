@@ -705,9 +705,8 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str = "s
     return s_interp
 
 
-def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
-    dn = 1
-    ns_df = pl.Series("n", np.delete(np.arange(-12, 12 + dn, dn), 12)).to_frame()
+def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: float = 12., dn: float = 1.) -> pl.DataFrame:
+    ns_df = pl.Series("n", np.delete(np.arange(-half_length, half_length + dn, dn), int(half_length // dn))).to_frame()
 
     # Expr angle
     angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
@@ -716,45 +715,10 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     normallon = pl.col("lon") + pl.col("angle").cos() * pl.col("n")
     normallat = pl.col("lat") + pl.col("angle").sin() * pl.col("n")
 
-    # Expr half_width
-    below = pl.col("s_interp") <= pl.max_horizontal(pl.col("s") / 4 * 3, pl.lit(25))
-    stop_up = below.arg_max()
-    nlo_up = pl.col("normallon").gather(stop_up)
-    nla_up = pl.col("normallat").gather(stop_up)
-    half_width_up = haversine(
-        nlo_up, nla_up, pl.col("lon").get(0), pl.col("lat").get(0)
-    ).cast(pl.Float32)
-
-    stop_down = below.len() - below.reverse().arg_max() - 1
-    nlo_down = pl.col("normallon").gather(stop_down)
-    nla_down = pl.col("normallat").gather(stop_down)
-    half_width_down = haversine(
-        nlo_down, nla_down, pl.col("lon").get(0), pl.col("lat").get(0)
-    ).cast(pl.Float32)
-
-    half_width = (
-        pl.when(pl.col("side") == -1)
-        .then(pl.col("half_width_down"))
-        .otherwise(pl.col("half_width_up"))
-        .list.first()
-    )
-
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
     )
-    agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
 
-    first_agg_out = agg_out | {
-        "half_width_up": half_width_up,
-        "half_width_down": half_width_down,
-    }
-    second_agg_out = agg_out | {"half_width": pl.col("half_width").sum()}
-    third_agg_out = agg_out | {
-        "width": (pl.col("half_width") * pl.col("s")).sum() / pl.col("s").sum()
-    }
-
-    da_df = xarray_to_polars(da)
-    da_df = da_df.drop([ic for ic in index_columns if ic in da_df.columns])
     jets = jets[[*index_columns, "lon", "lat", "u", "v", "s"]]
 
     jets = jets.with_columns(
@@ -777,15 +741,65 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
             "normallat",
         ]
     ]
+    
+    da = da.sel(lon=slice(jets["normallon"].min(), jets["normallon"].max()), lat=slice(jets["normallat"].min(), jets["normallat"].max()))
+    da = da.sel(time=np.isin(da.time.values, jets["time"].unique().to_numpy()))
+    da_df = xarray_to_polars(da)
+    da_df = da_df.drop([ic for ic in index_columns if ic in da_df.columns])
+    
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
         pl.col("normallon") <= da_df["lon"].max(),
         pl.col("normallat") >= da_df["lat"].min(),
         pl.col("normallat") <= da_df["lat"].max(),
     )
-
-    jets = jets.with_columns(s_interp=interp_from_other(jets, da_df, "s"))
+    varname = da.name
+    jets = jets.with_columns(**{f"{varname}_interp": interp_from_other(jets, da_df, varname)})
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
+    return jets
+
+
+def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
+    jets = gather_normal_da_jets(jets, da, 12., 1.)
+    
+    index_columns = get_index_columns(
+        jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
+    )
+    
+    # Expr half_width
+    below = pl.col("s_interp") <= pl.max_horizontal(pl.col("s") / 4 * 3, pl.lit(25))
+    stop_up = below.arg_max()
+    nlo_up = pl.col("normallon").gather(stop_up)
+    nla_up = pl.col("normallat").gather(stop_up)
+    half_width_up = haversine(
+        nlo_up, nla_up, pl.col("lon").get(0), pl.col("lat").get(0)
+    ).cast(pl.Float32)
+
+    stop_down = below.len() - below.reverse().arg_max() - 1
+    nlo_down = pl.col("normallon").gather(stop_down)
+    nla_down = pl.col("normallat").gather(stop_down)
+    
+    agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
+    
+    half_width_down = haversine(
+        nlo_down, nla_down, pl.col("lon").get(0), pl.col("lat").get(0)
+    ).cast(pl.Float32)
+
+    half_width = (
+        pl.when(pl.col("side") == -1)
+        .then(pl.col("half_width_down"))
+        .otherwise(pl.col("half_width_up"))
+        .list.first()
+    )
+
+    first_agg_out = agg_out | {
+        "half_width_up": half_width_up,
+        "half_width_down": half_width_down,
+    }
+    second_agg_out = agg_out | {"half_width": pl.col("half_width").sum()}
+    third_agg_out = agg_out | {
+        "width": (pl.col("half_width") * pl.col("s")).sum() / pl.col("s").sum()
+    }
 
     jets = jets.group_by([*index_columns, "index", "side"], maintain_order=True).agg(
         **first_agg_out
