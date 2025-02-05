@@ -151,10 +151,10 @@ def standardize(da):
     if da["time"].dt.year[0] < 1800:
         new_time_range = pd.date_range("19590101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
         da["time"] = new_time_range
-    try:
-        da["time"] = da.indexes["time"].to_datetimeindex()
-    except (AttributeError, KeyError, ValueError):
-        pass
+    # try:
+    #     da["time"] = da.indexes["time"].to_datetimeindex()
+    # except (AttributeError, KeyError, ValueError):
+    #     pass
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")
@@ -162,11 +162,15 @@ def standardize(da):
         da = da.reindex(lat=da.lat[::-1])
     if isinstance(da, xr.Dataset):
         for var in da.data_vars:
+            if "chunksizes" in da[var].encoding:
+                da[var] = da[var].chunk(da[var].encoding["chunksizes"])
             if da[var].chunks is None and da[var].dtype == np.float64:
                 da[var] = da[var].astype(np.float32)
             if da[var].chunks is None and da[var].dtype == np.int64:
                 da[var] = da[var].astype(np.int32)
     else:
+        if "chunksizes" in da.encoding:
+            da = da.chunk(da.encoding["chunksizes"])
         if da.chunks is None and da.dtype == np.float64:
             da = da.astype(np.float32)
         if da.chunks is None and da.dtype == np.int64:
