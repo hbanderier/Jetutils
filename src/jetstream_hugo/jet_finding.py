@@ -706,6 +706,7 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str = "s
 
 
 def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: float = 12., dn: float = 1.) -> pl.DataFrame:
+    is_polar = ["is_polar"] if "is_polar" in jets.columns else []
     ns_df = pl.Series("n", np.delete(np.arange(-half_length, half_length + dn, dn), int(half_length // dn))).to_frame()
 
     # Expr angle
@@ -719,7 +720,7 @@ def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: flo
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
     )
 
-    jets = jets[[*index_columns, "lon", "lat", "u", "v", "s"]]
+    jets = jets[[*index_columns, "lon", "lat", "u", "v", "s", *is_polar]]
 
     jets = jets.with_columns(
         jets.group_by(index_columns, maintain_order=True)
@@ -739,6 +740,7 @@ def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: flo
             "n",
             "normallon",
             "normallat",
+            *is_polar,
         ]
     ]
     

@@ -151,10 +151,6 @@ def standardize(da):
     if da["time"].dt.year[0] < 1800:
         new_time_range = pd.date_range("19590101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
         da["time"] = new_time_range
-    # try:
-    #     da["time"] = da.indexes["time"].to_datetimeindex()
-    # except (AttributeError, KeyError, ValueError):
-    #     pass
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")
@@ -162,18 +158,23 @@ def standardize(da):
         da = da.reindex(lat=da.lat[::-1])
     if isinstance(da, xr.Dataset):
         for var in da.data_vars:
-            if "chunksizes" in da[var].encoding:
-                da[var] = da[var].chunk(da[var].encoding["chunksizes"])
-            if da[var].chunks is None and da[var].dtype == np.float64:
+            if "chunksizes" in da[var].encoding and da[var].chunks is None:
+                chunks = da.encoding["chunksizes"]
+                chunks = chunks if chunks is not None else "auto"
+                da = da.chunk(da.encoding["chunksizes"])
+                da[var] = da[var].chunk(chunks)
+            if da[var].dtype == np.float64:
                 da[var] = da[var].astype(np.float32)
-            if da[var].chunks is None and da[var].dtype == np.int64:
+            elif da[var].dtype == np.int64:
                 da[var] = da[var].astype(np.int32)
     else:
-        if "chunksizes" in da.encoding:
-            da = da.chunk(da.encoding["chunksizes"])
-        if da.chunks is None and da.dtype == np.float64:
+        if "chunksizes" in da.encoding and da.chunks is None:
+            chunks = da.encoding["chunksizes"]
+            chunks = chunks if chunks is not None else "auto"
+            da = da.chunk(chunks)
+        if da.dtype == np.float64:
             da = da.astype(np.float32)
-        if da.chunks is None and da.dtype == np.int64:
+        elif da.dtype == np.int64:
             da = da.astype(np.int32)
     return da.unify_chunks()
 
@@ -217,11 +218,11 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     da.attrs["orig_lev"] = levels
     if not any([isinstance(level, tuple) for level in levels]):
         try:
-            da = da.isel(lev=levels).squeeze()
+            da = da.isel(lev=levels)
         except (ValueError, IndexError):
-            da = da.sel(lev=levels).squeeze()
-        if isinstance(da.lev.item(), int) or (isinstance(da.lev.item(), Sequence) and da.lev.shape[0] <= 1):
-            return da.reset_coords("lev", drop=True).squeeze()
+            da = da.sel(lev=levels)
+        if len(levels) == 1 or da.lev.values.size <= 1:
+            return da.squeeze().reset_coords("lev", drop=True)
         return da
 
     newcoords = {dim: da.coords[dim] for dim in ["time", "lat", "lon"]}
@@ -296,7 +297,7 @@ def extract(
     if "member" in da.dims and members != "all":
         try:
             da = da.isel(member=members)
-        except ValueError:
+        except (ValueError, TypeError):
             da = da.sel(member=members)
     
     da = extract_region(da, minlon, maxlon, minlat, maxlat)
