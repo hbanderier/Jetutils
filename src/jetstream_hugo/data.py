@@ -159,9 +159,8 @@ def standardize(da):
     if isinstance(da, xr.Dataset):
         for var in da.data_vars:
             if "chunksizes" in da[var].encoding and da[var].chunks is None:
-                chunks = da.encoding["chunksizes"]
+                chunks = da[var].encoding["chunksizes"]
                 chunks = chunks if chunks is not None else "auto"
-                da = da.chunk(da.encoding["chunksizes"])
                 da[var] = da[var].chunk(chunks)
             if da[var].dtype == np.float64:
                 da[var] = da[var].astype(np.float32)
