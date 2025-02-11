@@ -127,6 +127,7 @@ def standardize(da):
         "v_component_of_wind": "v",
         "m01s30i202_3": "v",
         "T": "t",
+        "t2m": "t",
         "m01s30i204_3": "t",
         "pt": "theta",
         "PRECL": "tp",
@@ -337,8 +338,7 @@ def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> 
     else:
         da = xr.open_dataset(filename, chunks="auto")
         da = da.unify_chunks()
-    if "expver" in da.dims:
-        da = da.sel(expver=1).reset_coords("expver", drop=True)
+    da = standardize(da)
     if varname is None or len(da.data_vars) > 1:
         return da
     try:
@@ -599,7 +599,7 @@ def compute_anom(
     if not normalized:
         anom = this_gb - clim
     else:
-        variab = da.groupby(coord).std()
+        variab = anom.groupby(coord).std()
         anom = ((this_gb - clim).groupby(coord) / variab).reset_coords(
             "hourofyear", drop=True
         )
