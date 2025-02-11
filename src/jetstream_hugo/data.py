@@ -318,8 +318,12 @@ def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> 
     if isinstance(filename, list):
         da = []
         for fn in filename:
-            da_ = xr.open_dataset(fn, chunks="auto")
             stem = Path(fn).stem
+            try:
+                int(stem)
+            except ValueError: # exceptions are raised by clim.nc, which we do not want anyways
+                continue
+            da_ = xr.open_dataset(fn, chunks="auto")
             if len(stem) == 6:
                 yearmask = da_.time.dt.year.values == int(stem[:4])
                 monthmask = da_.time.dt.month.values == int(stem[4:])
@@ -350,7 +354,10 @@ def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> 
 def determine_period(path: Path):
     yearlist = []
     for f in path.glob("*.nc"):
-        yearlist.append(int(f.stem[:4]))
+        try:
+            yearlist.append(int(f.stem[:4]))
+        except ValueError: # exceptions are raised by clim.nc, which we do not want anyways
+            continue
     return np.unique(yearlist).tolist()
 
 

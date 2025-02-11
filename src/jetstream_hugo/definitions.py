@@ -30,7 +30,8 @@ elif Path("/gws/nopw/j04/aopp").is_dir():
     NODE = "JASMIN"
     DATADIR = "/gws/nopw/j04/aopp/hbanderi/data"
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = "4GiB"
+    MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "60000")) // N_WORKERS
+    MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
 elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"

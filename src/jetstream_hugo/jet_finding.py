@@ -1634,7 +1634,7 @@ class JetFindingExperiment(object):
             return all_jets_one_df
         try:
             qs_path = self.path.joinpath("s_q.nc")
-            qs = xr.open_dataarray(qs_path).sel(quantile=0.75)
+            qs = xr.open_dataarray(qs_path).sel(quantile=0.7)
             kwargs["thresholds"] = qs.rename("s")
         except FileNotFoundError:
             pass
@@ -1642,7 +1642,7 @@ class JetFindingExperiment(object):
             print(f"Using thresholds at {qs_path}")
 
         all_jets_one_df = []
-        several_years = 20 if "member" not in self.metadata else 5
+        several_years = 5 if "member" not in self.metadata else 2
         iterator = iterate_over_year_maybe_member(
             da=self.ds, several_years=several_years
         )

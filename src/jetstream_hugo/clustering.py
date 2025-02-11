@@ -408,7 +408,7 @@ class Experiment(object):
         if output_file.is_file():
             return net, centers, xr.open_dataarray(output_file)
         other_da = other_exp.da
-        _, da_weighted = self.prepare_for_clustering()
+        X, da_weighted = self.prepare_for_clustering()
                 
         if "n_pcas" in kwargs and kwargs["n_pcas"]:
             X = self.pca_transform(X, kwargs["n_pcas"])
