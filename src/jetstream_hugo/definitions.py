@@ -16,18 +16,22 @@ from dask.distributed import progress     # if client
 
 np.set_printoptions(precision=5, suppress=True)
 
-pf = platform.platform()
-if pf.find("cray") >= 0:
+if Path("/scratch/snx3000").is_dir():
     NODE = "DAINT"
     DATADIR = "/scratch/snx3000/hbanderi/data/persistent"
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = "8GiB"
-elif platform.node()[:4] == "clim":
+elif Path("/scratch2/hugo").is_dir():
     NODE = "CLIM"
     DATADIR = "/scratch2/hugo"
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = "4GiB"
-elif (pf.find("el7") >= 0) or (pf.find("el9") >= 0):  # find better later
+elif Path("/gws/nopw/j04/aopp").is_dir():
+    NODE = "JASMIN"
+    DATADIR = "/gws/nopw/j04/aopp/hbanderi/data"
+    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
+    MEMORY_LIMIT = "4GiB"
+elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"

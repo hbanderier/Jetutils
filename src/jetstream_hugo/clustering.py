@@ -119,7 +119,7 @@ def labels_to_centers(
         unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(np.prod(labels.shape))
     dims = list(determine_sample_dims(da))
-    extra_dims = [coord for coord in da.coords if coord not in da.dims]
+    extra_dims = [coord for coord in da.coords if (coord not in da.dims) and ("time" in da[coord].dims)]
     centers = [
         compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
     ]
