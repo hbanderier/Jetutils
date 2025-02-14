@@ -1,7 +1,8 @@
-from typing import Union, Tuple, Mapping, Literal, Callable, Sequence
+from typing import Tuple, Mapping, Literal, Callable, Sequence
 from functools import partial
-from itertools import combinations, product
-from multiprocessing import Pool
+from itertools import product
+from multiprocessing import get_context
+from multiprocessing import set_start_method as set_mp_start_method
 from pathlib import Path
 import warnings
 import datetime
@@ -31,7 +32,6 @@ from shap import TreeExplainer, Explainer
 from jetstream_hugo.definitions import (
     DEFAULT_VALUES,
     YEARS,
-    COMPUTE_KWARGS,
     N_WORKERS,
     RESULTS,
     compute,
@@ -48,9 +48,10 @@ from jetstream_hugo.data import (
     get_land_mask,
     extract_season,
     DataHandler,
-    SEASONS,
     compute_anomalies_ds,
 )
+
+set_mp_start_method("spawn", force=True) 
 
 
 def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
@@ -70,10 +71,10 @@ ALL_SCORES = {
 }
 
 
-def spells_from_da(
+def spells_from_da( # TODO: Polarize
     da: xr.DataArray,
     q: float = 0.95,
-    fill_holes: int = 0,
+    fill_holes: int = 2,
     minlen: np.timedelta64 = np.timedelta64(3, "D"),
     time_before: np.timedelta64 = np.timedelta64(0, "D"),
     time_after: np.timedelta64 = np.timedelta64(0, "D"),
@@ -227,7 +228,7 @@ def get_persistent_jet_spells(props_as_df, metric: Literal["persistence", "com_s
     return out
 
 
-def mask_from_spells_pl(spells: pl.DataFrame, to_mask: xr.DataArray | xr.Dataset | pl.DataFrame, force_pl: bool = False):
+def mask_from_spells_pl(spells: pl.DataFrame, to_mask: xr.DataArray | xr.Dataset | pl.DataFrame, force_pl: bool = False): # TODO: add time_before
     unique_times_spells = spells["time"].unique().to_numpy()
     unique_times_to_mask = np.unique(to_mask["time"].to_numpy())
     unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask) 
@@ -356,9 +357,10 @@ def _add_timescales(predictors, timescales: Sequence, indexer: Mapping):
     return predictors
 
 
-def add_timescales_to_predictors(
+def add_timescales_to_predictors( 
     predictors, timescales: Sequence, yearbreak: bool = True
 ):
+    # TODO: polarize with .join
     if 1 not in timescales:
         timescales.append(1)
     timescales.sort()
@@ -376,14 +378,15 @@ def add_timescales_to_predictors(
     return predictors
 
 
-def _add_lags(predictors, lags: Sequence, indexer: Mapping):
+def _add_lags(predictors, lags: Sequence, indexer: Mapping): 
     for lag in lags[1:]:
         indexer["lag"] = lag
         predictors.loc[indexer] = predictors.loc[indexer].shift(time=lag)
     return predictors
 
 
-def add_lags_to_predictors(predictors, lags: Sequence, yearbreak: bool = True):
+def add_lags_to_predictors(predictors, lags: Sequence, yearbreak: bool = True): 
+    # TODO: polarize with group_by + shift
     if 0 not in lags:
         lags.append(0)
     lags.sort()
@@ -559,7 +562,8 @@ def compute_all_responses(
     shape = [len(c) for c in coords.values()]
     corr_da = xr.DataArray(np.zeros(shape), coords=coords)
     triplets = create_all_triplets(predictors, targets, lags)
-    with Pool(processes=N_WORKERS) as pool:
+    ctx = get_context("spawn")
+    with ctx.Pool(processes=N_WORKERS) as pool:
         all_r = list(
             tqdm(
                 pool.imap(compute_r, triplets, chunksize=1),
@@ -727,15 +731,15 @@ def predict_all(
             if "class_weight" not in kwargs and type_ == "lr":
                 kwargs["class_weight"] = "balanced"
             if type_ == "lr":
-                model = LogisticRegression(n_jobs=N_WORKERS, **kwargs).fit(
+                model = LogisticRegression(n_jobs=1, **kwargs).fit(
                     X_train, y_train
                 )
             elif type_ == "rf":
-                model = RandomForestClassifier(n_jobs=N_WORKERS, **kwargs).fit(
+                model = RandomForestClassifier(n_jobs=1, **kwargs).fit(
                     X_train, y_train
                 )
             elif type_ == "xgb":
-                model = XGBClassifier(n_jobs=N_WORKERS, **kwargs).fit(
+                model = XGBClassifier(n_jobs=1, **kwargs).fit(
                     X_train, y_train
                 )
             y_pred = model.predict(X_test)
@@ -743,11 +747,11 @@ def predict_all(
             full_pred.loc[indexer] = model.predict_proba(X)[:, 1]
         else:
             if type_ == "rf":
-                model = RandomForestRegressor(n_jobs=N_WORKERS, **kwargs).fit(
+                model = RandomForestRegressor(n_jobs=1, **kwargs).fit(
                     X_train, y_train
                 )
             elif type_ == "xgb":
-                model = XGBRegressor(n_jobs=N_WORKERS, **kwargs).fit(
+                model = XGBRegressor(n_jobs=1, **kwargs).fit(
                     X_train, y_train
                 )
             y_pred_prob = model.predict(X_test) + y_base_test
@@ -776,7 +780,7 @@ def predict_all(
         feature_importances.loc[dict(type=importance_type, **indexer)] = imp
         # 3. Permutation importance
         r = permutation_importance(
-            model, X_test, y_test, n_repeats=30, random_state=0, n_jobs=N_WORKERS
+            model, X_test, y_test, n_repeats=30, random_state=0, n_jobs=1
         )
         feature_importances.loc[dict(type="permutation", **indexer)] = r[
             "importances_mean"
@@ -792,7 +796,7 @@ def predict_all(
                 mybooster.save_raw = myfun
 
             shap_explainer = TreeExplainer if type_ == "rf" else Explainer
-            shap_ = shap_explainer(model, n_jobs=N_WORKERS)(X, y, check_additivity=False)
+            shap_ = shap_explainer(model)(X, y, check_additivity=False)
             raw_shap[indexer_str] = shap_
             shap_values = shap_.values
             feature_importances.loc[dict(type="mean_shap", **indexer)] = (
