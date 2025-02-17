@@ -1,6 +1,5 @@
-from typing import Sequence, Tuple, Literal, Mapping, Optional, Callable
+from typing import Tuple, Mapping
 
-from matplotlib.pylab import norm
 import logging
 from pathlib import Path
 
@@ -8,13 +7,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from tqdm import tqdm
-from dask.diagnostics import ProgressBar
-from dask.array import Array as DaArray, from_array
+from dask.array import Array as DaArray
 import scipy.linalg as linalg
 from scipy.optimize import minimize
 
-from dask_ml.decomposition import PCA as da_PCA
-from dask_ml.cluster import KMeans as da_KMeans
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 # from simpsom import SOMNet
@@ -24,7 +20,6 @@ from jetstream_hugo.definitions import (
     coarsen_da,
     save_pickle,
     load_pickle,
-    COMPUTE_KWARGS,
     degcos,
     labels_to_mask,
     normalize,
@@ -156,7 +151,7 @@ class Experiment(object):
         self.da = compute(self.da, **kwargs)
 
     def get_norm_da(self):
-        norm_path = self.path.joinpath(f"norm.nc")
+        norm_path = self.path.joinpath("norm.nc")
         if norm_path.is_file():
             return xr.open_dataarray(norm_path)
 
@@ -248,7 +243,7 @@ class Experiment(object):
                 centers, n_pcas_tentative, compute=True
             )
         centers = centers_realspace(centers, feature_dims, extra_dims)
-        norm_path = self.path.joinpath(f"norm.nc")
+        norm_path = self.path.joinpath("norm.nc")
         norm_da = xr.open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:
             norm_da = norm_da.mean(dim="time")
@@ -534,7 +529,7 @@ class Experiment(object):
         return_realspace: bool = False,
     ) -> Tuple[Path, dict]:
         if type_ not in [1, 2]:
-            raise ValueError(f"Wrong OPP type, pick 1 or 2")
+            raise ValueError("Wrong OPP type, pick 1 or 2")
         X, _ = self.prepare_for_clustering()
         if n_pcas:
             X = self.pca_transform(X, n_pcas)

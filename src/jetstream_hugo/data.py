@@ -1,7 +1,7 @@
 import warnings
 from os.path import commonpath
 
-from typing import Union, Optional, Mapping, Sequence, Tuple, Literal
+from typing import Optional, Mapping, Sequence, Tuple, Literal
 from itertools import product
 from pathlib import Path
 
@@ -16,7 +16,6 @@ from jetstream_hugo.definitions import (
     DEFAULT_VARNAME,
     DATADIR,
     YEARS,
-    COMPUTE_KWARGS,
     SEASONS,
     get_region,
     save_pickle,
@@ -672,7 +671,7 @@ def compute_all_smoothed_anomalies(
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
-        anom = standardize(xr.open_dataarray(source))
+        anom = _open_dataarray(source)
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)

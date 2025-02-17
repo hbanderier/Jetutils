@@ -1,6 +1,4 @@
 from itertools import product
-from pathlib import Path
-from sys import stderr
 from datetime import timedelta
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
 from multiprocessing import Pool, current_process, get_context
@@ -8,25 +6,21 @@ from multiprocessing import Pool, current_process, get_context
 import numpy as np
 import polars as pl
 from polars.exceptions import ColumnNotFoundError
-import polars_ols as pls
 import xarray as xr
 from contourpy import contour_generator
-from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
+from sklearn.mixture import GaussianMixture
 from tqdm import tqdm, trange
 import dask
 
 from jetstream_hugo.definitions import (
     N_WORKERS,
     RADIUS,
-    YEARS,
-    normalize,
     compute,
     xarray_to_polars,
     get_index_columns,
     extract_season_from_df,
 )
 from jetstream_hugo.data import (
-    SEASONS,
     compute_extreme_climatology,
     DataHandler,
     open_da,
@@ -589,7 +583,8 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     position_columns = [
         col for col in ["lon", "lat", "lev", "theta"] if col in df.columns
     ]
-    dl = lambda col: (pl.col(col).max() - pl.col(col).min())
+    def dl(col):
+        (pl.col(col).max() - pl.col(col).min())
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")

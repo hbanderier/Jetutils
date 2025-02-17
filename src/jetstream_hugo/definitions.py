@@ -1,5 +1,4 @@
 import os
-import platform
 import pickle as pkl
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, Optional, Sequence
@@ -215,10 +214,11 @@ def load_pickle(filename: str | Path) -> Any:
 
 
 def to_zero_one(X):
+    def expr(col):
+        return (pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())
     if isinstance(X, pl.DataFrame):
         Xmin = X.min()
         Xmax = X.max()
-        expr = lambda col: (pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())
         X = X.with_columns(expr(col) for col in X.columns)
         return X, Xmin, Xmax
     Xmin = np.nanmin(X, axis=0)
@@ -231,8 +231,9 @@ def to_zero_one(X):
 
 
 def revert_zero_one(X, Xmin, Xmax):
+    def expr(col):
+        return Xmin[0, col] + (Xmax[0, col] - Xmin[0, col]) * pl.col(col)
     if isinstance(X, pl.DataFrame):
-        expr = lambda col: Xmin[0, col] + (Xmax[0, col] - Xmin[0, col]) * pl.col(col)
         X = X.with_columns(expr(col).alias(col) for col in X.columns)
         return X
     try:
@@ -243,10 +244,11 @@ def revert_zero_one(X, Xmin, Xmax):
 
 
 def normalize(X):
+    def expr(col):
+        return (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
     if isinstance(X, pl.DataFrame):
         meanX = X.mean()
         stdX = X.std()
-        expr = lambda col: (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
         X = X.with_columns(expr(col) for col in X.columns)
         return X, meanX, stdX
     meanX = X.mean(axis=0)
@@ -259,8 +261,9 @@ def normalize(X):
 
 
 def revert_normalize(X, meanX, stdX):
+    def expr(col):
+        return meanX[0, col] + stdX[0, col] * pl.col(col)
     if isinstance(X, pl.DataFrame):
-        expr = lambda col: meanX[0, col] + stdX[0, col] * pl.col(col)
         X = X.with_columns(expr(col).alias(col) for col in X.columns)
         return X
     try:
@@ -495,14 +498,14 @@ class Timer:
     def start(self) -> None:
         """Start a new timer"""
         if self._start_time is not None:
-            raise TimerError(f"Timer is running. Use .stop() to stop it")
+            raise TimerError("Timer is running. Use .stop() to stop it")
 
         self._start_time = time.perf_counter()
 
     def stop(self) -> float:
         """Stop the timer, and report the elapsed time"""
         if self._start_time is None:
-            raise TimerError(f"Timer is not running. Use .start() to start it")
+            raise TimerError("Timer is not running. Use .start() to start it")
 
         # Calculate elapsed time
         elapsed_time = time.perf_counter() - self._start_time

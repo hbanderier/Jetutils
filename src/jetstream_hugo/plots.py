@@ -1,13 +1,12 @@
 from itertools import product
-from typing import Any, Mapping, Sequence, Tuple, Union, Iterable, Callable
+from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor
 
 import numpy as np
 from scipy.stats import gaussian_kde
 from scipy.interpolate import LinearNDInterpolator
-from scipy.ndimage import center_of_mass
 import xarray as xr
-from xarray import DataArray, Dataset
+from xarray import DataArray
 import polars as pl
 from contourpy import contour_generator
 from tqdm import tqdm, trange
@@ -19,13 +18,10 @@ from matplotlib import pyplot as plt
 from matplotlib import ticker as mticker
 from matplotlib.patches import PathPatch
 from matplotlib.figure import Figure
-from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
-from matplotlib.colorbar import Colorbar
 from matplotlib.colors import (
     BoundaryNorm,
     Colormap,
-    Normalize,
     ListedColormap,
     LinearSegmentedColormap,
     to_rgb,
@@ -33,7 +29,6 @@ from matplotlib.colors import (
     rgb_to_hsv,
     hsv_to_rgb,
 )
-from matplotlib.container import BarContainer
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 from matplotlib.dates import MonthLocator, DateFormatter
@@ -43,7 +38,6 @@ import cartopy.feature as feat
 from IPython.display import clear_output
 
 from jetstream_hugo.definitions import (
-    DATADIR,
     FIGURES,
     PRETTIER_VARNAME,
     UNITS,
@@ -51,7 +45,7 @@ from jetstream_hugo.definitions import (
     JJADOYS,
     infer_direction
 )
-from jetstream_hugo.stats import field_significance, field_significance_v2
+from jetstream_hugo.stats import field_significance
 from jetstream_hugo.data import periodic_rolling_pl
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377

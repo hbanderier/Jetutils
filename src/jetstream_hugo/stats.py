@@ -5,7 +5,6 @@ from multiprocessing import Pool
 import pickle as pkl
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from scipy.stats import norm
 from jetstream_hugo.definitions import N_WORKERS, infer_direction
@@ -46,8 +45,6 @@ def Hurst_exponent(path: Path, subdivs: int = 11) -> Path:
     ds = xr.open_dataset(path)
     subdivs = [2**n for n in range(11)]
     lengths = [len(ds.time) // n for n in subdivs]
-    all_lengths = np.repeat(lengths, subdivs)
-    N_chunks = np.sum(subdivs)
     Hurst = {}
     for i, varname in enumerate(ds.data_vars):
         adjusted_ranges = []

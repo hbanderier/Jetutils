@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-import xrft
 from tqdm.notebook import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
@@ -430,9 +429,9 @@ def prepare_predictors(
 
     if detrend:
         for varname in predictors.data_vars:
-            predictors[varname] = xrft.detrend(
-                predictors[varname], dim="time", detrend_type="linear"
-            )
+            p = predictors[varname].polyfit(dim="time", deg=1)
+            fit = xr.polyval("time", p.polyfit_coefficients)
+            predictors[varname] = predictors[varname] - fit
 
     predictors = predictors.to_array(dim="varname", name="predictors")
     yearbreak = np.all(
