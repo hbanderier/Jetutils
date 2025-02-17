@@ -583,8 +583,10 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     position_columns = [
         col for col in ["lon", "lat", "lev", "theta"] if col in df.columns
     ]
+
     def dl(col):
         (pl.col(col).max() - pl.col(col).min())
+
     aggregations = [
         *[
             ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
@@ -595,15 +597,12 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
             pl.col(col).get(pl.col("s").arg_max()).alias(f"{col}_star")
             for col in ["lon", "lat", "s"]
         ],
-        *[
-            dl(col).alias(f"{col}_ext")
-            for col in ["lon", "lat"]
-        ],
+        *[dl(col).alias(f"{col}_ext") for col in ["lon", "lat"]],
         (
             pl.col("lat")
             .least_squares.ols(pl.col("lon"), mode="coefficients", add_intercept=True)
             .struct.field("lon")
-            .alias("tilt")    
+            .alias("tilt")
         ),
         (
             pl.col("lat")
@@ -700,9 +699,16 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str = "s
     return s_interp
 
 
-def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: float = 12., dn: float = 1.) -> pl.DataFrame:
+def gather_normal_da_jets(
+    jets: pl.DataFrame, da: xr.DataArray, half_length: float = 12.0, dn: float = 1.0
+) -> pl.DataFrame:
     is_polar = ["is_polar"] if "is_polar" in jets.columns else []
-    ns_df = pl.Series("n", np.delete(np.arange(-half_length, half_length + dn, dn), int(half_length // dn))).to_frame()
+    ns_df = pl.Series(
+        "n",
+        np.delete(
+            np.arange(-half_length, half_length + dn, dn), int(half_length // dn)
+        ),
+    ).to_frame()
 
     # Expr angle
     angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
@@ -738,12 +744,15 @@ def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: flo
             *is_polar,
         ]
     ]
-    
-    da = da.sel(lon=slice(jets["normallon"].min(), jets["normallon"].max()), lat=slice(jets["normallat"].min(), jets["normallat"].max()))
+
+    da = da.sel(
+        lon=slice(jets["normallon"].min(), jets["normallon"].max()),
+        lat=slice(jets["normallat"].min(), jets["normallat"].max()),
+    )
     da = da.sel(time=np.isin(da.time.values, jets["time"].unique().to_numpy()))
     da_df = xarray_to_polars(da)
     da_df = da_df.drop([ic for ic in index_columns if ic in da_df.columns])
-    
+
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
         pl.col("normallon") <= da_df["lon"].max(),
@@ -751,18 +760,20 @@ def gather_normal_da_jets(jets: pl.DataFrame, da: xr.DataArray, half_length: flo
         pl.col("normallat") <= da_df["lat"].max(),
     )
     varname = da.name
-    jets = jets.with_columns(**{f"{varname}_interp": interp_from_other(jets, da_df, varname)})
+    jets = jets.with_columns(
+        **{f"{varname}_interp": interp_from_other(jets, da_df, varname)}
+    )
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
     return jets
 
 
 def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
-    jets = gather_normal_da_jets(jets, da, 12., 1.)
-    
+    jets = gather_normal_da_jets(jets, da, 12.0, 1.0)
+
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
     )
-    
+
     # Expr half_width
     below = pl.col("s_interp") <= pl.max_horizontal(pl.col("s") / 4 * 3, pl.lit(25))
     stop_up = below.arg_max()
@@ -775,9 +786,9 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     stop_down = below.len() - below.reverse().arg_max() - 1
     nlo_down = pl.col("normallon").gather(stop_down)
     nla_down = pl.col("normallat").gather(stop_down)
-    
+
     agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
-    
+
     half_width_down = haversine(
         nlo_down, nla_down, pl.col("lon").get(0), pl.col("lat").get(0)
     ).cast(pl.Float32)
@@ -906,7 +917,9 @@ def one_gmix(
     #     X = X.with_columns(theta=pl.col("theta").clip(318, 355))
     # if "ratio" in X.columns:
     #     X = X.with_columns(ratio=pl.col("ratio").clip(0, 1.5))
-    model = GaussianMixture(n_components=n_components, init_params=init_params, n_init=n_init)
+    model = GaussianMixture(
+        n_components=n_components, init_params=init_params, n_init=n_init
+    )
     if "ratio" in X.columns:
         X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
     model = model.fit(X)
@@ -950,9 +963,7 @@ def is_polar_gmix(
             X = df.filter(pl.col("time").dt.week() == week)
             X_ = extract_features(X, feature_names)
             labels = one_gmix(X_, **kwargs)
-            to_concat.append(
-                X.with_columns(is_polar=labels)
-            )
+            to_concat.append(X.with_columns(is_polar=labels))
 
     return pl.concat(to_concat).sort(index_columns)
 
@@ -1076,7 +1087,11 @@ def is_polar_gmix(
 #     return pl.concat(to_concat).sort(index_columns)
 
 
-def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = None, allow_hybrid: bool = False):
+def categorize_df_jets(
+    props_as_df: pl.DataFrame,
+    polar_cutoff: float | None = None,
+    allow_hybrid: bool = False,
+):
     if allow_hybrid and polar_cutoff is None:
         polar_cutoff = 0.15
     elif polar_cutoff is None:
@@ -1166,9 +1181,7 @@ def categorize_df_jets(props_as_df: pl.DataFrame, polar_cutoff: float | None = N
     props_as_df_cat = dummy_indexer.join(
         props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
     ).sort(new_index_columns, descending=sort_descending)
-    props_as_df_cat = props_as_df_cat.with_columns(
-        pl.col("njets").fill_null(0)
-    )
+    props_as_df_cat = props_as_df_cat.with_columns(pl.col("njets").fill_null(0))
     return props_as_df_cat
 
 
@@ -1652,13 +1665,22 @@ class JetFindingExperiment(object):
     def categorize_jets(self, low_wind: xr.Dataset | xr.DataArray):
         all_jets_one_df = self.find_jets()
         if "is_polar" in all_jets_one_df.columns:
-            return all_jets_one_df
+            if not all_jets_one_df["s_low"].is_null().all():
+                return all_jets_one_df
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
 
         jets_upd = []
         if isinstance(low_wind, xr.Dataset):
             low_wind = low_wind["s"]
-            
+
+        lon = all_jets_one_df["lon"].unique().sort().to_numpy()
+        lat = all_jets_one_df["lat"].unique().sort().to_numpy()
+        low_wind = low_wind.interp(lon=lon, lat=lat)
+        if (
+            "theta" in all_jets_one_df.columns
+            and all_jets_one_df["theta"].is_null().all()
+        ):
+            all_jets_one_df = all_jets_one_df.drop("theta")
         if "theta" not in all_jets_one_df.columns:
             theta = self.ds["theta"]
             indexer = iterate_over_year_maybe_member(all_jets_one_df, theta)
@@ -1673,8 +1695,14 @@ class JetFindingExperiment(object):
                 jets_upd.append(these_jets)
             all_jets_one_df = pl.concat(jets_upd)
             all_jets_one_df.write_parquet(ofile_ajdf)
-            
+
         jets_upd = []
+        if (
+            "ratio" in all_jets_one_df.columns
+            and all_jets_one_df["ratio"].is_null().all()
+        ):
+            all_jets_one_df = all_jets_one_df.drop("s_low")
+            all_jets_one_df = all_jets_one_df.drop("ratio")
         if "ratio" not in all_jets_one_df.columns:
             indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
             for idx1, idx2 in indexer:
@@ -1685,13 +1713,20 @@ class JetFindingExperiment(object):
                 these_jets = these_jets.join(
                     low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low"
                 )
-                these_jets = these_jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
+                these_jets = these_jets.with_columns(
+                    ratio=pl.col("s_low") / pl.col("s")
+                )
                 jets_upd.append(these_jets)
             all_jets_one_df = pl.concat(jets_upd)
             all_jets_one_df.write_parquet(ofile_ajdf)
-            
+
         all_jets_one_df = is_polar_gmix(
-            all_jets_one_df, ("ratio", "theta"), "week", n_components=2, n_init=20, init_params="k-means++"
+            all_jets_one_df,
+            ("ratio", "theta"),
+            "week",
+            n_components=2,
+            n_init=20,
+            init_params="k-means++",
         )
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
@@ -1714,7 +1749,9 @@ class JetFindingExperiment(object):
             width.append(width_)
         width = pl.concat(width)
         index_columns = get_index_columns(width)
-        props_as_df = props_as_df.join(width, on=index_columns, how="inner").sort(index_columns)
+        props_as_df = props_as_df.join(width, on=index_columns, how="inner").sort(
+            index_columns
+        )
         props_as_df.write_parquet(jet_props_incomplete_path)
         return props_as_df
 
@@ -1732,7 +1769,7 @@ class JetFindingExperiment(object):
                 all_jets_over_time,
                 flags,
             )
-        
+
         all_jets_over_time, flags = track_jets(all_jets_one_df)
 
         all_jets_over_time.write_parquet(ofile_ajot)

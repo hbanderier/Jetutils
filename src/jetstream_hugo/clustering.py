@@ -385,56 +385,50 @@ class Experiment(object):
     
     def project_on_other_som(
         self,
-        other_exp: Path,  
-        **kwargs,
+        other_exp: "Experiment",  
+        nx: int,
+        ny: int,
+        n_pcas: int = 0,
+        PBC: bool = True,
+        activation_distance: str = "euclidean",
+        return_type: int = RAW_REALSPACE,
     ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
-        nx, ny = kwargs["nx"], kwargs["ny"]
-        pbc = "pbc" in kwargs and kwargs["pbc"]
-        pbc_flag = "_pbc" if pbc else ""
-        net, centers, labels = other_exp.som_cluster(**kwargs)
+        pbc_flag = "_pbc" if PBC else ""
+        net, _, _ = other_exp.som_cluster(nx=nx, ny=ny, n_pcas=n_pcas, PBC=PBC)
         
-        if "n_pcas" in kwargs and kwargs["n_pcas"]:
-            n_pcas = kwargs["n_pcas"]
-            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{n_pcas}.nc"
+        if n_pcas:
+            output_file_stem = f"othersom_{nx}_{ny}{pbc_flag}_{n_pcas}"
         else:
-            activation_distance = kwargs["activation_distance"]
-            output_file = f"othersom_labels_{nx}_{ny}{pbc_flag}_{activation_distance}.nc"
-        output_file = self.path.joinpath(output_file)
-        if output_file.is_file():
-            return net, centers, xr.open_dataarray(output_file)
-        other_da = other_exp.da
+            output_file_stem = f"othersom_{nx}_{ny}{pbc_flag}_{activation_distance}"
+        output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
+        output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
+        if all([ofile.is_file() for ofile in [output_path_labels, output_path_centers]]):
+            centers = xr.open_dataarray(output_path_centers)
+            labels = xr.open_dataarray(output_path_labels)
+            net.latest_bmus = labels.values
+            return net, centers, labels
         X, da_weighted = self.prepare_for_clustering()
                 
-        if "n_pcas" in kwargs and kwargs["n_pcas"]:
-            X = self.pca_transform(X, kwargs["n_pcas"])
+        if n_pcas:
+            X = self.pca_transform(X, n_pcas)
         else:
-            if (other_da.lon[1] - other_da.lon[0]).item() < 1:
-                other_da = coarsen_da(other_da, 1.5)
-            da_weighted = da_weighted.interp(
-                lon=other_da.lon.values, 
-                lat=other_da.lat.values,
-                kwargs={"fill_value": "extrapolate"}
-            )
-            X = normalize(
-                da_weighted.data.reshape(
-                    np.prod(da_weighted.shape[:2]), 
-                    np.prod(da_weighted.shape[2:])
-                )
-            )[0]
+            if (da_weighted.lon[1] - da_weighted.lon[0]).item() < 1:
+                da_weighted = coarsen_da(da_weighted, 1.5)
+                X = da_weighted.data.reshape(self.data_handler.get_flat_shape()[0], -1)
+            X, meanX, stX = normalize(X)
         
-        sample_shape = [len(co) for co in self.data_handler.sample_dims.values()]
+        labels = net.predict(X)
+        if n_pcas:
+            weights = net.weights
+        else:
+            weights = revert_normalize(net.weights, meanX, stX)
+            
         X = compute(X, progress_flag=True)
-        labels = net.predict(X).reshape(sample_shape)
-        labels = xr.DataArray(labels, coords=self.data_handler.sample_dims)
-        labels.attrs["som_from_exp"] = other_exp.path.as_posix()
-        for key, val in kwargs.items():
-            if isinstance(val, dict):
-                continue
-            if isinstance(val, bool):
-                val = int(val)
-            labels.attrs[key] = val
-        labels.to_netcdf(output_file)
-        return net, centers, labels, X
+        centers, labels = self._cluster_output(weights, labels, return_type, X)
+        centers.to_netcdf(output_path_centers)
+        labels.to_netcdf(output_path_labels)
+        return net, centers, labels
+
 
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(
