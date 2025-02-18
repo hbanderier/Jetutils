@@ -25,8 +25,6 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from xgboost import XGBClassifier, XGBRegressor
-from shap import TreeExplainer, Explainer
 
 from jetstream_hugo.definitions import (
     DEFAULT_VALUES,
@@ -912,6 +910,7 @@ def predict_all(
             elif type_ == "rf":
                 model = RandomForestClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
+                from xgboost import XGBClassifier
                 model = XGBClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred = model.predict(X_test)
             y_pred_prob = model.predict_proba(X_test)[:, 1]
@@ -920,6 +919,7 @@ def predict_all(
             if type_ == "rf":
                 model = RandomForestRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
+                from xgboost import XGBRegressor
                 model = XGBRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred_prob = model.predict(X_test) + y_base_test
             y_pred_prob = np.clip(y_pred_prob, 0, 1)
@@ -963,7 +963,10 @@ def predict_all(
                     return model_bytearray
 
                 mybooster.save_raw = myfun
-
+            try:
+                from fasttreeshap import TreeExplainer, Explainer
+            except ModuleNotFoundError:
+                from shap import TreeExplainer, Explainer
             shap_explainer = TreeExplainer if type_ == "rf" else Explainer
             shap_ = shap_explainer(model)(X, y, check_additivity=False)
             raw_shap[indexer_str] = shap_
