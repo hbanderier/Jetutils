@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from dask.diagnostics import ProgressBar  # if no client
-from dask.distributed import progress     # if client
+from dask.diagnostics import ProgressBar  # if no client
+from dask.distributed import progress  # if client
 
 np.set_printoptions(precision=5, suppress=True)
 
@@ -35,7 +35,9 @@ elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
     os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    os.environ["PATH"] += os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
+    os.environ["PATH"] += (
+        os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
+    )
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "150000")) // N_WORKERS
     MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
@@ -187,12 +189,26 @@ SEASONS = {
     "SON": [9, 10, 11],
 }
 
-MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+MONTH_NAMES = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
 
 RADIUS = 6.371e6  # m
 OMEGA = 7.2921e-5  # rad.s-1
 KAPPA = 0.2854
 R_SPECIFIC_AIR = 287.0500676
+
 
 def degcos(x: float) -> float:
     return np.cos(x / 180 * np.pi)
@@ -215,7 +231,10 @@ def load_pickle(filename: str | Path) -> Any:
 
 def to_zero_one(X):
     def expr(col):
-        return (pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())
+        return (pl.col(col) - pl.col(col).min()) / (
+            pl.col(col).max() - pl.col(col).min()
+        )
+
     if isinstance(X, pl.DataFrame):
         Xmin = X.min()
         Xmax = X.max()
@@ -233,6 +252,7 @@ def to_zero_one(X):
 def revert_zero_one(X, Xmin, Xmax):
     def expr(col):
         return Xmin[0, col] + (Xmax[0, col] - Xmin[0, col]) * pl.col(col)
+
     if isinstance(X, pl.DataFrame):
         X = X.with_columns(expr(col).alias(col) for col in X.columns)
         return X
@@ -246,6 +266,7 @@ def revert_zero_one(X, Xmin, Xmax):
 def normalize(X):
     def expr(col):
         return (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
+
     if isinstance(X, pl.DataFrame):
         meanX = X.mean()
         stdX = X.std()
@@ -263,6 +284,7 @@ def normalize(X):
 def revert_normalize(X, meanX, stdX):
     def expr(col):
         return meanX[0, col] + stdX[0, col] * pl.col(col)
+
     if isinstance(X, pl.DataFrame):
         X = X.with_columns(expr(col).alias(col) for col in X.columns)
         return X
@@ -278,9 +300,7 @@ def xarray_to_polars(da: xr.DataArray | xr.Dataset):
 
 
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
-    ds = xr.Dataset.from_dataframe(
-        df.to_pandas().set_index(index_columns)
-    )
+    ds = xr.Dataset.from_dataframe(df.to_pandas().set_index(index_columns))
     data_vars = list(ds.data_vars)
     if len(data_vars) == 1:
         ds = ds[data_vars[0]]
@@ -300,6 +320,7 @@ def get_index_columns(
 ):
     index_columns = [ic for ic in potentials if ic in df.columns]
     return index_columns
+
 
 def extract_season_from_df(
     df: pl.DataFrame,
@@ -410,6 +431,111 @@ def coarsen_da(
     return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
 
 
+def do_rle_fill_hole(s: pl.Series, hole_size: int = 2):
+    s = s.rename("condition")  # just in case
+    s2 = s.rle().struct.unnest()
+    s = s.to_frame().with_row_index()
+    s2 = s2.with_columns(
+        start=pl.lit(0).append(
+            pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
+        )
+    )
+    s2 = s2.with_columns(index=pl.int_ranges(0, pl.col("len")))
+    s2 = s2.filter(
+        pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
+    )
+    s2 = (
+        s2.with_columns(
+            index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len")).cast(
+                pl.List(pl.UInt32)
+            )
+        )["index"]
+        .explode()
+        .to_frame()
+        .with_columns(condition=pl.lit(True))
+    )
+    s = s.join(s2, on=["index"], how="left")
+    s = s.with_columns(
+        condition=pl.when(pl.col("condition_right").is_not_null())
+        .then(pl.col("condition_right"))
+        .otherwise(pl.col("condition"))
+    ).drop("condition_right")
+    s["condition"].rle().struct.unnest()
+    return s
+
+
+def do_rle_groupby(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
+    by = get_index_columns(
+        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+    )
+    conditional = (
+        df.group_by(by, maintain_order=True)
+        .agg(
+            pl.col(cond_name).rle().alias("rle"),
+        )
+        .explode("rle")
+        .unnest("rle")
+    )
+    conditional = (
+        conditional.group_by(by, maintain_order=True)
+        .agg(
+            len=pl.col("len"),
+            start=pl.lit(0).append(
+                pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
+            ),
+            value=pl.col("value"),
+        )
+        .explode(["len", "start", "value"])
+    )
+    return conditional
+
+
+def do_rle_fill_hole_groupby(
+    df: pl.DataFrame, condition_expr: pl.Expr, hole_size: int = 4
+) -> pl.DataFrame:
+    by = get_index_columns(
+        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+    )
+    condition = (
+        df.group_by(by, maintain_order=True)
+        .agg(
+            condition_expr.alias("condition"),
+            index=pl.int_range(0, condition_expr.len()),
+        )
+        .explode("condition", "index")
+    )
+
+    conditional = do_rle_groupby(condition)
+
+    conditional = conditional.filter(
+        pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
+    )
+
+    conditional = (
+        conditional.with_columns(
+            index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
+        )[*by, "index"]
+        .explode("index")
+        .with_columns(condition=pl.lit(True))
+    )
+
+    condition = condition.join(conditional, on=[*by, "index"], how="left")
+    condition = condition.with_columns(
+        condition=pl.when(pl.col("condition_right").is_not_null())
+        .then(pl.col("condition_right"))
+        .otherwise(pl.col("condition"))
+    ).drop("condition_right")
+
+    conditional = do_rle_groupby(condition)
+
+    conditional = conditional.filter(pl.col("value"))
+
+    conditional = conditional.with_columns(
+        index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
+    )[*by, "index"].explode("index")
+    return conditional
+
+
 def get_runs(mask, cyclic: bool = True):
     start = 0
     runs = []
@@ -457,7 +583,7 @@ def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
 def compute(obj, progress_flag: bool = False, **kwargs):
     kwargs = COMPUTE_KWARGS | kwargs
     try:
-        client # in globals
+        client  # in globals # type: ignore # noqa: F821
     except NameError:
         try:
             if progress_flag:
@@ -469,11 +595,11 @@ def compute(obj, progress_flag: bool = False, **kwargs):
             return obj
     try:
         if progress_flag:
-            obj = client.gather(client.persist(obj))
+            obj = client.gather(client.persist(obj))  # type: ignore # noqa: F821
             progress(obj, notebook=False)
             return obj
         else:
-            return client.compute(obj)
+            return client.compute(obj)  # type: ignore # noqa: F821
     except AttributeError:
         return obj
 

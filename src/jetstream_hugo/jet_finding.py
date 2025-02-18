@@ -16,6 +16,7 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     RADIUS,
     compute,
+    do_rle_fill_hole_groupby,
     xarray_to_polars,
     get_index_columns,
     extract_season_from_df,
@@ -351,78 +352,6 @@ def compute_alignment(
     return all_contours.with_columns(alignment=alignment["alignment"])
 
 
-def do_rle(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
-    by = get_index_columns(
-        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
-    )
-    conditional = (
-        df.group_by(by, maintain_order=True)
-        .agg(
-            pl.col(cond_name).rle().alias("rle"),
-        )
-        .explode("rle")
-        .unnest("rle")
-    )
-    conditional = (
-        conditional.group_by(by, maintain_order=True)
-        .agg(
-            len=pl.col("len"),
-            start=pl.lit(0).append(
-                pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
-            ),
-            value=pl.col("value"),
-        )
-        .explode(["len", "start", "value"])
-    )
-    return conditional
-
-
-def do_rle_fill_hole(
-    df: pl.DataFrame, condition_expr: pl.Expr, hole_size: int = 4
-) -> pl.DataFrame:
-    by = get_index_columns(
-        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
-    )
-    condition = (
-        df.group_by(by, maintain_order=True)
-        .agg(
-            condition_expr.alias("condition"),
-            index=pl.int_range(0, condition_expr.len()),
-        )
-        .explode("condition", "index")
-    )
-
-    conditional = do_rle(condition)
-
-    conditional = conditional.filter(
-        pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
-    )
-
-    conditional = (
-        conditional.with_columns(
-            index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
-        )[*by, "index"]
-        .explode("index")
-        .with_columns(condition=pl.lit(True))
-    )
-
-    condition = condition.join(conditional, on=[*by, "index"], how="left")
-    condition = condition.with_columns(
-        condition=pl.when(pl.col("condition_right").is_not_null())
-        .then(pl.col("condition_right"))
-        .otherwise(pl.col("condition"))
-    ).drop("condition_right")
-
-    conditional = do_rle(condition)
-
-    conditional = conditional.filter(pl.col("value"))
-
-    conditional = conditional.with_columns(
-        index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
-    )[*by, "index"].explode("index")
-    return conditional
-
-
 def separate_jets(
     jets: pl.DataFrame, ds_thresh: float = 5, periodic: bool = False
 ) -> pl.DataFrame:
@@ -546,7 +475,7 @@ def find_all_jets(
     all_contours = compute_alignment(all_contours, x_periodic)
 
     # jets from contours
-    conditional = do_rle_fill_hole(all_contours, condition_expr, 3)
+    conditional = do_rle_fill_hole_groupby(all_contours, condition_expr, 3)
     jets = conditional.join(all_contours, on=[*index_columns, "contour", "index"])
     jets = separate_jets(jets, 4, x_periodic)
     jets = jets.with_columns(

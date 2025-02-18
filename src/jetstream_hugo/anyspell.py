@@ -34,6 +34,7 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     RESULTS,
     compute,
+    do_rle_fill_hole,
     load_pickle,
     save_pickle,
     get_runs_fill_holes,
@@ -50,7 +51,7 @@ from jetstream_hugo.data import (
     compute_anomalies_ds,
 )
 
-set_mp_start_method("spawn", force=True) 
+set_mp_start_method("spawn", force=True)
 
 
 def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
@@ -70,7 +71,7 @@ ALL_SCORES = {
 }
 
 
-def spells_from_da( # TODO: Polarize
+def spells_from_da(  # TODO: Polarize
     da: xr.DataArray,
     q: float = 0.95,
     fill_holes: int = 2,
@@ -82,21 +83,23 @@ def spells_from_da( # TODO: Polarize
     dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
     months = np.unique(da.time.dt.month.values)
     months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
-    days = quantile_exceedence(da, q)   
+    days = quantile_exceedence(da, q)
     runs = get_runs_fill_holes(days.values.copy(), hole_size=fill_holes)
     run_times = [da.time.values[run] for run in runs]
     spells = []
     spells_ts = []
     lengths = []
     for run in run_times:
-        years = run.astype('datetime64[Y]').astype(int) + 1970
+        years = run.astype("datetime64[Y]").astype(int) + 1970
         cond1 = years[0] == years[-1]
         len_ = run[-1] - run[0]
         cond2 = len_ >= minlen
         if not (cond1 and cond2):
             continue
         spells.append([run[0], run[-1]])
-        ts_extended = pd.date_range(run[0] - time_before, run[-1] + time_after, freq=dt).values
+        ts_extended = pd.date_range(
+            run[0] - time_before, run[-1] + time_after, freq=dt
+        ).values
         ts_extended = ts_extended[np.isin(ts_extended, da.time.values)]
         spells_ts.append(ts_extended)
         lengths.append(len_.astype("timedelta64[D]").astype(int))
@@ -105,7 +108,9 @@ def spells_from_da( # TODO: Polarize
         return spells_ts, spells
     da_spells = da.copy(data=np.zeros(da.shape, dtype=int))
     indexer = np.concatenate(spells_ts)
-    lengths = np.concatenate([np.full(len(spell_ts), len_) for spell_ts, len_ in zip(spells_ts, lengths)])
+    lengths = np.concatenate(
+        [np.full(len(spell_ts), len_) for spell_ts, len_ in zip(spells_ts, lengths)]
+    )
     da_spells.loc[indexer] = lengths
 
     if output_type == "arr":
@@ -126,7 +131,12 @@ def mask_from_spells(
         lengths = spells[:, 1] - spells[:, 0]
         longest_spell = np.argmax(lengths)
         dt = np.amin(np.unique(np.diff(spells_ts[0])))
-        time_around_beg = np.arange(- time_before, spells[longest_spell, 1] - spells[longest_spell, 0] + dt, dt, dtype="timedelta64[ns]")
+        time_around_beg = np.arange(
+            -time_before,
+            spells[longest_spell, 1] - spells[longest_spell, 0] + dt,
+            dt,
+            dtype="timedelta64[ns]",
+        )
     except ValueError:
         time_around_beg = np.atleast_1d(np.timedelta64(0, "ns"))
     ds_masked = (
@@ -159,8 +169,10 @@ def mask_from_spells(
     for i, spell in enumerate(spells_ts):
         unexpected_offset = time_before - (spells[i][0] - spell[0])
         this_tab = time_around_beg[: len(spell)] + unexpected_offset
-        this_tab = np.clip(this_tab, None, ds_masked.time_around_beg.max().values) # Unexpected offset is weird
-        spell = spell[:len(this_tab)]
+        this_tab = np.clip(
+            this_tab, None, ds_masked.time_around_beg.max().values
+        )  # Unexpected offset is weird
+        spell = spell[: len(this_tab)]
         to_assign = (
             ds.loc[dict(time=spell)]
             .assign_coords(time=this_tab)
@@ -174,37 +186,60 @@ def mask_from_spells(
     return ds_masked
 
 
-def get_spells_sigma(df: pl.DataFrame, dists: np.ndarray, sigma: int = 1) -> pl.DataFrame:
+def get_spells_sigma(
+    df: pl.DataFrame, dists: np.ndarray, sigma: int = 1
+) -> pl.DataFrame:
     start = 0
     spells = []
     while True:
         start_lab = df[int(start), "labels"]
         next_distance_cond = dists[start_lab, df[start:, "labels"]] > sigma
         if not any(next_distance_cond):
-            spells.append({"rel_start": start, "value": start_lab, "len": len(df[start:, "labels"])})
+            spells.append(
+                {
+                    "rel_start": start,
+                    "value": start_lab,
+                    "len": len(df[start:, "labels"]),
+                }
+            )
             break
         to_next = np.argmax(next_distance_cond)
-        val = df[int(start): int(start + to_next), ["labels"]].with_columns(pl.col("labels").drop_nulls().mode().first().alias("mode"))[0, "mode"]
+        val = df[int(start) : int(start + to_next), ["labels"]].with_columns(
+            pl.col("labels").drop_nulls().mode().first().alias("mode")
+        )[0, "mode"]
         spells.append({"rel_start": start, "value": val, "len": to_next})
         start = start + to_next
     return pl.DataFrame(spells).with_columns(year=df[0, "year"], my_len=df.shape[0])
 
 
 def get_persistent_spell_times_from_som(
-    labels, dists: np.ndarray, sigma: int = 0, minlen: int = 4, nt_before: int = 0, nt_after: int = 0, nojune: bool = True, daily: bool = False,
+    labels,
+    dists: np.ndarray,
+    sigma: int = 0,
+    minlen: int = 4,
+    nt_before: int = 0,
+    nt_after: int = 0,
+    nojune: bool = True,
+    daily: bool = False,
 ):
     labels_df = xarray_to_polars(labels)
     labels_df = labels_df.with_columns(pl.col("time").dt.year().alias("year"))
     index_columns = get_index_columns(labels_df)
     index = labels_df[index_columns].unique(maintain_order=True)
 
-    out = labels_df.group_by("year", maintain_order=True).map_groups(partial(get_spells_sigma, dists=dists, sigma=sigma))
-    out = out.with_columns(start = pl.col("year").rle_id() * pl.col("my_len") + pl.col("rel_start"))
+    out = labels_df.group_by("year", maintain_order=True).map_groups(
+        partial(get_spells_sigma, dists=dists, sigma=sigma)
+    )
+    out = out.with_columns(
+        start=pl.col("year").rle_id() * pl.col("my_len") + pl.col("rel_start")
+    )
     out = out.with_columns(
         range=pl.int_ranges(
             pl.col("start") - nt_before, pl.col("start") + pl.col("len") + nt_after
         ),
-        relative_index=pl.int_ranges(-nt_before, pl.col("len") + nt_after, dtype=pl.Int16),
+        relative_index=pl.int_ranges(
+            -nt_before, pl.col("len") + nt_after, dtype=pl.Int16
+        ),
     )
     out = out.with_row_index("spell").explode(["range", "relative_index"])
     out = out.filter(pl.col("range") < len(index), pl.col("range") >= 0)
@@ -243,28 +278,56 @@ def get_persistent_spell_times_from_som(
     )
     if not daily:
         return out
-    
-    ratio = out.filter(pl.col("relative_index") == 1)[0, "relative_time"] / datetime.timedelta(days=1)
-    out = out.with_columns(pl.col("time").dt.round("1d")).unique(["spell", "time"], maintain_order=True)
-    out = out.with_columns(out.group_by("spell", maintain_order=True).agg(pl.col("relative_index").rle_id() + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)).explode("relative_index"))
+
+    ratio = out.filter(pl.col("relative_index") == 1)[
+        0, "relative_time"
+    ] / datetime.timedelta(days=1)
+    out = out.with_columns(pl.col("time").dt.round("1d")).unique(
+        ["spell", "time"], maintain_order=True
+    )
+    out = out.with_columns(
+        out.group_by("spell", maintain_order=True)
+        .agg(
+            pl.col("relative_index").rle_id()
+            + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)
+        )
+        .explode("relative_index")
+    )
     out = out.with_columns(relative_time=pl.col("relative_index") * pl.duration(days=1))
     return out
 
 
-def get_persistent_jet_spells(props_as_df, metric: Literal["persistence", "com_speed"], jet: Literal["EDJ", "STJ"], season: list | str | None = None, q: float = 0.2, daily: bool = False):
-    props_as_df = extract_season_from_df(props_as_df, season)
-    times = props_as_df["time"].unique()
-    onejet = props_as_df.filter(pl.col("jet") == jet)
-    out = onejet[metric] 
-    if metric == "com_speed":
-        out = (out < out.quantile(q))
+def get_spells(
+    df,
+    varname: str,
+    fill_holes: np.timedelta64 = np.timedelta64(12, "h"),
+    minlen: np.timedelta64 = np.timedelta64(3, "D"),
+    time_before: np.timedelta64 = np.timedelta64(0, "D"),
+    time_after: np.timedelta64 = np.timedelta64(0, "D"),
+    q: float = 0.95,
+    daily: bool = False,
+):
+    times = df["time"].unique()
+    dt = times[1] - times[0]
+    out = df[varname].rename("condition")
+    if varname in "com_speed":
+        out = out < out.quantile(1 - q)
+    if fill_holes > 0:
+        fill_holes = int(fill_holes / dt)
+        out = do_rle_fill_hole(out, fill_holes)
     else:
-        out = (out > out.quantile(1 - q))
-    out = out.rle().struct.unnest()
-    out = out.with_columns(start=pl.lit(0).append(pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)))
-    nt_before, nt_after = 8, 8
-    out = out.filter(pl.col("value"), pl.col("len") >= 4).with_columns(
-        range=pl.int_ranges(pl.col("start") - nt_before, pl.col("start") + pl.col("len") + nt_after),
+        out = out.rle().struct.unnest()
+    out = out.with_columns(
+        start=pl.lit(0).append(
+            pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
+        )
+    )
+    minlen = int(minlen / dt)
+    nt_before, nt_after = int(time_before / dt), int(time_after / dt)
+    out = out.filter(pl.col("value"), pl.col("len") >= minlen).with_columns(
+        range=pl.int_ranges(
+            pl.col("start") - nt_before, pl.col("start") + pl.col("len") + nt_after
+        ),
         relative_index=pl.int_ranges(-nt_before, pl.col("len") + nt_after),
     )
     out = out.with_row_index("spell").explode(["range", "relative_index"])
@@ -272,8 +335,7 @@ def get_persistent_jet_spells(props_as_df, metric: Literal["persistence", "com_s
     mask_valid = (indices < len(times)) & (indices >= 0)
     indices = indices[mask_valid]
     out = (
-        out
-        .filter(mask_valid)
+        out.filter(mask_valid)
         .with_columns(time=times[indices])
         .drop("value", "start", "range")
         .sort("spell", "relative_index")
@@ -292,33 +354,66 @@ def get_persistent_jet_spells(props_as_df, metric: Literal["persistence", "com_s
     max_rel_index = out["relative_index"].max()
     out = out.filter(
         pl.col("relative_time") >= pl.duration(days=min_rel_index),
-        pl.col("relative_time") <= pl.duration(days=max_rel_index)
+        pl.col("relative_time") <= pl.duration(days=max_rel_index),
     )
     if not daily:
         return out
-    
-    ratio = out.filter(pl.col("relative_index") == 1)[0, "relative_time"] / datetime.timedelta(days=1)
-    out = out.with_columns(pl.col("time").dt.round("1d")).unique(["spell", "time"], maintain_order=True)
-    out = out.with_columns(out.group_by("spell", maintain_order=True).agg(pl.col("relative_index").rle_id() + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)).explode("relative_index"))
+
+    ratio = out.filter(pl.col("relative_index") == 1)[
+        0, "relative_time"
+    ] / datetime.timedelta(days=1)
+    out = out.with_columns(pl.col("time").dt.round("1d")).unique(
+        ["spell", "time"], maintain_order=True
+    )
+    out = out.with_columns(
+        out.group_by("spell", maintain_order=True)
+        .agg(
+            pl.col("relative_index").rle_id()
+            + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)
+        )
+        .explode("relative_index")
+    )
     out = out.with_columns(relative_time=pl.col("relative_index") * pl.duration(days=1))
     return out
 
 
-def mask_from_spells_pl(spells: pl.DataFrame, to_mask: xr.DataArray | xr.Dataset | pl.DataFrame, force_pl: bool = False): # TODO: add time_before
+def get_persistent_jet_spells(
+    props_as_df,
+    metric: str,
+    jet: str | None = None,
+    season: list | str | None = None,
+    **kwargs,
+):
+    props_as_df = extract_season_from_df(props_as_df, season)
+    onejet = props_as_df.filter(pl.col("jet") == jet)
+    return get_spells(
+        onejet, metric, **kwargs
+    )
+
+
+def mask_from_spells_pl(
+    spells: pl.DataFrame,
+    to_mask: xr.DataArray | xr.Dataset | pl.DataFrame,
+    force_pl: bool = False,
+):  # TODO: add time_before
     unique_times_spells = spells["time"].unique().to_numpy()
     unique_times_to_mask = np.unique(to_mask["time"].to_numpy())
-    unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask) 
+    unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask)
     spells = spells.filter(pl.col("time").is_in(unique_times))
     if isinstance(to_mask, xr.DataArray | xr.Dataset):
         to_mask = compute(to_mask.sel(time=unique_times), progress=True)
         to_mask = xarray_to_polars(to_mask)
-        index_columns_xarray = get_index_columns(to_mask, ["lat", "lon", "jet", "jet ID"])
+        index_columns_xarray = get_index_columns(
+            to_mask, ["lat", "lon", "jet", "jet ID"]
+        )
     else:
         to_mask = to_mask.cast({"time": pl.Datetime("ns")})
         to_mask = to_mask.filter(pl.col("time").is_in(unique_times))
         index_columns_xarray = None
     to_mask = to_mask.cast({"time": pl.Datetime("ns")})
-    spells = spells.cast({"time": pl.Datetime("ns"), "relative_time": pl.Duration("ns")})
+    spells = spells.cast(
+        {"time": pl.Datetime("ns"), "relative_time": pl.Duration("ns")}
+    )
     index_columns = get_index_columns(to_mask, ["member", "time"])
     masked = spells.join(to_mask, on=index_columns)
     if not index_columns_xarray or (masked.shape[0] == 0) or force_pl:
@@ -326,7 +421,7 @@ def mask_from_spells_pl(spells: pl.DataFrame, to_mask: xr.DataArray | xr.Dataset
     index_to_mask = ["spell", "relative_index"]
     masked = polars_to_xarray(masked, [*index_to_mask, *index_columns_xarray])
     index_to_mask = ["spell", "relative_index"]
-    i0 = np.argmax(np.asarray(list(masked.dims)) == "relative_index") 
+    i0 = np.argmax(np.asarray(list(masked.dims)) == "relative_index")
     j0 = np.argmax(masked["relative_index"].values == 0)
     ndim = masked["time"].ndim
     indexer = [0 if i >= len(index_to_mask) else slice(None) for i in range(ndim)]
@@ -433,7 +528,7 @@ def _add_timescales(predictors, timescales: Sequence, indexer: Mapping):
     return predictors
 
 
-def add_timescales_to_predictors( 
+def add_timescales_to_predictors(
     predictors, timescales: Sequence, yearbreak: bool = True
 ):
     # TODO: polarize with .join
@@ -454,14 +549,14 @@ def add_timescales_to_predictors(
     return predictors
 
 
-def _add_lags(predictors, lags: Sequence, indexer: Mapping): 
+def _add_lags(predictors, lags: Sequence, indexer: Mapping):
     for lag in lags[1:]:
         indexer["lag"] = lag
         predictors.loc[indexer] = predictors.loc[indexer].shift(time=lag)
     return predictors
 
 
-def add_lags_to_predictors(predictors, lags: Sequence, yearbreak: bool = True): 
+def add_lags_to_predictors(predictors, lags: Sequence, yearbreak: bool = True):
     # TODO: polarize with group_by + shift
     if 0 not in lags:
         lags.append(0)
@@ -769,12 +864,18 @@ def predict_all(
             full_pred_fn = save_path.joinpath(f"pred_{indexer_str}.nc")
             feature_importance_fn = save_path.joinpath(f"importance_{indexer_str}.nc")
             raw_shap_fn = save_path.joinpath(f"shap_{indexer_str}.pkl")
-            if full_pred_fn.is_file() and feature_importance_fn.is_file() and raw_shap_fn.is_file():
+            if (
+                full_pred_fn.is_file()
+                and feature_importance_fn.is_file()
+                and raw_shap_fn.is_file()
+            ):
                 this_full_pred = xr.open_dataarray(full_pred_fn)
                 full_pred.loc[indexer] = this_full_pred
                 for score in ALL_SCORES:
                     full_pred[score].loc[indexer] = this_full_pred[score].item()
-                feature_importances.loc[indexer] = xr.open_dataarray(feature_importance_fn)
+                feature_importances.loc[indexer] = xr.open_dataarray(
+                    feature_importance_fn
+                )
                 raw_shap[indexer_str] = load_pickle(raw_shap_fn)
                 continue
         # Sub indexers from main, main for output, one for targets, one for predictors
@@ -807,29 +908,19 @@ def predict_all(
             if "class_weight" not in kwargs and type_ == "lr":
                 kwargs["class_weight"] = "balanced"
             if type_ == "lr":
-                model = LogisticRegression(n_jobs=1, **kwargs).fit(
-                    X_train, y_train
-                )
+                model = LogisticRegression(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "rf":
-                model = RandomForestClassifier(n_jobs=1, **kwargs).fit(
-                    X_train, y_train
-                )
+                model = RandomForestClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
-                model = XGBClassifier(n_jobs=1, **kwargs).fit(
-                    X_train, y_train
-                )
+                model = XGBClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred = model.predict(X_test)
             y_pred_prob = model.predict_proba(X_test)[:, 1]
             full_pred.loc[indexer] = model.predict_proba(X)[:, 1]
         else:
             if type_ == "rf":
-                model = RandomForestRegressor(n_jobs=1, **kwargs).fit(
-                    X_train, y_train
-                )
+                model = RandomForestRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
-                model = XGBRegressor(n_jobs=1, **kwargs).fit(
-                    X_train, y_train
-                )
+                model = XGBRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred_prob = model.predict(X_test) + y_base_test
             y_pred_prob = np.clip(y_pred_prob, 0, 1)
             y_pred = y_pred_prob > 0.5
@@ -865,10 +956,12 @@ def predict_all(
         if compute_shap:
             if type_ == "xgb":
                 # to solve UnicodeDecodeError
-                mybooster = model.get_booster()    
+                mybooster = model.get_booster()
                 model_bytearray = mybooster.save_raw()[4:]
+
                 def myfun(self=None):
                     return model_bytearray
+
                 mybooster.save_raw = myfun
 
             shap_explainer = TreeExplainer if type_ == "rf" else Explainer
@@ -1125,8 +1218,7 @@ class ExtremeExperiment(object):
         )
         for i_clu in trange(n_clu):
             targets.loc[:, i_clu] = compute(
-                self.da.where(clusters_da == i_clu)
-                .mean(["lon", "lat"])
+                self.da.where(clusters_da == i_clu).mean(["lon", "lat"])
             )
         targets = extract_season(targets, self.season)
         length_targets = targets.copy(data=np.zeros(targets.shape, dtype=int))
@@ -1175,7 +1267,7 @@ class ExtremeExperiment(object):
         return mask_from_spells_multi_region(
             timeseries, targets, all_spells_ts, all_spells, **new_kwargs
         )
-        
+
     def full_prediction(
         self,
         predictors: xr.DataArray,
@@ -1206,7 +1298,7 @@ class ExtremeExperiment(object):
             "predictors": predictor_names.tolist(),
             "type": type_,
             "lags": lags,
-            "base_pred": path_to_base_pred, 
+            "base_pred": path_to_base_pred,
             "n_folds": n_folds,
             "prediction_kwargs": prediction_kwargs,
         }
