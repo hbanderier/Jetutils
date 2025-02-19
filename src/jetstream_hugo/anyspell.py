@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from tqdm.notebook import tqdm, trange
+from tqdm import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
 from sklearn.metrics import pairwise_distances

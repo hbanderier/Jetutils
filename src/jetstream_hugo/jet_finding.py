@@ -852,11 +852,11 @@ def one_gmix(
     if "ratio" in X.columns:
         X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
     model = model.fit(X)
-    if X.columns[0] == "ratio":
-        return model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
+    if X.columns[1] == "theta":
+        return 1 - model.predict_proba(X)[:, np.argmax(model.means_[:, 1])]
     elif X.columns[1] == "lat":
-        return model.predict_proba(X)[:, np.argmax(model.means_[:, 1])]
-    return model.predict_proba(X)[:, np.argmin(model.means_[:, 0])]
+        return 1 - model.predict_proba(X)[:, np.argmin(model.means_[:, 1])]
+    return 1 - model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
 
 
 def is_polar_gmix(
@@ -872,8 +872,8 @@ def is_polar_gmix(
     if mode == "year":
         X = extract_features(df, feature_names, None)
         kwargs["n_components"] = n_components
-        labels = one_gmix(X, **kwargs)
-        return df.with_columns(is_polar=labels)
+        probas = one_gmix(X, **kwargs)
+        return df.with_columns(is_polar=probas)
     index_columns = get_index_columns(df)
     to_concat = []
     if mode == "season":
@@ -886,9 +886,9 @@ def is_polar_gmix(
         ):
             X = extract_features(df, feature_names, season)
             kwargs["n_components"] = n_components_
-            labels = one_gmix(X, **kwargs)
+            probas = one_gmix(X, **kwargs)
             to_concat.append(
-                extract_season_from_df(df, season).with_columns(is_polar=labels)
+                extract_season_from_df(df, season).with_columns(is_polar=probas)
             )
     elif mode == "month":
         if isinstance(n_components, int):
@@ -898,9 +898,9 @@ def is_polar_gmix(
         for month, n_components_ in zip(trange(1, 13), n_components):
             X = extract_features(df, feature_names, month)
             kwargs["n_components"] = n_components_
-            labels = one_gmix(X, **kwargs)
+            probas = one_gmix(X, **kwargs)
             to_concat.append(
-                extract_season_from_df(df, month).with_columns(is_polar=labels)
+                extract_season_from_df(df, month).with_columns(is_polar=probas)
             )
     elif mode == "week":
         weeks = df["time"].dt.week().unique().sort().to_numpy()
@@ -912,8 +912,8 @@ def is_polar_gmix(
             X = df.filter(pl.col("time").dt.week() == week)
             X_ = extract_features(X, feature_names)
             kwargs["n_components"] = n_components_
-            labels = one_gmix(X_, **kwargs)
-            to_concat.append(X.with_columns(is_polar=labels))
+            probas = one_gmix(X_, **kwargs)
+            to_concat.append(X.with_columns(is_polar=probas))
 
     return pl.concat(to_concat).sort(index_columns)
 
@@ -1316,7 +1316,7 @@ def jet_position_as_da(
 
 
 def get_double_jet_index(df: pl.DataFrame, jet_pos_da: xr.DataArray):
-    overlap = (~xr.ufuncs.isnan(jet_pos_da)).sum("lat") >= 2
+    overlap = (~np.isnan(jet_pos_da)).sum("lat") >= 2
     index_columns = get_index_columns(df, ["member", "time", "cluster"])
     dji = pl.concat(
         [
