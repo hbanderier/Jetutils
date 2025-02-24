@@ -31,6 +31,8 @@ elif Path("/gws/nopw/j04/aopp").is_dir():
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "60000")) // N_WORKERS
     MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
+    FIGURES = "/home/users/hbanderi/Henrik_data/Figures"
+    RESULTS = "/home/users/hbanderi/Henrik_data/Figures"
 elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
     NODE = "UBELIX"
     DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
@@ -41,6 +43,8 @@ elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
     N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
     MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "150000")) // N_WORKERS
     MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
+    FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
+    RESULTS = "/storage/homefs/hb22g102/persistent-extremes-era5/Results"
 else:
     NODE = "LOCAL"
     N_WORKERS = 8
@@ -55,8 +59,6 @@ COMPUTE_KWARGS = {
 }
 
 CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
-FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
-RESULTS = "/storage/homefs/hb22g102/persistent-extremes-era5/Results"
 DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
 DATERANGE = pd.date_range("19590101", "20221231")

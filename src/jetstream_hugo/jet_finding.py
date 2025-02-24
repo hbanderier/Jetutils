@@ -5,6 +5,7 @@ from multiprocessing import Pool, current_process, get_context
 
 import numpy as np
 import polars as pl
+import polars_ols
 from polars.exceptions import ColumnNotFoundError
 import xarray as xr
 from contourpy import contour_generator
@@ -514,7 +515,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     ]
 
     def dl(col):
-        (pl.col(col).max() - pl.col(col).min())
+        return (pl.col(col).max() - pl.col(col).min())
 
     aggregations = [
         *[
@@ -1572,10 +1573,10 @@ class JetFindingExperiment(object):
         return all_jets_one_df
 
     def compute_jet_props(
-        self, processes: int = N_WORKERS, chunksize=100
+        self, processes: int = N_WORKERS, chunksize=100, force: bool = False,
     ) -> xr.Dataset:
         jet_props_incomplete_path = self.path.joinpath("props_as_df_raw.parquet")
-        if jet_props_incomplete_path.is_file():
+        if jet_props_incomplete_path.is_file() and not force:
             return pl.read_parquet(jet_props_incomplete_path)
         all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
         props_as_df = compute_jet_props(all_jets_one_df)
@@ -1621,21 +1622,24 @@ class JetFindingExperiment(object):
             flags,
         )
 
-    def props_as_df(self, categorize: bool = True) -> xr.Dataset:
+    def props_as_df(self, categorize: bool = True, force: int = 0) -> xr.Dataset:
+        """
+        force = 1: don't redo raw but do rest, force = 2: redo everything
+        """
         ofile_padu = self.path.joinpath("props_as_df_uncat.parquet")
         ofile_pad = self.path.joinpath("props_as_df.parquet")
-        if ofile_padu.is_file() and not categorize:
+        if ofile_padu.is_file() and not categorize and not force:
             return pl.read_parquet(ofile_padu)
-        if ofile_pad.is_file() and categorize:
+        if ofile_pad.is_file() and categorize and not force:
             return pl.read_parquet(ofile_pad)
-        if ofile_padu.is_file() and categorize:
+        if ofile_padu.is_file() and categorize and not force:
             props_as_df = categorize_df_jets(pl.read_parquet(ofile_padu))
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         _, all_jets_over_time, flags = self.track_jets()
-        props_as_df = self.compute_jet_props()
+        props_as_df = self.compute_jet_props(force = force > 1)
         props_as_df = add_persistence_to_props(props_as_df, flags)
-        props_as_df = self.add_com_speed(all_jets_over_time, props_as_df)
+        props_as_df = self.add_com_speed(all_jets_over_time, props_as_df, force=bool(force))
         props_as_df.write_parquet(ofile_padu)
         props_as_df_cat = categorize_df_jets(props_as_df)
         props_as_df_cat.write_parquet(ofile_pad)
@@ -1648,9 +1652,10 @@ class JetFindingExperiment(object):
         all_jets_over_time: pl.DataFrame,
         props_as_df_uncat: pl.DataFrame,
         save: bool = True,
+        force: bool = False,
     ) -> pl.DataFrame:
         out_path = self.path.joinpath("all_props_over_time.parquet")
-        if out_path.is_file():
+        if out_path.is_file() and not force:
             return pl.read_parquet(out_path)
         index_columns = get_index_columns(props_as_df_uncat)
         props_as_df_uncat = props_as_df_uncat.cast(
@@ -1670,12 +1675,13 @@ class JetFindingExperiment(object):
         return all_props_over_time
 
     def add_com_speed(
-        self, all_jets_over_time: pl.DataFrame, props_as_df: pl.DataFrame
+        self, all_jets_over_time: pl.DataFrame, props_as_df: pl.DataFrame, force: bool = False,
     ) -> pl.DataFrame:
         all_props_over_time = self.props_over_time(
             all_jets_over_time,
             props_as_df,
             save=False,
+            force=force,
         )
         com_speed = haversine_from_dl(
             pl.col("mean_lat"),
@@ -1704,9 +1710,9 @@ class JetFindingExperiment(object):
         ).join(com_speed, on=index_exprs)
         return props_as_df.sort(get_index_columns(props_as_df))
 
-    def jet_position_as_da(self):
+    def jet_position_as_da(self, force: bool = False):
         ofile = self.path.joinpath("jet_pos.nc")
-        if ofile.is_file():
+        if ofile.is_file() and not force:
             return xr.open_dataarray(ofile)
 
         all_jets_one_df = self.find_jets()
