@@ -17,7 +17,7 @@ from jetstream_hugo.definitions import (
     N_WORKERS,
     RADIUS,
     compute,
-    do_rle_fill_hole_groupby,
+    do_rle_fill_hole,
     xarray_to_polars,
     get_index_columns,
     extract_season_from_df,
@@ -476,7 +476,7 @@ def find_all_jets(
     all_contours = compute_alignment(all_contours, x_periodic)
 
     # jets from contours
-    conditional = do_rle_fill_hole_groupby(all_contours, condition_expr, 3)
+    conditional = do_rle_fill_hole(all_contours, condition_expr, None, 3, unwrap=True)
     jets = conditional.join(all_contours, on=[*index_columns, "contour", "index"])
     jets = separate_jets(jets, 4, x_periodic)
     jets = jets.with_columns(

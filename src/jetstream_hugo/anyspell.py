@@ -307,23 +307,11 @@ def get_spells(
 ):
     times = df["time"].unique()
     dt = times[1] - times[0]
-    unique_months = times.dt.month().unique().to_numpy()
-    all_year = np.all(np.isin(np.arange(1, 13), unique_months))
-    out = df[varname].rename("condition")
     if varname == "com_speed":
-        out = out < out.quantile(1 - q)
+        expr = pl.col(varname) < df[varname].quantile(1 - q)
     else:
-        out = out > out.quantile(q)
-    if fill_holes > datetime.timedelta(0):
-        fill_holes = int(fill_holes / dt)
-        out = do_rle_fill_hole(out, fill_holes)
-    else:
-        out = out.rle().struct.unnest()
-    out = out.with_columns(
-        start=pl.lit(0).append(
-            pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
-        )
-    )
+        expr = pl.col(varname) > df[varname].quantile(q)
+    out = do_rle_fill_hole(df, expr, None, fill_holes)
     minlen = int(minlen / dt)
     nt_before, nt_after = int(time_before / dt), int(time_after / dt)
     out = out.filter(pl.col("value"), pl.col("len") >= minlen).with_columns(
@@ -358,22 +346,6 @@ def get_spells(
         pl.col("relative_time") >= pl.duration(days=min_rel_index),
         pl.col("relative_time") <= pl.duration(days=max_rel_index),
     )
-    
-    if not all_year:
-        bad_spells = out.group_by("spell", maintain_order=True).agg(
-            is_too_long=(pl.col("time").last() - pl.col("time").dt.year().first()) > datetime.timedelta(days=31 * len(unique_months))
-        )
-        bad_spells = bad_spells.filter(pl.col("is_too_long"))["spell"].unique()
-        if len(bad_spells) != 0:
-            out = out.filter(
-                pl.col("spell").is_in(bad_spells)
-            ).group_by(
-                "spell", maintain_order=True
-            ).agg(
-                past_break_point=pl.col("time") > pl.col("time").first() + datetime.timedelta(days=31 * len(unique_months))
-            ).explode("past_break_point").with_columns(
-                spell=pl.when(pl.col("past_break_point").then(pl.col("spell") * -1).otherwise(pl.col("spell"))).rle_id()
-            )
             
     if not daily:
         return out

@@ -5,6 +5,7 @@ from typing import Any, Callable, ClassVar, Dict, Optional, Sequence
 from itertools import groupby
 from dataclasses import dataclass, field
 import time
+import datetime
 
 import numpy as np
 import pandas as pd
@@ -50,7 +51,8 @@ else:
     N_WORKERS = 8
     DATADIR = "../data"
     MEMORY_LIMIT = "2GB"
-
+    FIGURES = "/Users/bandelol/Documents/code_local/local_figs"
+    RESULTS = "/Users/bandelol/Documents/code_local/data/results"
 COMPUTE_KWARGS = {
     "processes": True,
     "threads_per_worker": 1,
@@ -433,53 +435,23 @@ def coarsen_da(
     return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
 
 
-def do_rle_fill_hole(s: pl.Series, hole_size: int = 2):
-    s = s.rename("condition")  # just in case
-    s2 = s.rle().struct.unnest()
-    s = s.to_frame().with_row_index()
-    s2 = s2.with_columns(
-        start=pl.lit(0).append(
-            pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
-        )
-    )
-    s2 = s2.with_columns(index=pl.int_ranges(0, pl.col("len")))
-    s2 = s2.filter(
-        pl.col("len") <= hole_size, pl.col("value") != 0, pl.col("start") > 0
-    )
-    s2 = (
-        s2.with_columns(
-            index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len")).cast(
-                pl.List(pl.UInt32)
-            )
-        )["index"]
-        .explode()
-        .to_frame()
-        .with_columns(condition=pl.lit(True))
-    )
-    s = s.join(s2, on=["index"], how="left")
-    s = s.with_columns(
-        condition=pl.when(pl.col("condition_right").is_not_null())
-        .then(pl.col("condition_right"))
-        .otherwise(pl.col("condition"))
-    )
-    s = s["condition"].rle().struct.unnest()
-    return s
+def explode_rle(df):
+    return df.with_columns(
+        index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(pl.List(pl.UInt32))
+    ).explode("index")
 
 
-def do_rle_groupby(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFrame:
-    by = get_index_columns(
-        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
-    )
+def do_rle(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr]) -> pl.DataFrame:
     conditional = (
-        df.group_by(by, maintain_order=True)
+        df.group_by(group_by, maintain_order=True)
         .agg(
-            pl.col(cond_name).rle().alias("rle"),
+            pl.col("condition").rle().alias("rle"),
         )
         .explode("rle")
         .unnest("rle")
     )
     conditional = (
-        conditional.group_by(by, maintain_order=True)
+        conditional.group_by(group_by, maintain_order=True)
         .agg(
             len=pl.col("len"),
             start=pl.lit(0).append(
@@ -492,50 +464,61 @@ def do_rle_groupby(df: pl.DataFrame, cond_name: str = "condition") -> pl.DataFra
     return conditional
 
 
-def do_rle_fill_hole_groupby(
-    df: pl.DataFrame, condition_expr: pl.Expr, hole_size: int = 4
+def do_rle_fill_hole(
+    df: pl.DataFrame,
+    condition_expr: pl.Expr,
+    group_by: str | Sequence[str] | None = None,
+    hole_size: int | datetime.timedelta = 4,
+    unwrap: bool = False
 ) -> pl.DataFrame:
-    by = get_index_columns(
-        df, ("member", "time", "cluster", "contour", "spell", "relative_index")
-    )
-    condition = (
-        df.group_by(by, maintain_order=True)
+    if isinstance(hole_size, datetime.timedelta):
+        if "time" not in df.columns or "time" in group_by:
+            raise ValueError
+        times = df["time"].unique().bottom_k(2).sort()
+        dt = times[1] - times[0]
+        hole_size = int(hole_size / dt) # I am not responsible for rounding errors
+    if group_by is None:
+        if "contour" in df.columns:
+            group_by = get_index_columns(
+                df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+            )
+        else:
+            group_by = []
+            if "time" in df.columns and (df["time"].dt.month().unique().shape[0] < 12):
+                df = df.with_columns(year=pl.col("time").dt.year())
+                group_by.append("year")
+            group_by.extend(get_index_columns(df, ["member", "cluster"]))
+    if not isinstance(group_by, Sequence):
+        group_by = [group_by]
+    to_drop = []
+    if len(group_by) == 0:
+        df = df.with_columns(dummy=1)
+        group_by.append("dummy")
+        to_drop.append("dummy")
+    df = (
+        df.group_by(group_by, maintain_order=True)
         .agg(
             condition_expr.alias("condition"),
-            index=pl.int_range(0, condition_expr.len()),
-        )
-        .explode("condition", "index")
+            index=pl.int_range(0, condition_expr.len()).cast(pl.UInt32),
+        ).explode("condition", "index")
     )
-
-    conditional = do_rle_groupby(condition)
-
-    conditional = conditional.filter(
+    holes_to_fill = do_rle(df, group_by=group_by)
+    holes_to_fill = holes_to_fill.filter(
         pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
     )
-
-    conditional = (
-        conditional.with_columns(
-            index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
-        )[*by, "index"]
-        .explode("index")
-        .with_columns(condition=pl.lit(True))
-    )
-
-    condition = condition.join(conditional, on=[*by, "index"], how="left")
-    condition = condition.with_columns(
+    holes_to_fill = explode_rle(holes_to_fill).with_columns(condition=pl.lit(True)).drop("len", "start", "value")
+    df = df.join(holes_to_fill, on=[*group_by, "index"], how="left")
+    df = df.with_columns(
         condition=pl.when(pl.col("condition_right").is_not_null())
         .then(pl.col("condition_right"))
         .otherwise(pl.col("condition"))
-    ).drop("condition_right")
-
-    conditional = do_rle_groupby(condition)
-
-    conditional = conditional.filter(pl.col("value"))
-
-    conditional = conditional.with_columns(
-        index=pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))
-    )[*by, "index"].explode("index")
-    return conditional
+    ).drop("condition_right", "index")
+    df = do_rle(df, group_by=group_by)
+    if not unwrap:
+        return df.drop(*to_drop)
+    df = df.filter("value")
+    to_drop.extend(["len", "start", "value"])
+    return explode_rle(df).drop(to_drop)
 
 
 def get_runs(mask, cyclic: bool = True):
