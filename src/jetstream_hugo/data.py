@@ -340,13 +340,12 @@ def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> 
     da = standardize(da)
     if varname is None or len(da.data_vars) > 1:
         return da
-    try:
-        da = da[varname]
-    except KeyError:
+    for potential in [varname, varname.split("_")[0], "dummy", DEFAULT_VARNAME]:
         try:
-            da = da["dummy"].rename(varname)
+            da = da[potential].rename(varname)
+            break
         except KeyError:
-            da = da[DEFAULT_VARNAME].rename(varname)            
+            pass        
     return da
 
 

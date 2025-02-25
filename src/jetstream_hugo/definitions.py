@@ -442,7 +442,7 @@ def do_rle_fill_hole(s: pl.Series, hole_size: int = 2):
     )
     s2 = s2.with_columns(index=pl.int_ranges(0, pl.col("len")))
     s2 = s2.filter(
-        pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
+        pl.col("len") <= hole_size, pl.col("value") != 0, pl.col("start") > 0
     )
     s2 = (
         s2.with_columns(
@@ -459,8 +459,8 @@ def do_rle_fill_hole(s: pl.Series, hole_size: int = 2):
         condition=pl.when(pl.col("condition_right").is_not_null())
         .then(pl.col("condition_right"))
         .otherwise(pl.col("condition"))
-    ).drop("condition_right")
-    s["condition"].rle().struct.unnest()
+    )
+    s = s["condition"].rle().struct.unnest()
     return s
 
 

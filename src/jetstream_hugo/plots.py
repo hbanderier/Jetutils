@@ -245,61 +245,6 @@ def make_transparent(
     return ListedColormap(colorlist)
 
 
-
-# def infer_extent(
-#     to_plot: list, direction: int, q: float=0.99
-# ) -> Tuple[int, float, float]:  # A worse MaxNLocator
-    
-#     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
-#     try:
-#         lmax = np.log10(max(np.abs(lowbound), np.abs(highbound)))
-#         lmax = int(np.round(lmax))
-#     except OverflowError:
-#         return (6, 0, 1)
-
-#     if direction == 0:
-#         lowbound, highbound = 0, max(np.abs(lowbound), np.abs(highbound))
-#         lowbound = 0
-#     elif direction == -1:
-#         lowbound, highbound = 0, np.abs(lowbound)
-
-#     num_digits = 1000
-#     for minus in [0.5, 1, 1.5, 2]:
-#         if minus == int(minus) and direction == 0:
-#             max_rounded = np.ceil(highbound * 10 ** (-lmax + minus)) * 10 ** (lmax - minus)
-#             min_rounded = 0
-#         else:
-#             minus = int(np.ceil(minus))
-#             min_rounded = (
-#                 np.floor(lowbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
-#             )
-#             max_rounded = (
-#                 np.ceil(highbound * 10 ** (-lmax + minus) / 5) * 5 * 10 ** (lmax - minus)
-#             )
-#         extent = max_rounded - min_rounded
-#         minnlev = 4 if direction == 0 else 6
-#         maxnlev = 7 if direction == 0 else 9
-#         distance = np.abs(highbound - max_rounded)
-#         for nlev in range(minnlev, maxnlev):
-#             try:
-#                 firstlev = np.round(extent / (nlev - 1), decimals=6)
-#                 if np.isclose(firstlev, np.round(firstlev, 0)):
-#                     firstlev = int(np.round(firstlev, 0))
-#                 cand_nd = len(str(firstlev).rstrip("0"))
-#             except ZeroDivisionError:
-#                 cand_nd = 1000
-#             if cand_nd < num_digits or (
-#                 cand_nd == num_digits
-#                 and distance < winner_dist
-#             ):
-#                 winner = (nlev, min_rounded, max_rounded)
-#                 num_digits = cand_nd
-#                 winner_dist = distance
-#     if direction == -1:
-#         winner = (winner[0], -winner[2], winner[1])
-#     return winner
-
-
 def create_levels(
     to_plot: list, levels: int | Sequence | None = None, q: float = 0.99
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
@@ -311,7 +256,7 @@ def create_levels(
     if isinstance(levels, Sequence):
         levelsc = np.asarray(levels)
         if direction == 0:
-            levelscf = np.delete(levelsc, len(levelsc) // 2)
+            levelscf = np.delete(levelsc, np.nonzero(levelsc == 0)[0])
         else:
             levelscf = levelsc
         return levelsc, levelscf, extend, direction
