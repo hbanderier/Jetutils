@@ -1,3 +1,4 @@
+from ast import main
 import os
 import pickle as pkl
 from pathlib import Path
@@ -489,6 +490,7 @@ def do_rle_fill_hole(
             )
         else:
             group_by = []
+            group_by.extend(get_index_columns(df, ["member", "cluster"]))
             if "time" in df.columns:
                 unique_months = df["time"].dt.month().unique().sort()
                 n_months = unique_months.shape[0]
@@ -500,9 +502,10 @@ def do_rle_fill_hole(
                     df = df.with_columns(pl.col("time").dt.offset_by(f"{dmonth}mo"))
                     df = df.with_columns(year=pl.col("time").dt.year())
                     group_by.append("year")
-                    to_drop.append("year")
-                orig_time = df["time"].clone()
-            group_by.extend(get_index_columns(df, ["member", "cluster"]))
+                orig_time = df[["time", *group_by]].clone()
+                orig_time = orig_time.with_columns(
+                    year=pl.col("time").dt.year(),
+                )
     if not isinstance(group_by, Sequence):
         group_by = [group_by]
     
@@ -534,16 +537,32 @@ def do_rle_fill_hole(
         .otherwise(pl.col("condition"))
     ).drop("condition_right", "index")
     df = do_rle(df, group_by=group_by)
-    if not unwrap:
+    
+    if not unwrap and "year" not in group_by:
         return df.drop(*to_drop)
+    
+    if not unwrap and "year" in group_by:
+        start_idx = orig_time.group_by(*group_by, maintain_order=True).len("start_idx")
+        group_by.remove("year")
+        if len(group_by) == 0:
+            start_idx = start_idx.with_columns(pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0))
+        else:
+            start_idx = start_idx.with_columns(
+                start_idx.group_by(
+                    group_by, maintain_order=True
+                ).agg(
+                    pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0)
+                )["start_idx"].explode()
+            )
+        df = df.join(start_idx, on=["year", *group_by])
+        df = df.with_columns(start=pl.col("start") + pl.col("start_idx")).drop("year", "start_idx")
+        return df
+    
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
     df = explode_rle(df)
     if "year" not in group_by:
         return df.drop(to_drop)
-    orig_time = orig_time.to_frame().with_columns(
-        year=pl.col("time").dt.year(),
-    )
     orig_time = (
         orig_time
         .group_by("year")
