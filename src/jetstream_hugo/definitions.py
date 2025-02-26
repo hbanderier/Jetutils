@@ -476,11 +476,12 @@ def do_rle_fill_hole(
     unwrap: bool = False,
 ) -> pl.DataFrame:
     if isinstance(hole_size, datetime.timedelta):
-        if "time" not in df.columns or "time" in group_by:
+        if "time" not in df.columns or (group_by is not None and "time" in group_by):
             raise ValueError
         times = df["time"].unique().bottom_k(2).sort()
         dt = times[1] - times[0]
         hole_size = int(hole_size / dt)  # I am not responsible for rounding errors
+    to_drop = []
     if group_by is None:
         if "contour" in df.columns:
             group_by = get_index_columns(
@@ -495,14 +496,16 @@ def do_rle_fill_hole(
                     index_jump = (unique_months.diff().fill_null(1) > 1).arg_max()
                     indices = (np.arange(n_months) + index_jump) % n_months
                     dmonth = 13 - unique_months[int(indices[0])] 
+                    dmonth = dmonth if index_jump != 0 else 0
                     df = df.with_columns(pl.col("time").dt.offset_by(f"{dmonth}mo"))
                     df = df.with_columns(year=pl.col("time").dt.year())
                     group_by.append("year")
+                    to_drop.append("year")
                 orig_time = df["time"].clone()
             group_by.extend(get_index_columns(df, ["member", "cluster"]))
     if not isinstance(group_by, Sequence):
         group_by = [group_by]
-    to_drop = []
+    
     if len(group_by) == 0:
         df = df.with_columns(dummy=1)
         group_by.append("dummy")
