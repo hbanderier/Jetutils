@@ -437,11 +437,15 @@ def coarsen_da(
 
 def explode_rle(df):
     return df.with_columns(
-        index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(pl.List(pl.UInt32))
+        index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(
+            pl.List(pl.UInt32)
+        )
     ).explode("index")
 
 
-def do_rle(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr]) -> pl.DataFrame:
+def do_rle(
+    df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr]
+) -> pl.DataFrame:
     conditional = (
         df.group_by(group_by, maintain_order=True)
         .agg(
@@ -469,14 +473,14 @@ def do_rle_fill_hole(
     condition_expr: pl.Expr,
     group_by: str | Sequence[str] | None = None,
     hole_size: int | datetime.timedelta = 4,
-    unwrap: bool = False
+    unwrap: bool = False,
 ) -> pl.DataFrame:
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or "time" in group_by:
             raise ValueError
         times = df["time"].unique().bottom_k(2).sort()
         dt = times[1] - times[0]
-        hole_size = int(hole_size / dt) # I am not responsible for rounding errors
+        hole_size = int(hole_size / dt)  # I am not responsible for rounding errors
     if group_by is None:
         if "contour" in df.columns:
             group_by = get_index_columns(
@@ -484,9 +488,17 @@ def do_rle_fill_hole(
             )
         else:
             group_by = []
-            if "time" in df.columns and (df["time"].dt.month().unique().shape[0] < 12):
-                df = df.with_columns(year=pl.col("time").dt.year())
-                group_by.append("year")
+            if "time" in df.columns:
+                unique_months = df["time"].dt.month().unique().sort()
+                n_months = unique_months.shape[0]
+                if n_months < 12:
+                    index_jump = (unique_months.diff().fill_null(1) > 1).arg_max()
+                    indices = (np.arange(n_months) + index_jump) % n_months
+                    dmonth = 13 - unique_months[int(indices[0])] 
+                    df = df.with_columns(pl.col("time").dt.offset_by(f"{dmonth}mo"))
+                    df = df.with_columns(year=pl.col("time").dt.year())
+                    group_by.append("year")
+                orig_time = df["time"].clone()
             group_by.extend(get_index_columns(df, ["member", "cluster"]))
     if not isinstance(group_by, Sequence):
         group_by = [group_by]
@@ -500,13 +512,18 @@ def do_rle_fill_hole(
         .agg(
             condition_expr.alias("condition"),
             index=pl.int_range(0, condition_expr.len()).cast(pl.UInt32),
-        ).explode("condition", "index")
+        )
+        .explode("condition", "index")
     )
     holes_to_fill = do_rle(df, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
         pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
     )
-    holes_to_fill = explode_rle(holes_to_fill).with_columns(condition=pl.lit(True)).drop("len", "start", "value")
+    holes_to_fill = (
+        explode_rle(holes_to_fill)
+        .with_columns(condition=pl.lit(True))
+        .drop("len", "start", "value")
+    )
     df = df.join(holes_to_fill, on=[*group_by, "index"], how="left")
     df = df.with_columns(
         condition=pl.when(pl.col("condition_right").is_not_null())
@@ -518,7 +535,21 @@ def do_rle_fill_hole(
         return df.drop(*to_drop)
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
-    return explode_rle(df).drop(to_drop)
+    df = explode_rle(df)
+    if "year" not in group_by:
+        return df.drop(to_drop)
+    orig_time = orig_time.to_frame().with_columns(
+        year=pl.col("time").dt.year(),
+    )
+    orig_time = (
+        orig_time
+        .group_by("year")
+        .agg(
+            pl.col("time").dt.offset_by(f"{-dmonth}mo"), index=pl.int_range(0, pl.col("time").len()).cast(pl.UInt32)
+        )
+        .explode("time", "index")
+    )
+    return df.join(orig_time, on=["year", "index"]).sort(*group_by)
 
 
 def get_runs(mask, cyclic: bool = True):
