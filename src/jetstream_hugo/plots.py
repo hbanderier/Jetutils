@@ -811,14 +811,11 @@ def trends_and_pvalues(
     else:
         season = "all_year"
 
-    if std:
-        props_as_df = props_as_df.group_by(
-            pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
-        ).std()
-    else:
-        props_as_df = props_as_df.group_by(
-            pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
-        ).mean()
+    def agg_func(col):
+        return pl.col(col).std() if std else pl.col(col).mean()
+    
+    aggs = [agg_func(col) for col in data_vars]
+    props_as_df = props_as_df.group_by(pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True).agg(*aggs)
         
     x = props_as_df["year"].unique()
     n = len(x)
@@ -956,8 +953,8 @@ def plot_trends(
             if dji:
                 break
         ax.legend(ncol=1, fontsize=10)
-    subtitle = "std" if std else "trends"
-    fig.savefig(f"{FIGURES}/jet_props_trends/jet_props_{subtitle}_{season}{suffix}.png")
+    subtitle = "_std_" if std else "_"
+    fig.savefig(f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png")
     if clear:
         del fig
         plt.close()

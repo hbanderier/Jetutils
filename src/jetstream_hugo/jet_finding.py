@@ -705,13 +705,14 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     )
 
     # Expr half_width
-    below = pl.col("s_interp") <= pl.max_horizontal(pl.col("s") / 4 * 3, pl.lit(25))
+    below = pl.col("s_interp") <= pl.max_horizontal(pl.col("s") / 4 * 3, pl.lit(10))
     stop_up = below.arg_max()
     nlo_up = pl.col("normallon").gather(stop_up)
     nla_up = pl.col("normallat").gather(stop_up)
     half_width_up = haversine(
         nlo_up, nla_up, pl.col("lon").get(0), pl.col("lat").get(0)
     ).cast(pl.Float32)
+    half_width_up = pl.when(below.any()).then(half_width_up).otherwise(float("nan"))
 
     stop_down = below.len() - below.reverse().arg_max() - 1
     nlo_down = pl.col("normallon").gather(stop_down)
@@ -722,6 +723,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     half_width_down = haversine(
         nlo_down, nla_down, pl.col("lon").get(0), pl.col("lat").get(0)
     ).cast(pl.Float32)
+    half_width_down = pl.when(below.any()).then(half_width_down).otherwise(float("nan"))
 
     half_width = (
         pl.when(pl.col("side") == -1)
@@ -736,7 +738,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     }
     second_agg_out = agg_out | {"half_width": pl.col("half_width").sum()}
     third_agg_out = agg_out | {
-        "width": (pl.col("half_width") * pl.col("s")).sum() / pl.col("s").sum()
+        "width": (pl.col("half_width").fill_nan(None) * pl.col("s")).sum() / pl.col("s").sum()
     }
 
     jets = jets.group_by([*index_columns, "index", "side"], maintain_order=True).agg(
@@ -919,7 +921,7 @@ def is_polar_gmix(
     return pl.concat(to_concat).sort(index_columns)
 
 
-def categorize_df_jets(
+def average_jet_categories(
     props_as_df: pl.DataFrame,
     polar_cutoff: float | None = None,
     allow_hybrid: bool = False,
@@ -1633,7 +1635,7 @@ class JetFindingExperiment(object):
         if ofile_pad.is_file() and categorize and not force:
             return pl.read_parquet(ofile_pad)
         if ofile_padu.is_file() and categorize and not force:
-            props_as_df = categorize_df_jets(pl.read_parquet(ofile_padu))
+            props_as_df = average_jet_categories(pl.read_parquet(ofile_padu))
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         _, all_jets_over_time, flags = self.track_jets()
@@ -1641,7 +1643,7 @@ class JetFindingExperiment(object):
         props_as_df = add_persistence_to_props(props_as_df, flags)
         props_as_df = self.add_com_speed(all_jets_over_time, props_as_df, force=bool(force))
         props_as_df.write_parquet(ofile_padu)
-        props_as_df_cat = categorize_df_jets(props_as_df)
+        props_as_df_cat = average_jet_categories(props_as_df)
         props_as_df_cat.write_parquet(ofile_pad)
         if categorize:
             props_as_df_cat

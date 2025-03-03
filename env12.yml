@@ -1,0 +1,32 @@
+name: env12
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - aiohttp
+  - cartopy
+  - colormaps
+  - dask
+  - flox
+  - fsspec
+  - intake
+  - intake-esm
+  - ipython
+  - jax
+  - jupyter
+  - matplotlib
+  - netcdf4
+  - numpy
+  - ott-jax
+  - pandas
+  - polars
+  - s3fs
+  - scikit-learn
+  - scipy
+  - shap
+  - tqdm
+  - xarray
+  - xgboost
+  - xrft
+  - zarr
+prefix: /storage/homefs/hb22g102/miniforge3/envs/env12
