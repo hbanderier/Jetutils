@@ -321,6 +321,7 @@ def get_index_columns(
         "jet ID",
         "spell",
         "relative_index",
+        "relative_time",
     ),
 ):
     index_columns = [ic for ic in potentials if ic in df.columns]

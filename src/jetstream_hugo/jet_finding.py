@@ -648,7 +648,7 @@ def gather_normal_da_jets(
     normallat = pl.col("lat") + pl.col("angle").sin() * pl.col("n")
 
     index_columns = get_index_columns(
-        jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
+        jets, ("member", "time", "cluster", "spell", "relative_index", "relative_time", "jet ID", "sample_index", "inside_index")
     )
 
     jets = jets[[*index_columns, "lon", "lat", "u", "v", "s", *is_polar]]
