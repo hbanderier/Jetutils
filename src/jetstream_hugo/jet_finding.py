@@ -515,7 +515,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     ]
 
     def dl(col):
-        return (pl.col(col).max() - pl.col(col).min())
+        return pl.col(col).max() - pl.col(col).min()
 
     aggregations = [
         *[
@@ -592,53 +592,71 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     return props_as_df
 
 
-def distances_to_coord(
-    da_df: pl.DataFrame, jet: pl.DataFrame, coord: str, prefix: str = ""
+def interp_from_other(
+    jets: pl.DataFrame, da_df: pl.DataFrame, varname: str
 ):
-    unique = da_df[coord].unique()
-    ind = unique.search_sorted(jet[f"{prefix}{coord}"]).cast(pl.Int32)
-    dx = unique.diff()[1]
-    dist_to_next = unique.gather(ind) - jet[f"{prefix}{coord}"]
-    dist_to_previous = dx - dist_to_next
-    n = unique.len()
-    return n, ind, dx, dist_to_previous, dist_to_next
-
-
-def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str = "s"):
-    n_lon, ind_lon, dlon, dist_to_previous_lon, dist_to_next_lon = distances_to_coord(
-        da_df, jets, "lon", "normal"
+    # assumes regular grid
+    index_columns = get_index_columns(da_df)
+    lon = da_df["lon"].unique().sort()
+    lat = da_df["lat"].unique().sort()
+    dlon = lon[1] - lon[0]
+    dlat = lat[1] - lat[0]
+    da_df = da_df.rename({"lon": "lon_", "lat": "lat_"})
+    if varname in jets.columns:
+        jets = jets.rename({varname: f"{varname}_core"})
+        revert_rename = True
+    else:
+        revert_rename = False
+    jets = jets.with_columns(
+        left=(pl.col("normallon") // dlon) * dlon,
+        below=(pl.col("normallat") // dlat) * dlat,
+    ).with_columns(
+        right=pl.col("left") + dlon,
+        above=pl.col("below") + dlat,
     )
-    n_lat, ind_lat, dlat, dist_to_previous_lat, dist_to_next_lat = distances_to_coord(
-        da_df, jets, "lat", "normal"
+    for pair in [
+        ["left", "below"],
+        ["left", "above"],
+        ["right", "below"],
+        ["right", "above"],
+    ]:
+        jets = jets.join(
+            da_df,
+            left_on=[*index_columns, *pair],
+            right_on=[*index_columns, "lon_", "lat_"],
+        ).rename({varname: "".join(pair)})
+    below = (pl.col("right") - pl.col("normallon")) * pl.col("leftbelow") / dlon + (
+        pl.col("normallon") - pl.col("left")
+    ) * pl.col("rightbelow") / dlon
+    above = (pl.col("right") - pl.col("normallon")) * pl.col("leftabove") / dlon + (
+        pl.col("normallon") - pl.col("left")
+    ) * pl.col("rightabove") / dlon
+    jets = jets.with_columns(r1=below, r2=above).drop(
+        "leftbelow", "leftabove", "rightbelow", "rightabove", "left", "right"
     )
-    s_above_right = da_df[n_lon * ind_lat + ind_lon, varname]
-    s_below_right = da_df[n_lon * (ind_lat - 1) + ind_lon, varname]
-    s_above_left = da_df[n_lon * ind_lat + ind_lon - 1, varname]
-    s_below_left = da_df[n_lon * (ind_lat - 1) + ind_lon - 1, varname]
-
-    s_below = (
-        s_below_right * dist_to_next_lon / dlon
-        + s_below_left * dist_to_previous_lon / dlon
+    center = (pl.col("above") - pl.col("normallat")) * pl.col("r1") / dlat + (
+        pl.col("normallat") - pl.col("below")
+    ) * pl.col("r2") / dlat
+    jets = jets.with_columns(**{f"{varname}_interp": center}).drop(
+        "below", "above", "r1", "r2"
     )
-    s_above = (
-        s_above_right * dist_to_next_lon / dlon
-        + s_above_left * dist_to_previous_lon / dlon
-    )
-
-    s_interp = s_below * dist_to_next_lat / dlat + s_above * dist_to_previous_lat / dlat
-    return s_interp
+    if revert_rename:
+        jets = jets.rename({f"{varname}_core": varname})
+    return jets
 
 
 def gather_normal_da_jets(
-    jets: pl.DataFrame, da: xr.DataArray, half_length: float = 12.0, dn: float = 1.0
+    jets: pl.DataFrame,
+    da: xr.DataArray,
+    half_length: float = 12.0,
+    dn: float = 1.0,
+    delete_middle: bool = False,
 ) -> pl.DataFrame:
     is_polar = ["is_polar"] if "is_polar" in jets.columns else []
-    ns_df = pl.Series(
-        "n",
-        np.delete(
-            np.arange(-half_length, half_length + dn, dn), int(half_length // dn)
-        ),
-    ).to_frame()
+    ns_df = np.arange(-half_length, half_length + dn, dn)
+    if delete_middle:
+        ns_df = np.delete(ns_df, int(half_length // dn))
+    ns_df = pl.Series("n", ns_df).to_frame()
 
     # Expr angle
     angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
@@ -648,7 +666,18 @@ def gather_normal_da_jets(
     normallat = pl.col("lat") + pl.col("angle").sin() * pl.col("n")
 
     index_columns = get_index_columns(
-        jets, ("member", "time", "cluster", "spell", "relative_index", "relative_time", "jet ID", "sample_index", "inside_index")
+        jets,
+        (
+            "member",
+            "time",
+            "cluster",
+            "spell",
+            "relative_index",
+            "relative_time",
+            "jet ID",
+            "sample_index",
+            "inside_index",
+        ),
     )
 
     jets = jets[[*index_columns, "lon", "lat", "u", "v", "s", *is_polar]]
@@ -679,9 +708,8 @@ def gather_normal_da_jets(
         lon=slice(jets["normallon"].min(), jets["normallon"].max()),
         lat=slice(jets["normallat"].min(), jets["normallat"].max()),
     )
-    da = da.sel(time=np.isin(da.time.values, jets["time"].unique().to_numpy()))
+    da = da.sel(time=jets["time"].unique().sort().to_numpy())
     da_df = xarray_to_polars(da)
-    da_df = da_df.drop([ic for ic in index_columns if ic in da_df.columns])
 
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
@@ -690,15 +718,13 @@ def gather_normal_da_jets(
         pl.col("normallat") <= da_df["lat"].max(),
     )
     varname = da.name
-    jets = jets.with_columns(
-        **{f"{varname}_interp": interp_from_other(jets, da_df, varname)}
-    )
+    jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
     return jets
 
 
 def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
-    jets = gather_normal_da_jets(jets, da, 12.0, 1.0)
+    jets = gather_normal_da_jets(jets, da, 12.0, 1.0, delete_middle=True)
 
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
@@ -710,7 +736,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     nlo_up = pl.col("normallon").gather(stop_up)
     nla_up = pl.col("normallat").gather(stop_up)
     half_width_up = haversine(
-        nlo_up, nla_up, pl.col("lon").get(0), pl.col("lat").get(0)
+        nlo_up, nla_up, pl.col("lon").first(), pl.col("lat").first()
     ).cast(pl.Float32)
     half_width_up = pl.when(below.any()).then(half_width_up).otherwise(float("nan"))
 
@@ -721,7 +747,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
 
     half_width_down = haversine(
-        nlo_down, nla_down, pl.col("lon").get(0), pl.col("lat").get(0)
+        nlo_down, nla_down, pl.col("lon").first(), pl.col("lat").first()
     ).cast(pl.Float32)
     half_width_down = pl.when(below.any()).then(half_width_down).otherwise(float("nan"))
 
@@ -738,7 +764,8 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     }
     second_agg_out = agg_out | {"half_width": pl.col("half_width").sum()}
     third_agg_out = agg_out | {
-        "width": (pl.col("half_width").fill_nan(None) * pl.col("s")).sum() / pl.col("s").sum()
+        "width": (pl.col("half_width").fill_nan(None) * pl.col("s")).sum()
+        / pl.col("s").sum()
     }
 
     jets = jets.group_by([*index_columns, "index", "side"], maintain_order=True).agg(
@@ -750,7 +777,7 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     )
     jets = jets.group_by([*index_columns, "index"]).agg(**second_agg_out)
     jets = jets.group_by(index_columns, maintain_order=True).agg(**third_agg_out)
-    return jets.drop("lon", "lat", "s").cast({"width": pl.Float32})
+    return jets.drop("lon", "lat", "s").cast({"width": pl.Float32}).sort(index_columns)
 
 
 def map_maybe_parallel(
@@ -865,7 +892,10 @@ def one_gmix(
 def is_polar_gmix(
     df: pl.DataFrame,
     feature_names: list,
-    mode: Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"] = "week",
+    mode: Literal["year"]
+    | Literal["season"]
+    | Literal["month"]
+    | Literal["week"] = "week",
     n_components: int | Sequence = 2,
     n_init: int = 20,
     init_params: str = "random_from_data",
@@ -1038,9 +1068,7 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
     inter12 = x1.is_in(x2)
     inter21 = x2.is_in(x1)
     vert_dist = (y1.filter(inter12) - y2.filter(inter21)).abs().mean()
-    overlap = (
-        inter12.mean()
-    )  # new needs to be in old. giving weight to inter21 would let short new jets swallow old big jets, it's weird i think
+    overlap = inter12.mean()  # new needs to be in old. giving weight to inter21 would let short new jets swallow old big jets, it's weird i think
     return vert_dist.over(row), overlap.over(row)
 
 
@@ -1500,7 +1528,10 @@ class JetFindingExperiment(object):
         self,
         low_wind: xr.Dataset | xr.DataArray,
         force: int = 0,
-        mode: Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"] = "week",
+        mode: Literal["year"]
+        | Literal["season"]
+        | Literal["month"]
+        | Literal["week"] = "week",
         n_components: int | Sequence = 2,
         n_init: int = 20,
         init_params: str = "random_from_data",
@@ -1542,7 +1573,8 @@ class JetFindingExperiment(object):
         jets_upd = []
         if (
             "ratio" in all_jets_one_df.columns
-            and all_jets_one_df["ratio"].is_null().all() or force == 2
+            and all_jets_one_df["ratio"].is_null().all()
+            or force == 2
         ):
             all_jets_one_df = all_jets_one_df.drop("s_low")
             all_jets_one_df = all_jets_one_df.drop("ratio")
@@ -1575,7 +1607,10 @@ class JetFindingExperiment(object):
         return all_jets_one_df
 
     def compute_jet_props(
-        self, processes: int = N_WORKERS, chunksize=100, force: bool = False,
+        self,
+        processes: int = N_WORKERS,
+        chunksize=100,
+        force: bool = False,
     ) -> xr.Dataset:
         jet_props_incomplete_path = self.path.joinpath("props_as_df_raw.parquet")
         if jet_props_incomplete_path.is_file() and not force:
@@ -1639,9 +1674,11 @@ class JetFindingExperiment(object):
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         _, all_jets_over_time, flags = self.track_jets()
-        props_as_df = self.compute_jet_props(force = force > 1)
+        props_as_df = self.compute_jet_props(force=force > 1)
         props_as_df = add_persistence_to_props(props_as_df, flags)
-        props_as_df = self.add_com_speed(all_jets_over_time, props_as_df, force=bool(force))
+        props_as_df = self.add_com_speed(
+            all_jets_over_time, props_as_df, force=bool(force)
+        )
         props_as_df.write_parquet(ofile_padu)
         props_as_df_cat = average_jet_categories(props_as_df)
         props_as_df_cat.write_parquet(ofile_pad)
@@ -1677,7 +1714,10 @@ class JetFindingExperiment(object):
         return all_props_over_time
 
     def add_com_speed(
-        self, all_jets_over_time: pl.DataFrame, props_as_df: pl.DataFrame, force: bool = False,
+        self,
+        all_jets_over_time: pl.DataFrame,
+        props_as_df: pl.DataFrame,
+        force: bool = False,
     ) -> pl.DataFrame:
         all_props_over_time = self.props_over_time(
             all_jets_over_time,
