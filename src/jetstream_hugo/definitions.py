@@ -322,6 +322,8 @@ def get_index_columns(
         "spell",
         "relative_index",
         "relative_time",
+        "sample_index", 
+        "inside_index",
     ),
 ):
     index_columns = [ic for ic in potentials if ic in df.columns]

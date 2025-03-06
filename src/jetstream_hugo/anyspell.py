@@ -335,8 +335,7 @@ def get_spells(
     out = out.with_columns(
         out.group_by("spell", maintain_order=True)
         .agg(
-            relative_time=pl.col("time")
-            - pl.col("time").get(pl.arg_where(pl.col("relative_index") == 0).first())
+            relative_time=pl.col("time") - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0)).first()
         )
         .explode("relative_time")
     )
@@ -380,6 +379,14 @@ def get_persistent_jet_spells(
     return get_spells(
         onejet, metric, **kwargs
     )
+    
+    
+def subset_around_offset(df, around_onset: int | datetime.timedelta | None = None):
+    if isinstance(around_onset, int) and "relative_index" in df.columns:
+        df = df.filter(pl.col("relative_index").abs() <= around_onset)
+    elif isinstance(around_onset, datetime.timedelta) and "relative_time" in df.columns:
+        df = df.filter(pl.col("relative_time").abs() <= around_onset)
+    return df
 
 
 def mask_from_spells_pl(

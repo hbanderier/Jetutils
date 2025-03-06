@@ -43,8 +43,12 @@ from jetstream_hugo.definitions import (
     UNITS,
     SEASONS,
     JJADOYS,
-    infer_direction
+    get_index_columns,
+    infer_direction,
+    polars_to_xarray,
+    xarray_to_polars
 )
+from jetstream_hugo.jet_finding import gather_normal_da_jets
 from jetstream_hugo.stats import field_significance
 from jetstream_hugo.data import periodic_rolling_pl
 
@@ -1119,3 +1123,58 @@ def props_histogram(
         del fig
         plt.close()
         clear_output()
+        
+
+def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 100):
+    if isinstance(varnames, str):
+        varnames = [varnames]
+    index_columns = get_index_columns(jets)
+    if "relative_index" in index_columns and "time" in index_columns:
+        index_columns.remove("time")
+    jets = jets.with_columns(norm_index=jets.group_by(index_columns, maintain_order=True).agg(pl.col("index") / pl.col("index").max())["index"].explode())
+    jets = jets.group_by([*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"], maintain_order=True).agg([pl.col(varname).mean() for varname in varnames])
+    return jets
+
+
+def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 40):
+    jets = times.join(jets, on="time", how="left")
+    jets = gather_normal_da_jets(jets, da, half_length=20, dn=1)
+    varname = da.name + "_interp"
+
+    jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
+    return jets
+
+def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 40, n_bootstraps: int = 100):
+    varname = da.name + "_interp"
+    if not n_bootstraps:
+        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp)
+        jets = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).mean())
+        return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
+    rng = np.random.default_rng()
+    orig_times = times.clone()
+    boostrap_len = orig_times["time"].n_unique()
+    all_times = jets["time"].unique().clone()
+    times = times[["time"]].with_row_index("inside_index").with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
+    if "spell" in orig_times.columns: # then block bootstrapping
+        bootstrap_block = int(np.round(boostrap_len / orig_times["spell"].n_unique()))
+        boostraps = rng.choice(all_times.shape[0] - bootstrap_block, size=(n_bootstraps, boostrap_len // bootstrap_block))
+        boostraps = boostraps[..., None] + np.arange(bootstrap_block)[None, None, :]
+        boostraps = boostraps.reshape(n_bootstraps, boostrap_len)
+    else:
+        boostraps = rng.choice(all_times.shape[0], size=(n_bootstraps, boostrap_len))
+    ts_bootstrapped = all_times[boostraps.flatten()].to_frame()
+    ts_bootstrapped = ts_bootstrapped.with_columns(
+        sample_index=pl.Series(values=np.arange(len(ts_bootstrapped)) // boostrap_len, dtype=pl.UInt32),
+        inside_index=pl.Series(values=np.arange(len(ts_bootstrapped)) % boostrap_len, dtype=pl.UInt32),
+    )
+    columns = ["sample_index", "inside_index", "time"]
+    ts_bootstrapped = pl.concat([
+        ts_bootstrapped[columns],
+        times[columns],
+    ])
+    jets = _gather_normal_da_jets_wrapper(jets, ts_bootstrapped, da, n_interp=n_interp)
+    jets = jets.group_by(["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"]).agg(pl.col("dummy_interp").mean()).sort("sample_index", "is_polar", "norm_index", "n")
+    pvals = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col("dummy_interp").head(n_bootstraps).sort().search_sorted(pl.col("dummy_interp").get(-1)) / n_bootstraps)
+    jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
+    jets = jets.with_columns(pvals=pvals["dummy_interp"])
+    return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
