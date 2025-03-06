@@ -1144,6 +1144,7 @@ def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: 
     jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
     return jets
 
+
 def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 40, n_bootstraps: int = 100):
     varname = da.name + "_interp"
     if not n_bootstraps:
@@ -1173,8 +1174,8 @@ def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.D
         times[columns],
     ])
     jets = _gather_normal_da_jets_wrapper(jets, ts_bootstrapped, da, n_interp=n_interp)
-    jets = jets.group_by(["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"]).agg(pl.col("dummy_interp").mean()).sort("sample_index", "is_polar", "norm_index", "n")
-    pvals = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col("dummy_interp").head(n_bootstraps).sort().search_sorted(pl.col("dummy_interp").get(-1)) / n_bootstraps)
+    jets = jets.group_by(["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"]).agg(pl.col(varname).mean()).sort("sample_index", "is_polar", "norm_index", "n")
+    pvals = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)) / n_bootstraps)
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
-    jets = jets.with_columns(pvals=pvals["dummy_interp"])
+    jets = jets.with_columns(pvals=pvals[varname])
     return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])

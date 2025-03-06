@@ -381,7 +381,7 @@ def get_persistent_jet_spells(
     )
     
     
-def subset_around_offset(df, around_onset: int | datetime.timedelta | None = None):
+def subset_around_onset(df, around_onset: int | datetime.timedelta | None = None):
     if isinstance(around_onset, int) and "relative_index" in df.columns:
         df = df.filter(pl.col("relative_index").abs() <= around_onset)
     elif isinstance(around_onset, datetime.timedelta) and "relative_time" in df.columns:
