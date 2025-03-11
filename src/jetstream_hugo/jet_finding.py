@@ -26,6 +26,9 @@ from jetstream_hugo.data import (
     compute_extreme_climatology,
     DataHandler,
     open_da,
+    open_dataarray,
+    open_dataset,
+    to_netcdf
 )
 
 
@@ -1504,7 +1507,7 @@ class JetFindingExperiment(object):
             return all_jets_one_df
         try:
             qs_path = self.path.joinpath("s_q.nc")
-            qs = xr.open_dataarray(qs_path).sel(quantile=0.7)
+            qs = open_dataarray(qs_path).sel(quantile=0.7)
             kwargs["thresholds"] = qs.rename("s")
         except FileNotFoundError:
             pass
@@ -1755,11 +1758,11 @@ class JetFindingExperiment(object):
     def jet_position_as_da(self, force: bool = False):
         ofile = self.path.joinpath("jet_pos.nc")
         if ofile.is_file() and not force:
-            return xr.open_dataarray(ofile)
+            return open_dataarray(ofile)
 
         all_jets_one_df = self.find_jets()
         da_jet_pos = jet_position_as_da(all_jets_one_df)
-        da_jet_pos.to_netcdf(ofile)
+        to_netcdf(da_jet_pos, ofile)
         return da_jet_pos
 
     def compute_extreme_clim(self, varname: str, subsample: int = 5):
@@ -1769,7 +1772,7 @@ class JetFindingExperiment(object):
         mask = np.isin(years, np.unique(years)[::subsample])
         opath = self.path.joinpath(f"{varname}_q_clim.nc")
         compute_extreme_climatology(da.isel(time=mask), opath)
-        quantiles_clim = xr.open_dataarray(opath)
+        quantiles_clim = open_dataarray(opath)
         quantiles = xr.DataArray(
             np.zeros((len(self.ds.time), quantiles_clim.shape[0])),
             coords={
@@ -1780,4 +1783,4 @@ class JetFindingExperiment(object):
         for qcl in quantiles_clim.transpose():
             dayofyear = qcl.dayofyear
             quantiles[quantiles.time.dt.dayofyear == dayofyear, :] = qcl.values
-        quantiles.to_netcdf(self.path.joinpath(f"{varname}_q.nc"))
+        to_netcdf(quantiles, self.path.joinpath(f"{varname}_q.nc"))

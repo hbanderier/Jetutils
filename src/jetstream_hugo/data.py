@@ -5,6 +5,7 @@ from typing import Optional, Mapping, Sequence, Tuple, Literal
 from itertools import product
 from pathlib import Path
 
+import cf_xarray
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -25,8 +26,79 @@ from jetstream_hugo.definitions import (
 )
 
 
+def to_netcdf(da: xr.Dataset | xr.DataArray, path: Path | str, **kwargs):
+    try: 
+        da.to_netcdf(path, **kwargs)
+    except NotImplementedError as e:
+        try:
+            import cf_xarray
+        except ModuleNotFoundError:
+            raise e
+        if isinstance(da, xr.DataArray):
+            da = da.to_dataset()
+        da = cf_xarray.encode_multi_index_as_compress(da)
+        da.to_netcdf(path, **kwargs)
+        
+        
+def open_dataset(path: Path | str, **kwargs) -> xr.Dataset:
+    ds = xr.open_dataset(path, **kwargs)
+    try:
+        import cf_xarray
+    except ModuleNotFoundError:
+        return ds
+    try:
+        return cf_xarray.decode_compress_to_multi_index(ds)
+    except ValueError:
+        return ds
+    
+    
+def open_dataarray(path: Path | str, **kwargs) -> xr.DataArray:
+    ds = open_dataset(path, **kwargs)
+    if len(ds.data_vars) != 1:
+        raise ValueError("More than one data var in ds!")
+    (da,) = ds.data_vars.values()
+    return da
+        
+        
+def _open_many_da_wrapper(filename: Path | list[Path], varname: str | None = None) -> xr.DataArray | xr.Dataset:
+    if isinstance(filename, list) and len(filename) == 1:
+        filename = filename[0]
+    if isinstance(filename, list):
+        da = []
+        for fn in filename:
+            stem = Path(fn).stem
+            try:
+                int(stem)
+            except ValueError: # exceptions are raised by clim.nc, which we do not want anyways
+                continue
+            da_ = open_dataset(fn, chunks="auto")
+            if len(stem) == 6:
+                yearmask = da_.time.dt.year.values == int(stem[:4])
+                monthmask = da_.time.dt.month.values == int(stem[4:])
+                da_ = da_.sel(time=yearmask&monthmask)
+            else:
+                yearmask = da_.time.dt.year.values == int(stem)
+                da_ = da_.sel(time=yearmask)
+            da.append(da_)
+        da = xr.concat(da, dim="time")
+        da = da.unify_chunks()
+    else:
+        da = open_dataset(filename, chunks="auto")
+        da = da.unify_chunks()
+    da = standardize(da)
+    if varname is None or len(da.data_vars) > 1:
+        return da
+    for potential in [varname, varname.split("_")[0], "dummy", DEFAULT_VARNAME, list(da.data_vars)[0]]:
+        try:
+            da = da[potential].rename(varname)
+            break
+        except KeyError:
+            pass        
+    return da
+        
+
 def get_land_mask() -> xr.DataArray:
-    mask = xr.open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
+    mask = open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
     mask = (
         mask.squeeze()
         .rename(longitude="lon", latitude="lat")
@@ -47,12 +119,12 @@ def determine_file_structure(path: Path) -> str:
 
 
 def determine_sample_dims(da: xr.DataArray) -> Mapping:
-    included = ["member", "time"]
+    included = ["member", "time", "megatime"]
     return {key: da[key].values for key in da.dims if key in included}
 
 
 def determine_feature_dims(da: xr.DataArray) -> Mapping:
-    excluded = ["member", "time", "cluster"]
+    excluded = ["member", "time", "cluster", "megatime"]
     return {key: da[key].values for key in da.dims if key not in excluded}
 
 
@@ -127,9 +199,11 @@ def standardize(da):
         "m01s30i202_3": "v",
         "T": "t",
         "t2m": "t",
+        "2m_temperature": "t",
         "m01s30i204_3": "t",
         "pt": "theta",
         "PRECL": "tp",
+        "total_precipitation": "tp",
         "Z3": "z",
     }
     if isinstance(da, xr.Dataset):
@@ -149,9 +223,10 @@ def standardize(da):
             da = da.reset_coords(to_del, drop=True)
         except ValueError:
             pass
-    inityear = da["time"].dt.year.values[0]
-    if inityear < 1800:
-        new_time_range = pd.date_range(f"{inityear + 1968}0101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
+    if "time" in da.dims:
+        inityear = da["time"].dt.year.values[0]
+        if inityear < 1800:
+            new_time_range = pd.date_range(f"{inityear + 1968}0101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
         da["time"] = new_time_range
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
@@ -312,43 +387,6 @@ def extract(
     return da
 
 
-def _open_dataarray(filename: Path | list[Path], varname: str | None = None) -> xr.DataArray | xr.Dataset:
-    if isinstance(filename, list) and len(filename) == 1:
-        filename = filename[0]
-    if isinstance(filename, list):
-        da = []
-        for fn in filename:
-            stem = Path(fn).stem
-            try:
-                int(stem)
-            except ValueError: # exceptions are raised by clim.nc, which we do not want anyways
-                continue
-            da_ = xr.open_dataset(fn, chunks="auto")
-            if len(stem) == 6:
-                yearmask = da_.time.dt.year.values == int(stem[:4])
-                monthmask = da_.time.dt.month.values == int(stem[4:])
-                da_ = da_.sel(time=yearmask&monthmask)
-            else:
-                yearmask = da_.time.dt.year.values == int(stem)
-                da_ = da_.sel(time=yearmask)
-            da.append(da_)
-        da = xr.concat(da, dim="time")
-        da = da.unify_chunks()
-    else:
-        da = xr.open_dataset(filename, chunks="auto")
-        da = da.unify_chunks()
-    da = standardize(da)
-    if varname is None or len(da.data_vars) > 1:
-        return da
-    for potential in [varname, varname.split("_")[0], "dummy", DEFAULT_VARNAME]:
-        try:
-            da = da[potential].rename(varname)
-            break
-        except KeyError:
-            pass        
-    return da
-
-
 def determine_period(path: Path):
     yearlist = []
     for f in path.glob("*.nc"):
@@ -433,7 +471,7 @@ def open_da(
 
     files_to_load = [fn for fn in files_to_load if fn.is_file()]
 
-    da = _open_dataarray(files_to_load, varname_in_file)
+    da = _open_many_da_wrapper(files_to_load, varname_in_file)
     da = extract(
         da,
         period=period,
@@ -643,12 +681,12 @@ def compute_all_smoothed_anomalies(
         for source, dest in tqdm(zip(sources, dests_anom), total=len(dests_anom)):
             if dest.is_file():
                 continue
-            anom = standardize(_open_dataarray(source, varname))
+            anom = standardize(_open_many_da_wrapper(source, varname))
             anom = compute(smooth(anom, smoothing).astype(np.float32))
-            anom.to_netcdf(dest)
+            to_netcdf(anom, dest)
         return
     if dest_clim.is_file():
-        clim = xr.open_dataarray(dest_clim)
+        clim = open_dataarray(dest_clim)
     else:
         da = open_da(
             dataset, level_type, varname, resolution, period="all", levels="all"
@@ -664,18 +702,18 @@ def compute_all_smoothed_anomalies(
         else:
             clim = compute_clim(da, clim_type)
             clim = smooth(clim, clim_smoothing)
-        clim.astype(np.float32).to_netcdf(dest_clim)
+        to_netcdf(clim.astype(np.float32), dest_clim)
     if len(sources) > 1:
         iterator_ = tqdm(zip(sources, dests_anom), total=len(dests_anom))
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
-        anom = _open_dataarray(source)
+        anom = _open_many_da_wrapper(source)
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
             anom = smooth(anom, smoothing)
             anom = compute(anom.astype(np.float32))
-        anom.to_netcdf(dest)
+        to_netcdf(anom, dest)
 
 
 def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
@@ -709,7 +747,7 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
     q = da.quantile(np.arange(60, 100) / 100, dim=["lon", "lat"])
     q_clim = compute_clim(q, "dayofyear")
     q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
-    q_clim.to_netcdf(opath)
+    to_netcdf(q_clim, opath)
 
 
 def compute_anomalies_ds(
@@ -886,9 +924,9 @@ class DataHandler(object):
         self.path = Path(path)
         if da is None:
             try:
-                self.da = xr.open_dataarray(self.path.joinpath("da.nc"))
+                self.da = open_dataarray(self.path.joinpath("da.nc"))
             except ValueError:
-                self.da = xr.open_dataset(self.path.joinpath("da.nc"))
+                self.da = open_dataset(self.path.joinpath("da.nc"))
         else:
             self.da = da
         self._setup_dims()
@@ -899,10 +937,13 @@ class DataHandler(object):
         cls,
         basepath: Path | str,
         da: xr.DataArray | xr.Dataset,
+        save_da: bool = False
     ) -> "DataHandler":
         basepath = Path(basepath)
         metadata = metadata_from_da(da)
         path = find_spot(basepath, metadata)
+        if save_da and not path.joinpath("da.nc").is_file():
+            to_netcdf(da, path.joinpath("da.nc"))
         return cls(path, da)
 
     def _setup_dims(self):
@@ -1017,7 +1058,7 @@ class DataHandler(object):
         path = find_spot(path, metadata)
         da_path = path.joinpath("da.nc")
         if da_path.is_file():
-            da = xr.open_dataset(
+            da = open_dataset(
                 da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1}
             )
             if len(da.data_vars) == 1:
@@ -1030,8 +1071,8 @@ class DataHandler(object):
                 if isinstance(da, xr.DataArray):
                     da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
                 else:
-                    da = flatten_by(da, "s") # hacky ugly bah
-            da.to_netcdf(da_path, format="NETCDF4")
+                    da = flatten_by(da, "s") 
+            to_netcdf(da, da_path, format="NETCDF4")
         return cls(path, da)
     
     
@@ -1067,7 +1108,7 @@ class DataHandler(object):
         
         dspath = path.joinpath("ds.nc")
         if dspath.is_file():
-            ds = xr.open_dataset(dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
+            ds = open_dataset(dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1})
             return cls(ds, path.parent)
         
         ds = {}
@@ -1077,7 +1118,7 @@ class DataHandler(object):
         ds = compute(ds, progress_flag=True)
         if flatten_ds:
             ds = flatten_by(ds, "s")
-        ds.to_netcdf(dspath)
+        to_netcdf(ds, dspath)
         return cls(path, ds)
     
     @classmethod
@@ -1126,7 +1167,7 @@ class DataHandler(object):
         path = find_spot(basepath, metadata)
         da_path = path.joinpath("da.zarr")
         if da_path.exists():
-            da = xr.open_dataarray(da_path, engin="zarr")
+            da = open_dataarray(da_path, engin="zarr")
             return cls(da, path.parent)
         
         catalog = intake.open_esm_datastore(url)

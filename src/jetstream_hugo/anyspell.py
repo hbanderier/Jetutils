@@ -47,6 +47,8 @@ from jetstream_hugo.data import (
     extract_season,
     DataHandler,
     compute_anomalies_ds,
+    open_dataarray,
+    to_netcdf
 )
 
 set_mp_start_method("spawn", force=True)
@@ -867,11 +869,11 @@ def predict_all(
                 and feature_importance_fn.is_file()
                 and raw_shap_fn.is_file()
             ):
-                this_full_pred = xr.open_dataarray(full_pred_fn)
+                this_full_pred = open_dataarray(full_pred_fn)
                 full_pred.loc[indexer] = this_full_pred
                 for score in ALL_SCORES:
                     full_pred[score].loc[indexer] = this_full_pred[score].item()
-                feature_importances.loc[indexer] = xr.open_dataarray(
+                feature_importances.loc[indexer] = open_dataarray(
                     feature_importance_fn
                 )
                 raw_shap[indexer_str] = load_pickle(raw_shap_fn)
@@ -979,8 +981,8 @@ def predict_all(
             ).mean(axis=0)
         # Save because this is very slow, ~2 minutes per iteration without shap, 4+ with
         if save_path is not None:
-            full_pred.loc[indexer].to_netcdf(full_pred_fn)
-            feature_importances.loc[indexer].to_netcdf(feature_importance_fn)
+            to_netcdf(full_pred.loc[indexer], full_pred_fn)
+            to_netcdf(feature_importances.loc[indexer], feature_importance_fn)
             save_pickle(raw_shap[indexer_str], raw_shap_fn)
     return full_pred, feature_importances, raw_shap
 
@@ -1036,8 +1038,8 @@ def multi_combination_prediction(
                 f"feature_importances_{n_predictors}"
             )
             if full_pred_fn.is_file() and feature_importances_fn.is_file():
-                full_pred = xr.open_dataarray(full_pred_fn)
-                feature_importances = xr.open_dataarray(feature_importances_fn)
+                full_pred = open_dataarray(full_pred_fn)
+                feature_importances = open_dataarray(feature_importances_fn)
                 this_combination = feature_importances.predictor.values
                 best_combinations[indexer_str][n_predictors] = (
                     full_pred,
@@ -1072,8 +1074,8 @@ def multi_combination_prediction(
                 feature_importance_list[imax],
                 combinations[imax],
             )
-            full_pred_list[imax].to_netcdf(full_pred_fn)
-            feature_importance_list[imax].to_netcdf(feature_importances_fn)
+            to_netcdf(full_pred_list[imax], full_pred_fn)
+            to_netcdf(feature_importance_list[imax], feature_importances_fn)
             combinations = [
                 [*combinations[imax], predictor]
                 for predictor in predictor_names
@@ -1157,7 +1159,7 @@ class ExtremeExperiment(object):
         clusters_da_file = f"clusters_{self.path_suffix}_{n_clu}.nc"
         clusters_da_file = self.path.joinpath(clusters_da_file)
         if clusters_da_file.is_file():
-            return xr.open_dataarray(clusters_da_file)
+            return open_dataarray(clusters_da_file)
 
         Z = self.compute_linkage_quantile()
         clusters = cut_tree(Z, n_clusters=n_clu)[:, 0]
@@ -1175,7 +1177,7 @@ class ExtremeExperiment(object):
             clusters_da = clusters_da.stack(stack_dims)
             clusters_da[:] = clusters
         clusters_da = clusters_da.unstack()
-        clusters_da.to_netcdf(clusters_da_file)
+        to_netcdf(clusters_da, clusters_da_file)
         return clusters_da
 
     def create_targets(
@@ -1209,7 +1211,7 @@ class ExtremeExperiment(object):
             to_ret = []
             for ofile in ofiles:
                 if ofile.suffix == ".nc":
-                    to_ret.append(xr.open_dataarray(ofile))
+                    to_ret.append(open_dataarray(ofile))
                 elif ofile.suffix == ".pkl":
                     to_ret.append(load_pickle(ofile))
             return tuple(to_ret)
@@ -1244,7 +1246,7 @@ class ExtremeExperiment(object):
         to_ret = targets, length_targets, all_spells_ts, all_spells
         for to_save, ofile in zip(to_ret, ofiles):
             if ofile.suffix == ".nc":
-                to_save.to_netcdf(ofile)
+                to_netcdf(to_save, ofile)
             elif ofile.suffix == ".pkl":
                 save_pickle(to_save, ofile)
         if return_folder:
@@ -1281,14 +1283,14 @@ class ExtremeExperiment(object):
         prediction_kwargs: Mapping | None = None,
     ):
         targets_folder = self.create_targets(**create_target_kwargs, return_folder=True)
-        targets = xr.open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
+        targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
         if do_base_pred:
             path_to_base_pred = targets_folder.joinpath("base_pred.nc")
             if path_to_base_pred.is_file():
-                base_pred = xr.open_dataarray(path_to_base_pred)
+                base_pred = open_dataarray(path_to_base_pred)
             else:
                 base_pred = regress_against_time(targets)
-                base_pred.to_netcdf(path_to_base_pred)
+                to_netcdf(base_pred, path_to_base_pred)
         else:
             base_pred = None
             path_to_base_pred = None
@@ -1335,14 +1337,14 @@ class ExtremeExperiment(object):
         Wrappy Wrappy wrap
         """
         targets_folder = self.create_targets(**create_target_kwargs, return_folder=True)
-        targets = xr.open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
+        targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
         if do_base_pred:
             path_to_base_pred = targets_folder.joinpath("base_pred.nc")
             if path_to_base_pred.is_file():
-                base_pred = xr.open_dataarray(path_to_base_pred)
+                base_pred = open_dataarray(path_to_base_pred)
             else:
                 base_pred = regress_against_time(targets)
-                base_pred.to_netcdf(path_to_base_pred)
+                to_netcdf(base_pred, path_to_base_pred)
         else:
             base_pred = None
             path_to_base_pred = None
@@ -1382,7 +1384,7 @@ class ExtremeExperiment(object):
         prediction_kwargs: Mapping | None = None,
     ):
         targets_folder = path.parent.parent
-        targets = xr.open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
+        targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
         metadata = load_pickle(path.joinpath("metadata.pkl"))
         type_ = metadata["type"]
         path_to_base_pred = metadata["base_pred"]
@@ -1391,7 +1393,7 @@ class ExtremeExperiment(object):
         if prediction_kwargs is None:
             prediction_kwargs = {}
         if path_to_base_pred is not None:
-            base_pred = xr.open_dataarray(path_to_base_pred)
+            base_pred = open_dataarray(path_to_base_pred)
         else:
             base_pred = None
         best_predictors = load_pickle(path.joinpath("best_predictors.pkl"))
@@ -1407,8 +1409,8 @@ class ExtremeExperiment(object):
                     for fn in [full_pred_fn, feature_importances_fn, raw_shap_fn]
                 ]
             ):
-                full_pred = xr.open_dataarray(full_pred_fn)
-                feature_importances = xr.open_dataarray(feature_importances_fn)
+                full_pred = open_dataarray(full_pred_fn)
+                feature_importances = open_dataarray(feature_importances_fn)
                 raw_shap = load_pickle(raw_shap_fn)
                 combination[identifier] = (full_pred, feature_importances, raw_shap)
                 continue
@@ -1434,8 +1436,8 @@ class ExtremeExperiment(object):
                 True,
                 **prediction_kwargs,
             )
-            full_pred.to_netcdf(full_pred_fn)
-            feature_importances.to_netcdf(feature_importances_fn)
+            to_netcdf(full_pred, full_pred_fn)
+            to_netcdf(feature_importances, feature_importances_fn)
             save_pickle(raw_shap, raw_shap_fn)
             combination[identifier] = (full_pred, feature_importances, raw_shap)
         return combination

@@ -28,7 +28,7 @@ from jetstream_hugo.definitions import (
 )
 
 from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import DataHandler, determine_feature_dims, determine_sample_dims
+from jetstream_hugo.data import DataHandler, determine_feature_dims, open_dataarray, determine_sample_dims, to_netcdf
 
 RAW_REALSPACE: int = 0
 RAW_PCSPACE: int = 1
@@ -113,16 +113,19 @@ def labels_to_centers(
     else:
         unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(np.prod(labels.shape))
-    dims = list(determine_sample_dims(da))
-    extra_dims = [coord for coord in da.coords if (coord not in da.dims) and ("time" in da[coord].dims)]
-    centers = [
-        compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
-    ]
-    for extra_dim in extra_dims:
-        for i, center in enumerate(centers):
-            centers[i] = center.assign_coords(
-                {extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)}
-            )
+    if "megatime" in da.dims:
+        centers = [compute(da.sel(megatime=labels == i).mean("megatime")) for i in tqdm(unique_labels)]
+    else:
+        dims = list(determine_sample_dims(da))
+        extra_dims = [coord for coord in da.coords if (coord not in da.dims) and ("time" in da[coord].dims)]
+        centers = [
+            compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
+        ]
+        for extra_dim in extra_dims:
+            for i, center in enumerate(centers):
+                centers[i] = center.assign_coords(
+                    {extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)}
+                )
     centers = xr.concat(centers, dim=coord)
     centers = centers.assign_coords(
         {"ratio": (coord, counts), "label": (coord, unique_labels)}
@@ -153,12 +156,12 @@ class Experiment(object):
     def get_norm_da(self):
         norm_path = self.path.joinpath("norm.nc")
         if norm_path.is_file():
-            return xr.open_dataarray(norm_path)
+            return open_dataarray(norm_path)
 
         norm_da = np.sqrt(degcos(self.da.lat))  # lat as da to simplify mult
 
         norm_da = compute(norm_da, progress_flag=True)
-        norm_da.to_netcdf(norm_path)
+        to_netcdf(norm_da, norm_path)
         return norm_da
 
     def prepare_for_clustering(self) -> Tuple[np.ndarray | DaArray, xr.DataArray]:
@@ -244,7 +247,7 @@ class Experiment(object):
             )
         centers = centers_realspace(centers, feature_dims, extra_dims)
         norm_path = self.path.joinpath("norm.nc")
-        norm_da = xr.open_dataarray(norm_path.as_posix())
+        norm_da = open_dataarray(norm_path.as_posix())
         if "time" in norm_da.dims:
             norm_da = norm_da.mean(dim="time")
         return centers / norm_da
@@ -296,7 +299,15 @@ class Experiment(object):
         n_pcas: int,
         weigh_grams: bool = False,
         return_type: int = RAW_REALSPACE,
+        force: bool = False,
     ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
+        output_file_stem = f"kmeans_{n_clu}_{n_pcas}"
+        output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
+        output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
+        if all([ofile.is_file() for ofile in [output_path_labels, output_path_centers]]) and not force:
+            centers = open_dataarray(output_path_centers)
+            labels = open_dataarray(output_path_labels)
+            return centers, labels
         X, da = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
         if weigh_grams:
@@ -319,7 +330,10 @@ class Experiment(object):
         centers = results.cluster_centers_
         labels = results.labels_
 
-        return self._cluster_output(centers, labels, return_type, X)
+        centers, labels = self._cluster_output(centers, labels, return_type, X)
+        to_netcdf(centers, output_path_centers)
+        to_netcdf(labels, output_path_labels)
+        return centers, labels
 
     def som_cluster(
         self,
@@ -350,8 +364,8 @@ class Experiment(object):
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
         if all([ofile.is_file() for ofile in [output_path_weights, output_path_labels, output_path_centers]]) and not force:
             net.load_weights(output_path_weights)
-            centers = xr.open_dataarray(output_path_centers)
-            labels = xr.open_dataarray(output_path_labels)
+            centers = open_dataarray(output_path_centers)
+            labels = open_dataarray(output_path_labels)
             net.latest_bmus = labels.values
             return net, centers, labels
         if train_kwargs is None:
@@ -379,8 +393,8 @@ class Experiment(object):
             
         X = compute(X, progress_flag=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
-        centers.to_netcdf(output_path_centers)
-        labels.to_netcdf(output_path_labels)
+        to_netcdf(centers, output_path_centers)
+        to_netcdf(labels, output_path_labels)
         return net, centers, labels
     
     def project_on_other_som(
@@ -403,8 +417,8 @@ class Experiment(object):
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
         if all([ofile.is_file() for ofile in [output_path_labels, output_path_centers]]):
-            centers = xr.open_dataarray(output_path_centers)
-            labels = xr.open_dataarray(output_path_labels)
+            centers = open_dataarray(output_path_centers)
+            labels = open_dataarray(output_path_labels)
             net.latest_bmus = labels.values
             return net, centers, labels
         X, da_weighted = self.prepare_for_clustering()
@@ -425,8 +439,8 @@ class Experiment(object):
             
         X = compute(X, progress_flag=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
-        centers.to_netcdf(output_path_centers)
-        labels.to_netcdf(output_path_labels)
+        to_netcdf(centers, output_path_centers)
+        to_netcdf(labels, output_path_labels)
         return net, centers, labels
 
 

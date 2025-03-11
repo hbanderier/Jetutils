@@ -206,10 +206,10 @@ def figtitle(
 
 
 def honeycomb_panel(
-    nrow, ncol, ratio: float = 1.4, subplot_kw: dict = None
+    nrow, ncol, ratio: float = 1.4, subplot_kw: dict = None, hspace: float = 0., wspace: float = 0.
 ) -> Tuple[Figure, np.ndarray]:
     fig = plt.figure(figsize=(4.5 * nrow, 4.5 * ratio * nrow))
-    gs = GridSpec(nrow, 2 * ncol + 1, hspace=0, wspace=0)
+    gs = GridSpec(nrow, 2 * ncol + 1, hspace=hspace, wspace=wspace)
     axes = np.empty((nrow, ncol), dtype=object)
     if subplot_kw is None:
         subplot_kw = {}
@@ -1125,30 +1125,36 @@ def props_histogram(
         clear_output()
         
 
-def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 100):
+def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 40):
     if isinstance(varnames, str):
         varnames = [varnames]
     index_columns = get_index_columns(jets)
     if "relative_index" in index_columns and "time" in index_columns:
         index_columns.remove("time")
+        varnames.append("time")
     jets = jets.with_columns(norm_index=jets.group_by(index_columns, maintain_order=True).agg(pl.col("index") / pl.col("index").max())["index"].explode())
     jets = jets.group_by([*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"], maintain_order=True).agg([pl.col(varname).mean() for varname in varnames])
     return jets
 
 
-def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 40):
+def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 40, clim: xr.DataArray | None = None):
     jets = times.join(jets, on="time", how="left")
     jets = gather_normal_da_jets(jets, da, half_length=20, dn=1)
     varname = da.name + "_interp"
 
     jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
+    if clim is None:
+        return jets
+    clim = xarray_to_polars(clim)
+    jets = jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar") > 0.5).cast({"n": pl.Float64})
+    jets = jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"]).with_columns(pl.col(varname) - pl.col(f"{varname}_right")).drop(f"{varname}_right", "dayofyear")
     return jets
 
 
-def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 40, n_bootstraps: int = 100):
+def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 40, n_bootstraps: int = 100, clim: xr.DataArray | None = None):
     varname = da.name + "_interp"
     if not n_bootstraps:
-        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp)
+        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim)
         jets = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).mean())
         return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
     rng = np.random.default_rng()
@@ -1173,7 +1179,7 @@ def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.D
         ts_bootstrapped[columns],
         times[columns],
     ])
-    jets = _gather_normal_da_jets_wrapper(jets, ts_bootstrapped, da, n_interp=n_interp)
+    jets = _gather_normal_da_jets_wrapper(jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim)
     jets = jets.group_by(["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"]).agg(pl.col(varname).mean()).sort("sample_index", "is_polar", "norm_index", "n")
     pvals = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)) / n_bootstraps)
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
