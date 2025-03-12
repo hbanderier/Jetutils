@@ -301,7 +301,9 @@ def revert_normalize(X, meanX, stdX):
 
 
 def xarray_to_polars(da: xr.DataArray | xr.Dataset):
-    return pl.from_pandas(da.to_dataframe().reset_index())
+    df = da.to_dataframe().reset_index(allow_duplicates=True)
+    df = df.loc[:, ~df.columns.duplicated()] # weird but easiest to handle multiindex unwrapping
+    return pl.from_pandas(df)
 
 
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
@@ -322,7 +324,7 @@ def get_index_columns(
         "spell",
         "relative_index",
         "relative_time",
-        "sample_index", 
+        "sample_index",
         "inside_index",
     ),
 ):
@@ -500,7 +502,7 @@ def do_rle_fill_hole(
                 if n_months < 12:
                     index_jump = (unique_months.diff().fill_null(1) > 1).arg_max()
                     indices = (np.arange(n_months) + index_jump) % n_months
-                    dmonth = 13 - unique_months[int(indices[0])] 
+                    dmonth = 13 - unique_months[int(indices[0])]
                     dmonth = dmonth if index_jump != 0 else 0
                     df = df.with_columns(pl.col("time").dt.offset_by(f"{dmonth}mo"))
                     df = df.with_columns(year=pl.col("time").dt.year())
@@ -511,7 +513,7 @@ def do_rle_fill_hole(
                 )
     if not isinstance(group_by, Sequence):
         group_by = [group_by]
-    
+
     if len(group_by) == 0:
         df = df.with_columns(dummy=1)
         group_by.append("dummy")
@@ -540,37 +542,41 @@ def do_rle_fill_hole(
         .otherwise(pl.col("condition"))
     ).drop("condition_right", "index")
     df = do_rle(df, group_by=group_by)
-    
+
     if not unwrap and "year" not in group_by:
         return df.drop(*to_drop)
-    
+
     if not unwrap and "year" in group_by:
         start_idx = orig_time.group_by(*group_by, maintain_order=True).len("start_idx")
         group_by.remove("year")
         if len(group_by) == 0:
-            start_idx = start_idx.with_columns(pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0))
+            start_idx = start_idx.with_columns(
+                pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0)
+            )
         else:
             start_idx = start_idx.with_columns(
-                start_idx.group_by(
-                    group_by, maintain_order=True
-                ).agg(
-                    pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0)
-                )["start_idx"].explode()
+                start_idx.group_by(group_by, maintain_order=True)
+                .agg(pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0))[
+                    "start_idx"
+                ]
+                .explode()
             )
         df = df.join(start_idx, on=["year", *group_by])
-        df = df.with_columns(start=pl.col("start") + pl.col("start_idx")).drop("year", "start_idx")
+        df = df.with_columns(start=pl.col("start") + pl.col("start_idx")).drop(
+            "year", "start_idx"
+        )
         return df
-    
+
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
     df = explode_rle(df)
     if "year" not in group_by:
         return df.drop(to_drop)
     orig_time = (
-        orig_time
-        .group_by("year")
+        orig_time.group_by("year")
         .agg(
-            pl.col("time").dt.offset_by(f"{-dmonth}mo"), index=pl.int_range(0, pl.col("time").len()).cast(pl.UInt32)
+            pl.col("time").dt.offset_by(f"{-dmonth}mo"),
+            index=pl.int_range(0, pl.col("time").len()).cast(pl.UInt32),
         )
         .explode("time", "index")
     )

@@ -29,7 +29,7 @@ from jetstream_hugo.definitions import (
 def to_netcdf(da: xr.Dataset | xr.DataArray, path: Path | str, **kwargs):
     try: 
         da.to_netcdf(path, **kwargs)
-    except NotImplementedError as e:
+    except (NotImplementedError, ValueError) as e:
         try:
             import cf_xarray
         except ModuleNotFoundError:
@@ -120,12 +120,12 @@ def determine_file_structure(path: Path) -> str:
 
 def determine_sample_dims(da: xr.DataArray) -> Mapping:
     included = ["member", "time", "megatime"]
-    return {key: da[key].values for key in da.dims if key in included}
+    return {key: da[key].to_index() for key in da.dims if key in included}
 
 
 def determine_feature_dims(da: xr.DataArray) -> Mapping:
     excluded = ["member", "time", "cluster", "megatime"]
-    return {key: da[key].values for key in da.dims if key not in excluded}
+    return {key: da[key].to_index() for key in da.dims if key not in excluded}
 
 
 def data_path(
