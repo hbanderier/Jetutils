@@ -1125,7 +1125,7 @@ def props_histogram(
         clear_output()
         
 
-def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 40):
+def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 30):
     if isinstance(varnames, str):
         varnames = [varnames]
     index_columns = get_index_columns(jets)
@@ -1137,7 +1137,7 @@ def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n
     return jets
 
 
-def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 40, clim: xr.DataArray | None = None):
+def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 30, clim: xr.DataArray | None = None):
     jets = times.join(jets, on="time", how="left")
     jets = gather_normal_da_jets(jets, da, half_length=20, dn=1)
     varname = da.name + "_interp"
@@ -1151,7 +1151,7 @@ def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: 
     return jets
 
 
-def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 40, n_bootstraps: int = 100, clim: xr.DataArray | None = None):
+def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 30, n_bootstraps: int = 100, clim: xr.DataArray | None = None):
     varname = da.name + "_interp"
     if not n_bootstraps:
         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim)
