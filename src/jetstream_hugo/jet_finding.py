@@ -1521,7 +1521,7 @@ class JetFindingExperiment(object):
         )
         for indexer in iterator:
             ds_ = compute(self.ds.isel(**indexer), progress_flag=True)
-            df_ds = pl.from_pandas(ds_.to_dataframe().reset_index())
+            df_ds = xarray_to_polars(ds_)
             all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
         all_jets_one_df = pl.concat(all_jets_one_df)
         all_jets_one_df.write_parquet(ofile_ajdf)

@@ -48,7 +48,7 @@ from jetstream_hugo.data import (
     DataHandler,
     compute_anomalies_ds,
     open_dataarray,
-    to_netcdf
+    to_netcdf,
 )
 
 set_mp_start_method("spawn", force=True)
@@ -71,7 +71,7 @@ ALL_SCORES = {
 }
 
 
-def spells_from_da(  # TODO: Polarize
+def spells_from_da(  # TODO: remove, get_spells is the new cool kid
     da: xr.DataArray,
     q: float = 0.95,
     fill_holes: int = 2,
@@ -224,14 +224,73 @@ def get_persistent_spell_times_from_som(
 ):
     labels_df = xarray_to_polars(labels)
     labels_df = labels_df.with_columns(pl.col("time").dt.year().alias("year"))
+    if "member" not in labels_df.columns:
+        return _get_persistent_spell_times_from_som(
+            labels_df,
+            dists,
+            sigma,
+            minlen,
+            nt_before,
+            nt_after,
+            nojune,
+            daily,
+        )
+    func = partial(
+        _get_persistent_spell_times_from_som,
+        dists=dists,
+        sigma=sigma,
+        minlen=minlen,
+        nt_before=nt_before,
+        nt_after=nt_after,
+        nojune=nojune,
+        daily=daily,
+    )
+    # specify schema because all-Null subseries will have Null dtype and break the concat
+    schema = {
+        "spell": pl.UInt32,
+        "time": labels_df["time"].dtype,
+        "value": pl.Int64,
+        "len": pl.Int64,
+        "relative_time": pl.Duration("ns"),
+        "memver": str,
+    }
+    schema = pl.Schema(schema)
+    spells = (
+        labels_df.lazy()
+        .group_by("member", maintain_order=True)
+        .map_groups(func, schema=schema)
+        .collect()
+    )
+    return spells
+
+
+def _get_persistent_spell_times_from_som(
+    labels_df: pl.DataFrame,
+    dists: np.ndarray,
+    sigma: int = 0,
+    minlen: int = 4,
+    nt_before: int = 0,
+    nt_after: int = 0,
+    nojune: bool = True,
+    daily: bool = False,
+):
     index_columns = get_index_columns(labels_df)
     index = labels_df[index_columns].unique(maintain_order=True)
 
     out = labels_df.group_by("year", maintain_order=True).map_groups(
         partial(get_spells_sigma, dists=dists, sigma=sigma)
     )
-    out = out.with_columns(
-        start=pl.col("year").rle_id() * pl.col("my_len") + pl.col("rel_start")
+    out = (
+        out[["year", "my_len"]]
+        .unique(maintain_order=True)
+        .with_columns(
+            my_len=pl.lit(0)
+            .append(pl.col("my_len"))
+            .cum_sum()
+            .head(pl.col("year").len())
+        )
+        .join(out.drop("my_len"), on="year")
+        .with_columns(start=pl.col("my_len") + pl.col("rel_start"))
     )
     out = out.with_columns(
         range=pl.int_ranges(
@@ -261,13 +320,12 @@ def get_persistent_spell_times_from_som(
         )
         .explode(["time", "relative_index", "value", "len"])
     )
-    if not nojune:
-        return out
-    june_filter = out.group_by("spell", maintain_order=True).agg(
-        (pl.col("time").dt.ordinal_day() <= 160).sum() > 0.8
-    )["time"]
-    out = out.filter(pl.col("spell").is_in(june_filter.not_().arg_true()))
-    out = out.with_columns(pl.col("spell").rle_id())
+    if nojune:
+        june_filter = out.group_by("spell", maintain_order=True).agg(
+            (pl.col("time").dt.ordinal_day() <= 160).sum() > 0.8
+        )["time"]
+        out = out.filter(pl.col("spell").is_in(june_filter.not_().arg_true()))
+        out = out.with_columns(pl.col("spell").rle_id())
     out = out.with_columns(
         out.group_by("spell", maintain_order=True)
         .agg(
@@ -276,6 +334,8 @@ def get_persistent_spell_times_from_som(
         )
         .explode("relative_time")
     )
+    if "member" in labels_df.columns:
+        out = out.with_columns(member=pl.lit(labels_df["member"].first()))
     if not daily:
         return out
 
@@ -337,7 +397,8 @@ def get_spells(
     out = out.with_columns(
         out.group_by("spell", maintain_order=True)
         .agg(
-            relative_time=pl.col("time") - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0)).first()
+            relative_time=pl.col("time")
+            - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0)).first()
         )
         .explode("relative_time")
     )
@@ -347,7 +408,7 @@ def get_spells(
         pl.col("relative_time") >= pl.duration(days=min_rel_index),
         pl.col("relative_time") <= pl.duration(days=max_rel_index),
     )
-            
+
     if not daily:
         return out
 
@@ -378,11 +439,9 @@ def get_persistent_jet_spells(
 ):
     props_as_df = extract_season_from_df(props_as_df, season)
     onejet = props_as_df.filter(pl.col("jet") == jet)
-    return get_spells(
-        onejet, metric, **kwargs
-    )
-    
-    
+    return get_spells(onejet, metric, **kwargs)
+
+
 def subset_around_onset(df, around_onset: int | datetime.timedelta | None = None):
     if isinstance(around_onset, int) and "relative_index" in df.columns:
         df = df.filter(pl.col("relative_index").abs() <= around_onset)
@@ -404,7 +463,7 @@ def mask_from_spells_pl(
         to_mask = compute(to_mask.sel(time=unique_times), progress=True)
         to_mask = xarray_to_polars(to_mask)
         index_columns_xarray = get_index_columns(
-            to_mask, ["lat", "lon", "jet", "jet ID"]
+            to_mask, ["lat", "lon", "jet", "jet ID", "cluster"]
         )
     else:
         to_mask = to_mask.cast({"time": pl.Datetime("ns")})
@@ -873,9 +932,7 @@ def predict_all(
                 full_pred.loc[indexer] = this_full_pred
                 for score in ALL_SCORES:
                     full_pred[score].loc[indexer] = this_full_pred[score].item()
-                feature_importances.loc[indexer] = open_dataarray(
-                    feature_importance_fn
-                )
+                feature_importances.loc[indexer] = open_dataarray(feature_importance_fn)
                 raw_shap[indexer_str] = load_pickle(raw_shap_fn)
                 continue
         # Sub indexers from main, main for output, one for targets, one for predictors
@@ -913,6 +970,7 @@ def predict_all(
                 model = RandomForestClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
                 from xgboost import XGBClassifier
+
                 model = XGBClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred = model.predict(X_test)
             y_pred_prob = model.predict_proba(X_test)[:, 1]
@@ -922,6 +980,7 @@ def predict_all(
                 model = RandomForestRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             elif type_ == "xgb":
                 from xgboost import XGBRegressor
+
                 model = XGBRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
             y_pred_prob = model.predict(X_test) + y_base_test
             y_pred_prob = np.clip(y_pred_prob, 0, 1)

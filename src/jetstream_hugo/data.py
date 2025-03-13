@@ -227,7 +227,7 @@ def standardize(da):
         inityear = da["time"].dt.year.values[0]
         if inityear < 1800:
             new_time_range = pd.date_range(f"{inityear + 1968}0101", end=None, freq="6h", inclusive="left", periods=da.time.shape[0])
-        da["time"] = new_time_range
+            da["time"] = new_time_range
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")

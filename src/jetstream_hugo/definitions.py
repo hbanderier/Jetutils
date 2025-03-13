@@ -301,6 +301,8 @@ def revert_normalize(X, meanX, stdX):
 
 
 def xarray_to_polars(da: xr.DataArray | xr.Dataset):
+    if "time" in da.dims and da["time"].dtype == np.dtype("object"):
+        da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
     df = da.to_dataframe().reset_index(allow_duplicates=True)
     df = df.loc[:, ~df.columns.duplicated()] # weird but easiest to handle multiindex unwrapping
     return pl.from_pandas(df)
@@ -364,11 +366,19 @@ def infer_direction(to_plot: Any) -> int:
     return 1 if np.abs(max_) > np.abs(min_) else -1
 
 
-def labels_to_mask(labels: xr.DataArray | np.ndarray) -> np.ndarray:
-    if isinstance(labels, xr.DataArray):
+def labels_to_mask(labels: xr.DataArray | np.ndarray, as_da: bool = False) -> np.ndarray:
+    if isinstance(labels, np.ndarray):
+        as_da = False
+    else:
+        coords = labels.coords.copy()
         labels = labels.values
     unique_labels = np.unique(labels)
-    return labels[..., None] == unique_labels[None, :]
+    mask = labels[..., None] == unique_labels[None, :]
+    if not as_da:
+        return mask
+    coords = coords.assign({"cluster": unique_labels})
+    mask = xr.DataArray(mask, coords=coords)
+    return mask
 
 
 def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
@@ -583,7 +593,7 @@ def do_rle_fill_hole(
     return df.join(orig_time, on=["year", "index"]).sort(*group_by)
 
 
-def get_runs(mask, cyclic: bool = True):
+def get_runs(mask, cyclic: bool = True): # Obsolete
     start = 0
     runs = []
     if cyclic:
@@ -651,7 +661,7 @@ def compute(obj, progress_flag: bool = False, **kwargs):
         return obj
 
 
-class TimerError(Exception):
+class TimerError(Exception): # stolen from a gist somewhere i don't remember
     """A custom exception used to report errors in use of Timer class"""
 
 
