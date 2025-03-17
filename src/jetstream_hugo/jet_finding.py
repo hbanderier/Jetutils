@@ -715,10 +715,11 @@ def gather_normal_da_jets(
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        if "time" in da.dims and da["time"].dtype == np.dtype("object"):
-            da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
-        da = da.sel(time=jets["time"].unique().sort().to_numpy())
-        da_df = xarray_to_polars(da)
+        if "time" in da.dims:
+            if da["time"].dtype == np.dtype("object"):
+                da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
+            da = da.sel(time=jets["time"].unique().sort().to_numpy())
+    da_df = xarray_to_polars(da)
 
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
@@ -911,6 +912,8 @@ def is_polar_gmix(
 ) -> pl.DataFrame:
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
     kwargs = dict(n_init=n_init, init_params=init_params)
+    if "time" not in df.columns:
+        mode = "year"
     if mode == "year":
         X = extract_features(df, feature_names, None)
         kwargs["n_components"] = n_components

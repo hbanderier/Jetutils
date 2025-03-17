@@ -862,7 +862,7 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
     return newpath
 
 
-def flatten_by(ds: xr.Dataset, by: str = "-criterion") -> xr.Dataset:
+def flatten_by(ds: xr.Dataset, by: str = "s") -> xr.Dataset:
     if "lev" not in ds.dims:
         return ds
     unique_levs = np.unique(ds.lev.values)
@@ -943,6 +943,7 @@ class DataHandler(object):
         metadata = metadata_from_da(da)
         path = find_spot(basepath, metadata)
         if save_da and not path.joinpath("da.nc").is_file():
+            da = compute(da, progress_flag=True)
             to_netcdf(da, path.joinpath("da.nc"))
         return cls(path, da)
 
