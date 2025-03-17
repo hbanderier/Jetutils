@@ -1,3 +1,4 @@
+import warnings
 from itertools import product
 from datetime import timedelta
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
@@ -610,12 +611,13 @@ def interp_from_other(
         revert_rename = True
     else:
         revert_rename = False
+    indices_right = lon.search_sorted(jets["normallon"], side="right").clip(1, len(lon) - 1)
+    indices_above = lat.search_sorted(jets["normallat"], side="right").clip(1, len(lat) - 1)
     jets = jets.with_columns(
-        left=(pl.col("normallon") // dlon) * dlon,
-        below=(pl.col("normallat") // dlat) * dlat,
-    ).with_columns(
-        right=pl.col("left") + dlon,
-        above=pl.col("below") + dlat,
+        left=lon[indices_right - 1],
+        right=lon[indices_right],
+        below=lat[indices_above - 1],
+        above=lat[indices_above],
     )
     for pair in [
         ["left", "below"],
@@ -711,8 +713,12 @@ def gather_normal_da_jets(
         lon=slice(jets["normallon"].min(), jets["normallon"].max()),
         lat=slice(jets["normallat"].min(), jets["normallat"].max()),
     )
-    da = da.sel(time=jets["time"].unique().sort().to_numpy())
-    da_df = xarray_to_polars(da)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        if "time" in da.dims and da["time"].dtype == np.dtype("object"):
+            da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
+        da = da.sel(time=jets["time"].unique().sort().to_numpy())
+        da_df = xarray_to_polars(da)
 
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
@@ -1623,9 +1629,9 @@ class JetFindingExperiment(object):
         width = []
         da = self.ds["s"]
         indexer = iterate_over_year_maybe_member(all_jets_one_df, da)
-        for idx1, idx2 in indexer:
+        for idx1, idx2 in tqdm(list(indexer)):
             these_jets = all_jets_one_df.filter(*idx1)
-            da_ = compute(da.sel(**idx2), progress_flag=True)
+            da_ = compute(da.sel(**idx2), progress_flag=False)
             width_ = compute_widths(these_jets, da_)
             width.append(width_)
         width = pl.concat(width)
