@@ -619,6 +619,7 @@ def interp_from_other(
         below=lat[indices_above - 1],
         above=lat[indices_above],
     )
+    da_df = da_df[[*index_columns, "lon_", "lat_", varname]]
     for pair in [
         ["left", "below"],
         ["left", "above"],

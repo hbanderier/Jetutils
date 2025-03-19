@@ -1151,7 +1151,7 @@ def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: 
     return jets
 
 
-def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 30, n_bootstraps: int = 100, clim: xr.DataArray | None = None):
+def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 30, n_bootstraps: int = 0, clim: xr.DataArray | None = None):
     varname = da.name + "_interp"
     if not n_bootstraps:
         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim)

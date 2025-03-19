@@ -118,9 +118,14 @@ def labels_to_centers(
     else:
         dims = list(determine_sample_dims(da))
         extra_dims = [coord for coord in da.coords if (coord not in da.dims) and ("time" in da[coord].dims)]
-        centers = [
-            compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
-        ]
+        if len(dims) == 1:
+            dim = dims[0]
+            print(dim)
+            centers = [compute(da.sel(**{dim: labels[dim][labels == i]}).mean(dim=dims)) for i in tqdm(unique_labels)]
+        else:
+            centers = [
+                compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
+            ]
         for extra_dim in extra_dims:
             for i, center in enumerate(centers):
                 centers[i] = center.assign_coords(

@@ -501,7 +501,7 @@ def do_rle_fill_hole(
     if group_by is None:
         if "contour" in df.columns:
             group_by = get_index_columns(
-                df, ("member", "time", "cluster", "contour", "spell", "relative_index")
+                df, ("member", "time", "cluster", "contour", "spell", "relative_index", "relative_time")
             )
         else:
             group_by = []
