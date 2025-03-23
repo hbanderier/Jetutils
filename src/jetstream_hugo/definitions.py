@@ -593,7 +593,8 @@ def do_rle_fill_hole(
     return df.join(orig_time, on=["year", "index"]).sort(*group_by)
 
 
-def get_runs(mask, cyclic: bool = True): # Obsolete
+# Obsolete
+def get_runs(mask, cyclic: bool = True): 
     start = 0
     runs = []
     if cyclic:
@@ -611,6 +612,7 @@ def get_runs(mask, cyclic: bool = True): # Obsolete
     return runs
 
 
+# Obsolete
 def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
     runs = get_runs(mask, cyclic=cyclic)
     for run in runs:
@@ -661,12 +663,26 @@ def compute(obj, progress_flag: bool = False, **kwargs):
         return obj
 
 
-class TimerError(Exception): # stolen from a gist somewhere i don't remember
+"""
+
+"""
+
+class TimerError(Exception): 
     """A custom exception used to report errors in use of Timer class"""
 
 
 @dataclass
 class Timer:
+    """
+    This is stolen from a gist somewhere I don't remember. Nice context manager timer that you can use like
+    ```python
+    with Timer():
+        do_something_long()
+    >>> "elapsed time: 5.3s"
+    ```
+
+    :raises TimerError:
+    """
     timers: ClassVar[Dict[str, float]] = {}
     name: Optional[str] = None
     text: str = "Elapsed time: {:0.4f} seconds"
