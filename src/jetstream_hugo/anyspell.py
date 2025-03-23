@@ -55,6 +55,80 @@ set_mp_start_method("spawn", force=True)
 
 
 def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
+    """Compute the Brier score.
+
+    The higher the Brier score, the better.
+    The Brier score measures the mean squared difference between the predicted
+    probability and the actual outcome. The Brier score always
+    takes on a value between zero and one, since this is the largest
+    possible difference between a predicted probability (which must be
+    between zero and one) and the actual outcome (which can take on values
+    of only 0 and 1). It can be decomposed as the sum of refinement loss and
+    calibration loss.
+
+    The Brier score is appropriate for binary and categorical outcomes that
+    can be structured as true or false, but is inappropriate for ordinal
+    variables which can take on three or more values (this is because the
+    Brier score assumes that all possible outcomes are equivalently
+    "distant" from one another). Which label is considered to be the positive
+    label is controlled via the parameter `pos_label`, which defaults to
+    the greater label unless `y_true` is all 0 or all -1, in which case
+    `pos_label` defaults to 1.
+
+    Parameters
+    ----------
+    y_true : array-like of shape (n_samples,)
+        True targets.
+
+    y_proba : array-like of shape (n_samples,)
+        Probabilities of the positive class.
+
+    sample_weight : array-like of shape (n_samples,), default=None
+        Sample weights.
+
+    pos_label : int, float, bool or str, default=None
+        Label of the positive class. `pos_label` will be inferred in the
+        following manner:
+
+        * if `y_true` in {-1, 1} or {0, 1}, `pos_label` defaults to 1;
+        * else if `y_true` contains string, an error will be raised and
+          `pos_label` should be explicitly specified;
+        * otherwise, `pos_label` defaults to the greater label,
+          i.e. `np.unique(y_true)[-1]`.
+
+    y_prob : array-like of shape (n_samples,)
+        Probabilities of the positive class.
+
+        .. deprecated:: 1.5
+            `y_prob` is deprecated and will be removed in 1.7. Use
+            `y_proba` instead.
+
+    Returns
+    -------
+    score : float
+        Brier score loss.
+
+    References
+    ----------
+    .. [1] `Wikipedia entry for the Brier score
+            <https://en.wikipedia.org/wiki/Brier_score>`_.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from sklearn.metrics import brier_score_loss
+    >>> y_true = np.array([0, 1, 1, 0])
+    >>> y_true_categorical = np.array(["spam", "ham", "ham", "spam"])
+    >>> y_prob = np.array([0.1, 0.9, 0.8, 0.3])
+    >>> brier_score_loss(y_true, y_prob)
+    np.float64(0.037...)
+    >>> brier_score_loss(y_true, 1-y_prob, pos_label=0)
+    np.float64(0.037...)
+    >>> brier_score_loss(y_true_categorical, y_prob, pos_label="ham")
+    np.float64(0.037...)
+    >>> brier_score_loss(y_true, np.array(y_prob) > 0.5)
+    np.float64(0.0)
+    """
     return 1 - brier_score_loss(
         y_true, y_proba, sample_weight=sample_weight, pos_label=pos_label
     )

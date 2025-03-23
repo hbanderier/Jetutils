@@ -876,6 +876,25 @@ def trends_and_pvalues(
     return x, props_as_df, slopes, constants, pvals
 
 
+def clear(func):
+    def wrapper(*args, **kwargs):
+        clear = kwargs.get("clear", True)
+        if clear:
+            plt.ioff()
+        else:
+            plt.ion()
+            plt.show()
+            clear_output()
+        fig = func(*args, **kwargs)
+        if clear:
+            del fig
+            plt.close()
+            clear_output()
+        return fig
+    return wrapper
+
+
+@clear
 def plot_trends(
     props_as_df: pl.DataFrame,
     data_vars: list,
@@ -885,16 +904,11 @@ def plot_trends(
     std: bool = False,
     nrows: int = 3,
     ncols: int = 4,
-    clear: bool = True,
     suffix: str = "",
     numbering: bool = False,
+    *,
+    clear: bool = True,
 ):
-    if clear:
-        plt.ioff()
-    else:
-        plt.ion()
-        plt.show()
-        clear_output()
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -959,12 +973,10 @@ def plot_trends(
         ax.legend(ncol=1, fontsize=10)
     subtitle = "_std_" if std else "_"
     fig.savefig(f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png")
-    if clear:
-        del fig
-        plt.close()
-        clear_output()
+    return fig
         
         
+@clear
 def plot_seasonal(
     props_as_df: pl.DataFrame,
     data_vars: list,
@@ -974,12 +986,6 @@ def plot_seasonal(
     suffix: str = "",
     numbering: bool = False,
 ):
-    if clear:
-        plt.ioff()
-    else:
-        plt.ion()
-        plt.show()
-        clear_output()
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -1043,12 +1049,9 @@ def plot_seasonal(
         ax.set_ylim(ylim)
     axes.ravel()[0].legend().set_zorder(102)
     plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
-    if clear:
-        del fig
-        plt.close()
-        clear_output()
+    return fig
 
-# OLD
+@clear
 def props_histogram(
     props_as_ds: xr.Dataset,
     data_vars: list,
@@ -1058,12 +1061,6 @@ def props_histogram(
     clear: bool = True,
     suffix: str = "",
 ):
-    if clear:
-        plt.ioff()
-    else:
-        plt.ion()
-        plt.show()
-        clear_output()
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True
     )
@@ -1119,10 +1116,7 @@ def props_histogram(
             )
             ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
     fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
-    if clear:
-        del fig
-        plt.close()
-        clear_output()
+    return fig
         
 
 def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 30):

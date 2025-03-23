@@ -13,6 +13,7 @@ from scipy.optimize import minimize
 
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+
 # from simpsom import SOMNet
 from xpysom_dask.xpysom import XPySom
 
@@ -28,7 +29,13 @@ from jetstream_hugo.definitions import (
 )
 
 from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import DataHandler, determine_feature_dims, open_dataarray, determine_sample_dims, to_netcdf
+from jetstream_hugo.data import (
+    DataHandler,
+    determine_feature_dims,
+    open_dataarray,
+    determine_sample_dims,
+    to_netcdf,
+)
 
 RAW_REALSPACE: int = 0
 RAW_PCSPACE: int = 1
@@ -36,29 +43,36 @@ ADJUST: int = 2
 ADJUST_TWOSIDED: int = 3
 
 
-def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
-    if filename == "full.nc":
-        return np.ones(len(time_da)).astype(bool)
-
-    filename = int(filename.rstrip(".nc"))
-    try:
-        t1, t2 = pd.to_datetime(filename, format="%Y%M"), pd.to_datetime(
-            filename + 1, format="%Y%M"
-        )
-    except ValueError:
-        t1, t2 = pd.to_datetime(filename, format="%Y"), pd.to_datetime(
-            filename + 1, format="%Y"
-        )
-    return ((time_da >= t1) & (time_da < t2)).values
-
-
 def centers_realspace(centers: np.ndarray, feature_dims: Mapping) -> xr.DataArray:
+    """
+    Transforms raw cluster centers, typically the output of sklearn clustering algorithms, to easily plottable xarray `DataArray`.
+    
+    :param centers: ndarray of size (n_samples, n_features)
+    :type centers: np.ndarray
+    :param feature_dims: Dictionnary from dimension name to coordinate `ndarray`'s. Typically lon and lat.
+    :type feature_dims: Mapping
+    :return: Cluster centers reshaped to fit `feature_dims` and with named dimensions.
+    :rtype: DataArray
+    """
     coords = {"cluster": np.arange(centers.shape[0])} | feature_dims
     shape = [len(coord) for coord in coords.values()]
     return xr.DataArray(centers.reshape(shape), coords=coords)
 
 
-def centers_realspace_from_da(centers: np.ndarray, da: xr.DataArray) -> xr.DataArray:
+def centers_realspace_from_da(
+    centers: np.ndarray, da: xr.DataArray | xr.Dataset
+) -> xr.DataArray:
+    """
+    Transforms raw cluster centers, typically the output of sklearn clustering algorithms, to
+    easily plottable xarray `DataArray`, taking the coordinates from another `DataArray`
+    
+    :param centers: ndarray of size (n_samples, n_features)
+    :type centers: np.ndarray
+    :param da: DataArray or Dataset from which to infer the feature dimensions
+    :type da: xr.DataArray
+    :return: Cluster centers reshaped to fit the feature dimension of `da` and with named dimensions.
+    :rtype: xr.DataArray
+    """
     return centers_realspace(centers, determine_feature_dims(da))
 
 
@@ -69,6 +83,36 @@ def labels_from_projs(
     neg: bool = True,
     adjust: bool = True,
 ) -> np.ndarray:
+    """
+    Generates hard assignments from one or two collections of projection timeseries onto patterns using configurable heuristics.
+    Typically, the timeseries are projections on patterns like PCs or OPPs, where the first axis is time and
+    the second one is patterns.
+    The output is a timeseries `y` of winner patterns at each timestep, in the most basic form `y=np.argmax(X1, axis=1)`.
+    If `X2` is not present, `y` can get values from `0` to `n_patterns - 1` if `neg=False` and `adjust=False`.
+
+    With `neg=True`, the condition becomes `y=np.argmax(np.abs(X1), axis=1)`. That is, the largest absolute projection wins, whether positive or negative.
+    For example, the NAO pattern wins if the timestep resembles its positive or its negative phase. If the largest absolute projection is negative, the label is also negative.
+    Therefore, with `neg=True`, the output can have output from `-n_patterns + 1` to `n_patterns - 1`
+
+    With `adjust=True`, the assignments are only set to a label if the projection is above one standard deviation of projections, and 0 otherwise. In this case,
+    `y` can take values from `0` to `n_patterns` if `neg=False` and `-n_patterns` to `n_patterns` if `neg=True`.
+
+    If two timeseries are present and are of equal size (n_time, n_patterns), a large collection of timeseries is created with projections of `X1`
+    in the even positions and the projections of `X2` in the odd positions.
+    
+    :param X1: array of shape (n_time, n_patterns), Projections on many patterns.
+    :type X1: ndarray
+    :param X2: array of shape (n_time, n_patterns) Additional projections on many patterns. If present, will be interleaved into `X1` before proceeding, with projections of `X1` in the even positions and the projections of `X2` in the odd positions. 
+    :type X2: ndarray, optional
+    :param cutoff: Limits how many patterns to to perform the assignment on. All patterns if left to `None`, the default.
+    :type cutoff: int, optional
+    :param neg: If `False`, the timestep is assigned to a pattern if it has the highest projection of all the patterns for this timestep, if `True` the timestep is assigned to a pattern if it has the highest *absolute* projection of all the patterns for this timestep. Defaults to `True`.
+    :type neg: bool, optional
+    :param adjust: Whether assignments are only valid if the projection is larger than one standard deviation of projections. Defaults to `True`.
+    :type adjust: bool, optional
+    :return: Integer ndarray of shape (n_time), assignments onto each pattern based on different rules.
+    :rtype: ndarray
+    """
     if cutoff is None:
         if X2 is None:
             cutoff = X1.shape[1]
@@ -103,8 +147,24 @@ def labels_to_centers(
     labels: xr.DataArray,
     da: xr.DataArray | xr.Dataset,
     expected_nclu: int | None = None,
-    coord: str = "cluster",
+    dim_name: str = "cluster",
 ) -> xr.DataArray:
+    """
+    Generates cluster centers by averaging the elements of `da` belonging to each cluster.
+
+    
+    :param labels: `DataArray` with one or several dimensions corresponding to the sample dimensions of the clustering that created them. 
+    Typically (time) or (member, time). Assignments from sample points (e.g. timesteps) to a cluster.
+    :type labels: xr.DataArray
+    :param da: DataArray or Dataset from which to create real space cluster centers. Does not have to be the data on which the clustering was performed.
+    :type da: xr.DataArray or xr.Dataset
+    :param expected_nclu: Can be useful if not all clusters are present in `labels`. If `None`, the default, possible clusters are all clusters present in `labels`. If present, it is instead `np.arange(n_clu)`. Defaults to None.
+    :type expected_nclu: int, optional
+    :param dim_name: Name of the DataArray dimension name along the clusters. Defaults to "cluster".
+    :type dim_name: str, optioanl
+    :return: Cluster center, dimensions are `dict(dim_name=clusters, **get_feature_dims(da))`.
+    :rtype: DataArray
+    """
     if expected_nclu is not None:
         unique_labels = np.arange(expected_nclu)
         counts = np.zeros(expected_nclu)
@@ -114,31 +174,52 @@ def labels_to_centers(
         unique_labels, counts = np.unique(labels, return_counts=True)
     counts = counts / float(np.prod(labels.shape))
     if "megatime" in da.dims:
-        centers = [compute(da.sel(megatime=labels == i).mean("megatime")) for i in tqdm(unique_labels)]
+        centers = [
+            compute(da.sel(megatime=labels == i).mean("megatime"))
+            for i in tqdm(unique_labels)
+        ]
     else:
         dims = list(determine_sample_dims(da))
-        extra_dims = [coord for coord in da.coords if (coord not in da.dims) and ("time" in da[coord].dims)]
+        extra_dims = [
+            coord
+            for coord in da.coords
+            if (coord not in da.dims) and ("time" in da[coord].dims)
+        ]
         if len(dims) == 1:
             dim = dims[0]
             print(dim)
-            centers = [compute(da.sel(**{dim: labels[dim][labels == i]}).mean(dim=dims)) for i in tqdm(unique_labels)]
+            centers = [
+                compute(da.sel(**{dim: labels[dim][labels == i]}).mean(dim=dims))
+                for i in tqdm(unique_labels)
+            ]
         else:
             centers = [
-                compute(da.where(labels == i).mean(dim=dims)) for i in tqdm(unique_labels)
+                compute(da.where(labels == i).mean(dim=dims))
+                for i in tqdm(unique_labels)
             ]
         for extra_dim in extra_dims:
             for i, center in enumerate(centers):
                 centers[i] = center.assign_coords(
                     {extra_dim: da[extra_dim].isel(time=(labels == i)).mean(dim=dims)}
                 )
-    centers = xr.concat(centers, dim=coord)
+    centers = xr.concat(centers, dim=dim_name)
     centers = centers.assign_coords(
-        {"ratio": (coord, counts), "label": (coord, unique_labels)}
+        {"ratio": (dim_name, counts), "label": (dim_name, unique_labels)}
     )
     return centers.set_xindex("label")
 
 
-def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray):
+def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray) -> np.ndarray:
+    """
+    From a timeseries of values and a timeseries of labels, assigning each timestep to a cluster, returns the clusterwise mean of the timeseries
+
+    :param timeseries: Any timeseries
+    :type timeseries: np.ndarray
+    :param labels: Label assignment, must be of the same length as `timeseries`
+    :type labels: list or np.ndarray
+    :return: Means of timeseries elements belonging to each cluster. As many elements as there are unique clusters in `labels`
+    :rtype: np.ndarray
+    """
     timeseries = np.atleast_2d(timeseries)
     mask = labels_to_mask(labels)
     return np.asarray(
@@ -147,18 +228,44 @@ def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray):
 
 
 class Experiment(object):
+    """
+    Worker class for all the different clustering methods, handling various clustering tasks and pre- and post-processing.
+    
+    :ivar data_handler: `DataHandler` that stores underlying dataarray and path in which to store results
+    :ivar da: shortcut to `self.data_handler.da`
+    :ivar path: shortcut to `self.data_handler.path`
+    """
     def __init__(
         self,
         data_handler: DataHandler,
     ) -> None:
+        """
+        Creates instance of Experiment
+
+        :param data_handler:  `DataHandler` that stores underlying dataarray and path in which to store results
+        :type data_handler: DataHandler
+        """
         self.data_handler = data_handler
         self.da = self.data_handler.da
         self.path = self.data_handler.get_path()
-        
+
     def load_da(self, **kwargs):
+        """
+        Coerces this Experiment's `DataArray` into memory
+        
+        :param **kwargs: Keyword arguments that get passed to `compute()`.
+        """
         self.da = compute(self.da, **kwargs)
 
     def get_norm_da(self):
+        """
+        Computes, stores and returns the normalization factor 
+        .. math::
+            \sqrt{\text{lat}}
+
+        :return: normalization factor, computed as the square root of the latitude.
+        :rtype: xr.DataArray
+        """
         norm_path = self.path.joinpath("norm.nc")
         if norm_path.is_file():
             return open_dataarray(norm_path)
@@ -170,6 +277,14 @@ class Experiment(object):
         return norm_da
 
     def prepare_for_clustering(self) -> Tuple[np.ndarray | DaArray, xr.DataArray]:
+        """
+        Normalizes and reshapes original data into a form ready for transformation and / or clustering tasks
+
+        :return: `ndarray` of shape (n_samples, n_features). Normalized and reshaped version of original data.
+        :rtype: np.ndarray 
+        :return: Normalized but not reshaped version of the original data.
+        :rtype: xr.DataArray: 
+        """
         norm_da = self.get_norm_da()
 
         da_weighted = self.da * norm_da
@@ -177,6 +292,14 @@ class Experiment(object):
         return X, da_weighted
 
     def _pca_file(self, n_pcas: int) -> str | None:
+        """
+        Tries to find the `.pkl` file containing the `sklearn.PCA` object that was trained on this Experiment's data with at least `n_pca` components
+
+        :param n_pcas: number of PCs
+        :type n_pcas: int
+        :return: posix path to file if it exsits, otherwise `None`
+        :rtype: str or None
+        """
         potential_paths = list(self.path.glob("pca_*.pkl"))
         potential_paths = {
             path: int(path.stem.split("_")[1]) for path in potential_paths
@@ -187,6 +310,16 @@ class Experiment(object):
         return None
 
     def compute_pcas(self, n_pcas: int, force: bool = False) -> str:
+        """
+        Preprocess own data, trains scikit-learn `PCA` object, saves it and returns path to it. If a fitting PCA object is already stored, don't train and return path to it instead.
+
+        :param n_pcas: Number of components
+        :type n_pcas: int
+        :param force: Trains PCA object even if a fitting one exists, defaults to False
+        :type force: bool, optional
+        :return: Path to `.pkl` file 
+        :rtype: str
+        """
         path = self._pca_file(n_pcas)
         if path is not None and not force:
             return path
@@ -204,6 +337,18 @@ class Experiment(object):
         n_pcas: int | None = None,
         compute: bool = False,
     ) -> np.ndarray:
+        """
+        Potentially fits `PCA` object on this object's own data, and transforms input data with trained `PCA` object.
+
+        :param X: Data to transform, not necessarily the one on which `PCA` was trained.
+        :type X: np.ndarray | dask.Array
+        :param n_pcas: Number of components. If `None`, returns `X` unmodified. Defaults to `None`
+        :type n_pcas: int, optional
+        :param compute: If input was a Dask Array, whether or not to coerce output to memory, defaults to False
+        :type compute: bool, optional
+        :return: Transformed `X`
+        :rtype: np.ndarray
+        """
         if n_pcas is None:
             return X
         transformed_file = self.path.joinpath(f"pca_{n_pcas}.npy")
@@ -224,6 +369,18 @@ class Experiment(object):
         n_pcas: int | None = None,
         compute: bool = False,
     ) -> np.ndarray:
+        """
+        Performs inverse PCA transform on `X`, based on PCA trained on this object's data.
+
+        :param X: Data to inverse transform, not necessarily the one on which `PCA` was trained.
+        :type X: np.ndarray | DaArray
+        :param n_pcas: Number of components. If `None`, returns `X` unmodified. Defaults to `None`
+        :type n_pcas: int, optional
+        :param compute: If input was a Dask Array, whether or not to coerce output to memory, defaults to False
+        :type compute: bool, optional
+        :return: Inverse transformed `X`
+        :rtype: np.ndarray
+        """
         if n_pcas is None:
             return X
         pca_path = self.compute_pcas(n_pcas)
@@ -236,12 +393,30 @@ class Experiment(object):
         return compute(X, progress_flag=True)
 
     def labels_as_da(self, labels: np.ndarray) -> xr.DataArray:
+        """
+        Transforms a labels array into a `DataArray` with named dimensions, inferred from this object's data's sample dimensions.
+
+        :param labels: Labels, output from clustering methods
+        :type labels: np.ndarray
+        :return: `labels` as a `DataArray` with named dimensions.
+        :rtype: xr.DataArray
+        """
         sample_dims = determine_sample_dims(self.da)
         shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
         return xr.DataArray(labels, coords=sample_dims).rename("labels")
 
-    def _centers_realspace(self, centers: np.ndarray):
+    def _centers_realspace(self, centers: np.ndarray) -> xr.DataArray:
+        """
+        Transforms the centers of clusters, as directly output by the various clustering methods, into the same space as this object's data.
+        Tries to guess whether it was PCA transformed by checking for a PCA file with `n_pcas=centers.shape[1]`
+        Also undoes the normalization.
+        
+        :param centers: Raw cluster centers
+        :type centers: np.ndarray
+        :return: `centers` transformed back to a `DataArray` in the same space as this object's data.
+        :rtype: xr.DataArray
+        """
         feature_dims = self.data_handler.get_feature_dims()
         extra_dims = self.data_handler.get_extra_dims()
         n_pcas_tentative = centers.shape[1]
@@ -265,7 +440,29 @@ class Experiment(object):
         X: np.ndarray | None = None,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
-        All the clustering methods are responsible for producing their centers in pca space and their labels in sample space. This function handles the rest
+        All the clustering methods are responsible for producing their centers, potentially in in pca space and their labels in sample space. This function handles the rest. Potentially transforms `centers`, and turns both `centers` and `labels` into `DataArray`s with appropriate coordinates inferred from the original data.
+
+        :param centers: `ndarray` of shape (n_centers, n_features). Cluster centers, potentially in PC space. 
+        :type centers: np.ndarray
+        :param labels: `ndarray` of shape (n_samples). Cluster labels.
+        :type labels: np.ndarray
+        :param return_type: four options:
+        
+            RAW_REALSPACE: the default, transforms centers into the same space as this object's data
+        
+            RAW_PCSPACE: leaves centers in original training space
+        
+            ADJUST: projects the training data onto the original clusters, and re-compute the cluster labels based on the adjusted projection winners. A sample is assigned to the "0 cluster" if the maximum projection on the cluster centers is below one standard deviation of all projections. See `labels_from_projs` for more details.
+
+            ADJUST_TWOSIDED: same as `ADJUST` but labels are computed with the *absolute values* of the projections of `X` onto the centers. This allows for negative cluster assignments: `labels[0]=-1` means `X[0]` had the highest absolute projection on the first cluster center, but this projection was negative. This is rarely useful.
+        
+        :type return_type: int
+        :param X: `ndarray` of shape (n_samples, n_features). Original training data, only necessary if the projections need to be recomputed, i.e. if `return_type` is either `ADJUST` or `ADJUST_TWOSIDED`.
+        :type X: np.ndarray
+        :return centers: Transformed centers, with appropriate coordinates and dimensions
+        :rtype: DataArray
+        :return labels: Potentially recomputed labels, with appropriate coordinates and dimensions
+        :rtype: DataArray
         """
         n_clu = centers.shape[0]
         counts = np.zeros(n_clu)
@@ -283,33 +480,59 @@ class Experiment(object):
 
         elif return_type == RAW_REALSPACE:
             labels = self.labels_as_da(labels)
-            centers = labels_to_centers(labels, self.da, expected_nclu=n_clu, coord="cluster")
+            centers = labels_to_centers(
+                labels, self.da, expected_nclu=n_clu, dim_name="cluster"
+            )
 
         elif return_type in [ADJUST, ADJUST_TWOSIDED]:
             projection = np.tensordot(X, centers.T, axes=X.ndim - 1)
             neg = return_type == ADJUST_TWOSIDED
             newlabels = labels_from_projs(projection, neg=neg, adjust=True)
-            centers = labels_to_centers(newlabels, self.da, coord="cluster")
+            centers = labels_to_centers(newlabels, self.da, dim_name="cluster")
             labels = self.labels_as_da(labels)
 
         else:
             print("Wrong return specifier")
             raise ValueError
-        
+
         return centers, labels
 
     def do_kmeans(
         self,
         n_clu: int,
-        n_pcas: int,
+        n_pcas: int | None = None,
         weigh_grams: bool = False,
         return_type: int = RAW_REALSPACE,
         force: bool = False,
     ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
+        """
+        Performs K-means clustering by wrapping the scikit-learn KMeans object, pre- and post-processing this object's data. Stores the underlying trained scikit-learn KMeans object.
+        If a fitting KMeans object is already stored, use it instead unless `force=True`
+
+        :param n_clu: Number of k-means cluster
+        :type n_clu: int
+        :param n_pcas: Number of principal components. If any above 0, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
+        :type n_pcas: int
+        :param weigh_grams: Performs special weighing recommended by Grams et al. 2017, defaults to False
+        :type weigh_grams: bool
+        :param return_type: How to transform the output centers and labels, defaults to RAW_REALSPACE
+        :type return_type: int, optional
+        :param force: whether to re-train a KMeans object even if a fitting one is found, defaults to False
+        :type force: bool, optional
+        :return centers: Transformed centers, with appropriate coordinates and dimensions
+        :rtype: DataArray
+        :return labels: Potentially recomputed labels, with appropriate coordinates and dimensions
+        :rtype: DataArray
+        """
         output_file_stem = f"kmeans_{n_clu}_{n_pcas}"
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
-        if all([ofile.is_file() for ofile in [output_path_labels, output_path_centers]]) and not force:
+        if (
+            all(
+                [ofile.is_file() for ofile in [output_path_labels, output_path_centers]]
+            )
+            and not force
+        ):
             centers = open_dataarray(output_path_centers)
             labels = open_dataarray(output_path_labels)
             return centers, labels
@@ -317,7 +540,11 @@ class Experiment(object):
         X = self.pca_transform(X, n_pcas)
         if weigh_grams:
             roll_std = da.rolling({"time": 30 * 4}, min_periods=3, center=False).std()
-            roll_std = compute(roll_std.chunk({"time": -1, "lon": 1}).mean(["lon", "lat"]).interpolate_na("time", "nearest", fill_value="extrapolate"))
+            roll_std = compute(
+                roll_std.chunk({"time": -1, "lon": 1})
+                .mean(["lon", "lat"])
+                .interpolate_na("time", "nearest", fill_value="extrapolate")
+            )
             X = X / roll_std.values[:, None]
             suffix = "_grams"
         else:
@@ -352,6 +579,29 @@ class Experiment(object):
         train_kwargs: dict | None = None,
         **kwargs,
     ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
+        """
+        Performs SOM clustering by wrapping the XPySom object, pre- and post-processing this object's data. Stores the underlying trained object.
+        If a fitting XPySom object is already stored, use it instead unless `force=True`
+
+        :param nx: SOM grid size in the x direction
+        :type nx: int
+        :param ny: SOM grid size in the y direction
+        :type ny: int
+        :param n_pcas: Number of principal components. If any above 0, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
+        :type n_pcas: int
+        :param PBC: _description_, defaults to True
+        :type PBC: bool, optional
+        :param activation_distance: _description_, defaults to "euclidean"
+        :type activation_distance: str, optional
+        :param return_type: _description_, defaults to RAW_REALSPACE
+        :type return_type: int, optional
+        :param force: _description_, defaults to False
+        :type force: bool, optional
+        :param train_kwargs: _description_, defaults to None
+        :type train_kwargs: dict | None, optional
+        :return: _description_
+        :rtype: Tuple[XPySom, xr.DataArray, np.ndarray]
+        """
         pbc_flag = "_pbc" if PBC else ""
         net = XPySom(
             nx,
@@ -367,7 +617,19 @@ class Experiment(object):
         output_path_weights = self.path.joinpath(f"{output_file_stem}.npy")
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
-        if all([ofile.is_file() for ofile in [output_path_weights, output_path_labels, output_path_centers]]) and not force:
+        if (
+            all(
+                [
+                    ofile.is_file()
+                    for ofile in [
+                        output_path_weights,
+                        output_path_labels,
+                        output_path_centers,
+                    ]
+                ]
+            )
+            and not force
+        ):
             net.load_weights(output_path_weights)
             centers = open_dataarray(output_path_centers)
             labels = open_dataarray(output_path_labels)
@@ -395,16 +657,16 @@ class Experiment(object):
             weights = net.weights
         else:
             weights = revert_normalize(net.weights, meanX, stX)
-            
+
         X = compute(X, progress_flag=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
         to_netcdf(centers, output_path_centers)
         to_netcdf(labels, output_path_labels)
         return net, centers, labels
-    
+
     def project_on_other_som(
         self,
-        other_exp: "Experiment",  
+        other_exp: "Experiment",
         nx: int,
         ny: int,
         n_pcas: int = 0,
@@ -412,22 +674,44 @@ class Experiment(object):
         activation_distance: str = "euclidean",
         return_type: int = RAW_REALSPACE,
     ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
+        """
+        _summary_
+
+        :param other_exp: _description_
+        :type other_exp: Experiment
+        :param nx: _description_
+        :type nx: int
+        :param ny: _description_
+        :type ny: int
+        :param n_pcas: _description_, defaults to 0
+        :type n_pcas: int, optional
+        :param PBC: _description_, defaults to True
+        :type PBC: bool, optional
+        :param activation_distance: _description_, defaults to "euclidean"
+        :type activation_distance: str, optional
+        :param return_type: _description_, defaults to RAW_REALSPACE
+        :type return_type: int, optional
+        :return: _description_
+        :rtype: Tuple[XPySom, xr.DataArray, np.ndarray]
+        """
         pbc_flag = "_pbc" if PBC else ""
         net, _, _ = other_exp.som_cluster(nx=nx, ny=ny, n_pcas=n_pcas, PBC=PBC)
-        
+
         if n_pcas:
             output_file_stem = f"othersom_{nx}_{ny}{pbc_flag}_{n_pcas}"
         else:
             output_file_stem = f"othersom_{nx}_{ny}{pbc_flag}_{activation_distance}"
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
         output_path_labels = self.path.joinpath(f"labels_{output_file_stem}.nc")
-        if all([ofile.is_file() for ofile in [output_path_labels, output_path_centers]]):
+        if all(
+            [ofile.is_file() for ofile in [output_path_labels, output_path_centers]]
+        ):
             centers = open_dataarray(output_path_centers)
             labels = open_dataarray(output_path_labels)
             net.latest_bmus = labels.values
             return net, centers, labels
         X, da_weighted = self.prepare_for_clustering()
-                
+
         if n_pcas:
             X = self.pca_transform(X, n_pcas)
         else:
@@ -435,19 +719,18 @@ class Experiment(object):
                 da_weighted = coarsen_da(da_weighted, 1.5)
                 X = da_weighted.data.reshape(self.data_handler.get_flat_shape()[0], -1)
             X, meanX, stX = normalize(X)
-        
+
         labels = net.predict(X)
         if n_pcas:
             weights = net.weights
         else:
             weights = revert_normalize(net.weights, meanX, stX)
-            
+
         X = compute(X, progress_flag=True)
         centers, labels = self._cluster_output(weights, labels, return_type, X)
         to_netcdf(centers, output_path_centers)
         to_netcdf(labels, output_path_labels)
         return net, centers, labels
-
 
     # TODO maybe: OPPs are untested with Dask input
     def _compute_opps_T1(

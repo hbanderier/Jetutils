@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from dask.diagnostics import ProgressBar  # if no client
-from dask.distributed import progress  # if client
+from dask.diagnostics import ProgressBar  # to use without a specified dask client
+from dask.distributed import progress  # to use with a specified dask client
 
 np.set_printoptions(precision=5, suppress=True)
 
@@ -76,7 +76,7 @@ SMALLNAME = {
     "Wind": "s",
     "Temperature": "t",
     "Precipitation": "tp",
-}  # Wind speed
+}
 
 SHORTHAND = {
     "subtropical": "STJ",
