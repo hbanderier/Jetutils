@@ -234,7 +234,19 @@ def load_pickle(filename: str | Path) -> Any:
     return to_ret
 
 
-def to_zero_one(X):
+def to_zero_one(X: np.ndarray | pl.DataFrame):
+    """
+    Normalizes an arbitrary polars DataFrame or numpy Array to the range [0, 1] along one axis. The 0 axis if numpy, the columns if polars. Returns the original minimum and maximum to be able to revert.
+
+    :param X: Input array
+    :type X: np.ndarray or pl.DataFrame
+    :return X: Input normalised to the range [0, 1]
+    :rtype: Same as input
+    :return Xmin: Original minimum of the data, used to revert this function
+    :rtype: Same as input, with one fewer dimension
+    :return Xmax: Original maximum of the data, used to revert this function
+    :rtype: Same as input, with one fewer dimension
+    """
     def expr(col):
         return (pl.col(col) - pl.col(col).min()) / (
             pl.col(col).max() - pl.col(col).min()
@@ -255,6 +267,9 @@ def to_zero_one(X):
 
 
 def revert_zero_one(X, Xmin, Xmax):
+    """
+    Reverts the function to_zero_one().
+    """
     def expr(col):
         return Xmin[0, col] + (Xmax[0, col] - Xmin[0, col]) * pl.col(col)
 
@@ -269,6 +284,18 @@ def revert_zero_one(X, Xmin, Xmax):
 
 
 def normalize(X):
+    """
+    Normalizes an arbitrary polars DataFrame or numpy Array to a standard normal along one axis. The 0 axis if numpy, the columns if polars. Returns the original minimum and maximum to be able to revert.
+
+    :param X: Input array
+    :type X: np.ndarray or pl.DataFrame
+    :return X: Input normalised to a standard normal
+    :rtype: Same as input
+    :return meanX: Original mean of the data, used to revert this function
+    :rtype: Same as input, with one fewer dimension
+    :return stdX: Original std of the data, used to revert this function
+    :rtype: Same as input, with one fewer dimension
+    """
     def expr(col):
         return (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
 
@@ -287,6 +314,9 @@ def normalize(X):
 
 
 def revert_normalize(X, meanX, stdX):
+    """
+    Reverts the function normalize().
+    """
     def expr(col):
         return meanX[0, col] + stdX[0, col] * pl.col(col)
 
@@ -301,6 +331,9 @@ def revert_normalize(X, meanX, stdX):
 
 
 def xarray_to_polars(da: xr.DataArray | xr.Dataset):
+    """
+    Turns a xarray Dataset or DataArray into a polars DataFrame.
+    """
     if "time" in da.dims and da["time"].dtype == np.dtype("object"):
         da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
     df = da.to_dataframe().reset_index(allow_duplicates=True)
@@ -309,6 +342,9 @@ def xarray_to_polars(da: xr.DataArray | xr.Dataset):
 
 
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
+    """
+    Turns a polars DataFrame into a xarray DataArray if possible, a Dataset otherwise. Which columns of `df` will be dimensions of the xarray output cannot be inferred from `df` and have to be passed as `index_columns`.
+    """
     ds = xr.Dataset.from_dataframe(df.to_pandas().set_index(index_columns))
     data_vars = list(ds.data_vars)
     if len(data_vars) == 1:
@@ -404,14 +440,6 @@ def slice_1d(da: xr.DataArray | xr.Dataset, indexers: dict, dim: str = "points")
         method="linear",
         kwargs=dict(fill_value=None),
     )
-
-
-def slice_from_df(
-    da: xr.DataArray | xr.Dataset, indexer: pd.DataFrame, dim: str = "point"
-) -> xr.DataArray | xr.Dataset:
-    cols = [col for col in ["lev", "lon", "lat"] if col in indexer and col in da.dims]
-    indexer = {col: xr.DataArray(indexer[col].to_numpy(), dims=dim) for col in cols}
-    return da.loc[indexer]
 
 
 def first_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.ndarray:
@@ -662,10 +690,6 @@ def compute(obj, progress_flag: bool = False, **kwargs):
     except AttributeError:
         return obj
 
-
-"""
-
-"""
 
 class TimerError(Exception): 
     """A custom exception used to report errors in use of Timer class"""
