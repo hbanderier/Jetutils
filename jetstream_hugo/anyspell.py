@@ -1,3 +1,4 @@
+# coding: utf-8
 from typing import Tuple, Mapping, Literal, Callable, Sequence
 from functools import partial
 from itertools import product

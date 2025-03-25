@@ -1,3 +1,4 @@
+# coding: utf-8
 import warnings
 from itertools import product
 from datetime import timedelta

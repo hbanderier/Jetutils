@@ -1,3 +1,4 @@
+# coding: utf-8
 from pathlib import Path
 from typing import Tuple
 from functools import partial

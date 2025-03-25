@@ -1,3 +1,4 @@
+# coding: utf-8
 from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor
