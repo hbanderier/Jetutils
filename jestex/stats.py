@@ -8,7 +8,7 @@ import pickle as pkl
 import numpy as np
 import xarray as xr
 from scipy.stats import norm
-from jetstream_hugo.definitions import N_WORKERS, infer_direction
+from .definitions import N_WORKERS, infer_direction
 
 
 def autocorrelation(path: Path, time_steps: int = 50) -> Path:

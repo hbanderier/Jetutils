@@ -27,7 +27,7 @@ from sklearn.metrics import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
-from jetstream_hugo.definitions import (
+from .definitions import (
     DEFAULT_VALUES,
     YEARS,
     N_WORKERS,
@@ -42,7 +42,7 @@ from jetstream_hugo.definitions import (
     get_index_columns,
     extract_season_from_df,
 )
-from jetstream_hugo.data import (
+from .data import (
     find_spot,
     get_land_mask,
     extract_season,

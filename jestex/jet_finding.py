@@ -15,7 +15,7 @@ from sklearn.mixture import GaussianMixture
 from tqdm import tqdm, trange
 import dask
 
-from jetstream_hugo.definitions import (
+from .definitions import (
     N_WORKERS,
     RADIUS,
     compute,
@@ -24,7 +24,7 @@ from jetstream_hugo.definitions import (
     get_index_columns,
     extract_season_from_df,
 )
-from jetstream_hugo.data import (
+from .data import (
     compute_extreme_climatology,
     DataHandler,
     open_da,

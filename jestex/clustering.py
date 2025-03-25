@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from tqdm import tqdm
 from dask.array import Array as DaArray
@@ -14,11 +13,9 @@ from scipy.optimize import minimize
 
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from simpsom_dask import Simpsom
 
-# from simpsom import SOMNet
-from xpysom_dask.xpysom import XPySom
-
-from jetstream_hugo.definitions import (
+from .definitions import (
     coarsen_da,
     save_pickle,
     load_pickle,
@@ -29,8 +26,8 @@ from jetstream_hugo.definitions import (
     compute,
 )
 
-from jetstream_hugo.stats import compute_autocorrs
-from jetstream_hugo.data import (
+from .stats import compute_autocorrs
+from .data import (
     DataHandler,
     determine_feature_dims,
     open_dataarray,
@@ -577,7 +574,7 @@ class Experiment(object):
         force: bool = False,
         train_kwargs: dict | None = None,
         **kwargs,
-    ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
+    ) -> Tuple[Simpsom, xr.DataArray, np.ndarray]:
         """
         Performs SOM clustering by wrapping the XPySom object, pre- and post-processing this object's data. Stores the underlying trained object.
         If a fitting XPySom object is already stored, use it instead unless `force=True`
@@ -602,7 +599,7 @@ class Experiment(object):
         :rtype: Tuple[XPySom, xr.DataArray, np.ndarray]
         """
         pbc_flag = "_pbc" if PBC else ""
-        net = XPySom(
+        net = Simpsom(
             nx,
             ny,
             PBC=PBC,
@@ -672,7 +669,7 @@ class Experiment(object):
         PBC: bool = True,
         activation_distance: str = "euclidean",
         return_type: int = RAW_REALSPACE,
-    ) -> Tuple[XPySom, xr.DataArray, np.ndarray]:
+    ) -> Tuple[Simpsom, xr.DataArray, np.ndarray]:
         """
         _summary_
 

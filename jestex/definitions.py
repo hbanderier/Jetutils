@@ -1,5 +1,4 @@
 # coding: utf-8
-from ast import main
 import os
 import pickle as pkl
 from pathlib import Path

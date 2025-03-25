@@ -6,8 +6,8 @@ import xarray as xr
 import polars as pl
 
 
-from jetstream_hugo.definitions import N_WORKERS, slice_1d
-from jetstream_hugo.jet_finding import haversine, create_mappable_iterator, map_maybe_parallel, get_index_columns
+from .definitions import N_WORKERS, slice_1d
+from .jet_finding import haversine, create_mappable_iterator, map_maybe_parallel, get_index_columns
 
 
 def compute_one_wb_props(

@@ -38,7 +38,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as feat
 from IPython.display import clear_output
 
-from jetstream_hugo.definitions import (
+from .definitions import (
     FIGURES,
     PRETTIER_VARNAME,
     UNITS,
@@ -49,9 +49,9 @@ from jetstream_hugo.definitions import (
     polars_to_xarray,
     xarray_to_polars
 )
-from jetstream_hugo.jet_finding import gather_normal_da_jets
-from jetstream_hugo.stats import field_significance
-from jetstream_hugo.data import periodic_rolling_pl
+from .jet_finding import gather_normal_da_jets
+from .stats import field_significance
+from .data import periodic_rolling_pl
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 

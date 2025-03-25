@@ -13,7 +13,7 @@ import polars as pl
 import xarray as xr
 from tqdm import tqdm
 
-from jetstream_hugo.definitions import (
+from .definitions import (
     TIMERANGE,
     DEFAULT_VARNAME,
     DATADIR,
