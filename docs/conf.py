@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.abspath('..'))
 
 # import sphinx_rtd_theme
-import jetstream_hugo
+# import jetstream_hugo
 
 
 # -- Project information -----------------------------------------------------
@@ -29,9 +29,9 @@ author = 'Hugo Banderier'
 # the built documents.
 #
 # The short X.Y version.
-version = jetstream_hugo.__version__
+# version = jetstream_hugo.__version__
 # The full version, including alpha/beta/rc tags.
-release = jetstream_hugo.__version__
+# release = jetstream_hugo.__version__
 
 
 # -- General configuration ---------------------------------------------------
