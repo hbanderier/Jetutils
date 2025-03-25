@@ -443,7 +443,7 @@ def get_spells(
 ):
     times = df["time"].unique()
     dt = times[1] - times[0]
-    if varname == "com_speed":
+    if varname in ["com_speed", "speed"]:
         expr = pl.col(varname) < df[varname].quantile(1 - q)
     else:
         expr = pl.col(varname) > df[varname].quantile(q)
@@ -1259,7 +1259,7 @@ class ExtremeExperiment(object):
         self.path_suffix = f"{q}_{season}_{metric}_{self.mask_name}mask"
         self.region = self.data_handler.get_metadata()["region"]
         self.pred_path = self.path.joinpath("predictions")
-        self.pred_path.mkdir(mode=0o777, parents=True, exist_ok=True)
+        self.pred_path.mkdir(parents=True, exist_ok=True)
 
     def load_da(self, **kwargs):
         self.da = compute(self.da, **kwargs)

@@ -498,14 +498,19 @@ def find_all_jets(
     dl = np.radians(df["lon"].max() - df["lon"].min())
     base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
     index_columns = get_index_columns(df)
-    if thresholds is not None:
+    if base_s_thresh <= 1.:
+        thresholds = df.group_by(index_columns).agg(pl.col("s").quantile(base_s_thresh).alias("s_thresh"))
+        base_s_thresh = thresholds["s_thresh"].mean() # disgusting
+        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
+    elif thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
             .drop("quantile")
             .cast({"s": pl.Float32})
             .rename({"s": "s_thresh"})
         )
-        df = df.join(thresholds, on="time")
+    if thresholds is not None:
+        df = df.join(thresholds, on=[ic for ic in index_columns if ic != "member"]) # ugly
         df = df.with_columns(
             int_thresh=base_int_thresh * pl.col("s_thresh") / base_s_thresh
         )

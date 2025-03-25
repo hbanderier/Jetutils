@@ -260,9 +260,7 @@ class Experiment(object):
     def get_norm_da(self):
         """
         Computes, stores and returns the normalization factor 
-        .. math::
-            \sqrt{\text{lat}}
-
+        
         :return: normalization factor, computed as the square root of the latitude.
         :rtype: xr.DataArray
         """
