@@ -934,25 +934,9 @@ def create_mappable_iterator(
             iter_dims.append(potential)
     gb = df.group_by(iter_dims, maintain_order=True)
     len_ = len(gb.first())
-    iterator = (
-        (
-            jets,
-            *[
-                compute(
-                    da.sel(
-                        {
-                            dim: values
-                            for dim, values in zip(iter_dims, index)
-                            if dim in da.dims
-                        }
-                    )
-                )
-                for da in das
-            ],
-            *others,
-        )
-        for index, jets in gb
-    )
+    def _extract_da(da, index):
+        return compute(da.sel({dim: values for dim, values in zip(iter_dims, index) if dim in da.dims}))
+    iterator = ((jets, *[_extract_da(da, index) for da in das], *others) for index, jets in gb)
     return len_, iterator
 
 
