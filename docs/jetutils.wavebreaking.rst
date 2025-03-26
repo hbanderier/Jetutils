@@ -1,7 +1,7 @@
-jetstream\_hugo.stats module
+jetutils.wavebreaking module
 ============================
 
-.. automodule:: jetstream_hugo.stats
+.. automodule:: jetutils.wavebreaking
    :members:
    :show-inheritance:
    :undoc-members:

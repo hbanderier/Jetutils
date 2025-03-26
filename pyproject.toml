@@ -5,7 +5,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jestex"
+name = "jetutils"
 version = "0.8.0"
 authors = [
   { name="Hugo Banderier", email="hugo.banderier@unibe.ch" },

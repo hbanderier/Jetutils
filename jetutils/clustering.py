@@ -45,12 +45,18 @@ def centers_realspace(centers: np.ndarray, feature_dims: Mapping) -> xr.DataArra
     """
     Transforms raw cluster centers, typically the output of sklearn clustering algorithms, to easily plottable xarray `DataArray`.
     
-    :param centers: ndarray of size (n_samples, n_features)
-    :type centers: np.ndarray
-    :param feature_dims: Dictionnary from dimension name to coordinate `ndarray`'s. Typically lon and lat.
-    :type feature_dims: Mapping
-    :return: Cluster centers reshaped to fit `feature_dims` and with named dimensions.
-    :rtype: DataArray
+    Parameters
+    ----------
+    centers : array of size (n_samples, n_features)
+        Raw cluster centers
+    
+    feature_dims : Mapping
+        Dictionnary from whose keys are dimension names and values are the correponding coordinates  as `ndarray`'s. Typically lon and lat.
+        
+    Returns
+    -------
+    centers : DataArray
+        Cluster centers reshaped to fit `feature_dims` and with named dimensions.
     """
     coords = {"cluster": np.arange(centers.shape[0])} | feature_dims
     shape = [len(coord) for coord in coords.values()]
@@ -59,17 +65,23 @@ def centers_realspace(centers: np.ndarray, feature_dims: Mapping) -> xr.DataArra
 
 def centers_realspace_from_da(
     centers: np.ndarray, da: xr.DataArray | xr.Dataset
-) -> xr.DataArray:
+) -> xr.DataArray:    
     """
     Transforms raw cluster centers, typically the output of sklearn clustering algorithms, to
     easily plottable xarray `DataArray`, taking the coordinates from another `DataArray`
     
-    :param centers: ndarray of size (n_samples, n_features)
-    :type centers: np.ndarray
-    :param da: DataArray or Dataset from which to infer the feature dimensions
-    :type da: xr.DataArray
-    :return: Cluster centers reshaped to fit the feature dimension of `da` and with named dimensions.
-    :rtype: xr.DataArray
+    Parameters
+    ----------
+    centers : array of size (n_samples, n_features)
+        Raw cluster centers
+        
+    da : xr.DataArray or xr.Dataset
+        DataArray or Dataset from which to infer the feature dimensions
+        
+    Returns
+    -------
+    centers : DataArray
+        Cluster centers reshaped to fit the feature dimension of `da` and with named dimensions.
     """
     return centers_realspace(centers, determine_feature_dims(da))
 
@@ -97,20 +109,29 @@ def labels_from_projs(
 
     If two timeseries are present and are of equal size (n_time, n_patterns), a large collection of timeseries is created with projections of `X1`
     in the even positions and the projections of `X2` in the odd positions.
-    
-    :param X1: array of shape (n_time, n_patterns), Projections on many patterns.
-    :type X1: ndarray
-    :param X2: array of shape (n_time, n_patterns) Additional projections on many patterns. If present, will be interleaved into `X1` before proceeding, with projections of `X1` in the even positions and the projections of `X2` in the odd positions. 
-    :type X2: ndarray, optional
-    :param cutoff: Limits how many patterns to to perform the assignment on. All patterns if left to `None`, the default.
-    :type cutoff: int, optional
-    :param neg: If `False`, the timestep is assigned to a pattern if it has the highest projection of all the patterns for this timestep, if `True` the timestep is assigned to a pattern if it has the highest *absolute* projection of all the patterns for this timestep. Defaults to `True`.
-    :type neg: bool, optional
-    :param adjust: Whether assignments are only valid if the projection is larger than one standard deviation of projections. Defaults to `True`.
-    :type adjust: bool, optional
-    :return: Integer ndarray of shape (n_time), assignments onto each pattern based on different rules.
-    :rtype: ndarray
-    """
+
+    Parameters
+    ----------
+    X1 : array of shape (n_time, n_patterns)
+        Projections on many patterns.
+        
+    X2 : array of shape (n_time, n_patterns), optional
+        Additional projections on many patterns. If present, will be interleaved into `X1` before proceeding, with projections of `X1` in the even positions and the projections of `X2` in the odd positions. By default None.
+        
+    cutoff : int, optional
+        Limits how many patterns to to perform the assignment on. All patterns if left to `None`, the default. By default all patterns
+        
+    neg : bool, optional
+        If `False`, the timestep is assigned to a pattern if it has the highest projection of all the patterns for this timestep, if `True` the timestep is assigned to a pattern if it has the highest *absolute* projection of all the patterns for this timestep. By default True
+        
+    adjust : bool, optional
+        Whether assignments are only valid if the projection is larger than one standard deviation of projections. By default True
+
+    Returns
+    -------
+    labels : np.ndarray
+        Integer ndarray of shape (n_time), assignments onto each pattern based on different rules.
+    """    
     if cutoff is None:
         if X2 is None:
             cutoff = X1.shape[1]
@@ -150,19 +171,25 @@ def labels_to_centers(
     """
     Generates cluster centers by averaging the elements of `da` belonging to each cluster.
 
-    
-    :param labels: `DataArray` with one or several dimensions corresponding to the sample dimensions of the clustering that created them. 
-    Typically (time) or (member, time). Assignments from sample points (e.g. timesteps) to a cluster.
-    :type labels: xr.DataArray
-    :param da: DataArray or Dataset from which to create real space cluster centers. Does not have to be the data on which the clustering was performed.
-    :type da: xr.DataArray or xr.Dataset
-    :param expected_nclu: Can be useful if not all clusters are present in `labels`. If `None`, the default, possible clusters are all clusters present in `labels`. If present, it is instead `np.arange(n_clu)`. Defaults to None.
-    :type expected_nclu: int, optional
-    :param dim_name: Name of the DataArray dimension name along the clusters. Defaults to "cluster".
-    :type dim_name: str, optioanl
-    :return: Cluster center, dimensions are `dict(dim_name=clusters, **get_feature_dims(da))`.
-    :rtype: DataArray
-    """
+    Parameters
+    ----------
+    labels : xr.DataArray
+        Array with one or several dimensions corresponding to the *sample* dimensions of the clustering that created them. Typically (time) or (member, time). Assignments from sample points (e.g. timesteps) to a cluster.
+        
+    da : xr.DataArray | xr.Dataset
+        Array from which to create real space cluster centers. Does not have to be the data on which the clustering was performed.
+        
+    expected_nclu : int, optional
+        Can be useful if not all clusters are present in `labels`. If `None`, the default, possible clusters are all clusters present in `labels`. If present, it is instead `np.arange(n_clu)`. By default None.
+        
+    dim_name : str, optional
+        Name of the DataArray dimension name along the clusters, by default "cluster"
+
+    Returns
+    -------
+    centers : Same as `da`
+        Cluster center, dimensions are `dict(dim_name=clusters, **get_feature_dims(da))`.
+    """    
     if expected_nclu is not None:
         unique_labels = np.arange(expected_nclu)
         counts = np.zeros(expected_nclu)
@@ -211,13 +238,19 @@ def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray) -> np.n
     """
     From a timeseries of values and a timeseries of labels, assigning each timestep to a cluster, returns the clusterwise mean of the timeseries
 
-    :param timeseries: Any timeseries
-    :type timeseries: np.ndarray
-    :param labels: Label assignment, must be of the same length as `timeseries`
-    :type labels: list or np.ndarray
-    :return: Means of timeseries elements belonging to each cluster. As many elements as there are unique clusters in `labels`
-    :rtype: np.ndarray
-    """
+    Parameters
+    ----------
+    timeseries : np.ndarray
+        Any timeseries
+        
+    labels : list | np.ndarray
+        Label assignment, must be of the same length as `timeseries`
+
+    Returns
+    -------
+    np.ndarray
+        _descrMeans of timeseries elements belonging to each cluster. As many elements as there are unique clusters in `labels`iption_
+    """    
     timeseries = np.atleast_2d(timeseries)
     mask = labels_to_mask(labels)
     return np.asarray(
@@ -228,20 +261,29 @@ def timeseries_on_map(timeseries: np.ndarray, labels: list | np.ndarray) -> np.n
 class Experiment(object):
     """
     Worker class for all the different clustering methods, handling various clustering tasks and pre- and post-processing.
+
+    Attributes
+    -------
+    data_handler : DataHandler
+        Provides the underlying `DataArray` and path in which to store results
     
-    :ivar data_handler: `DataHandler` that stores underlying dataarray and path in which to store results
-    :ivar da: shortcut to `self.data_handler.da`
-    :ivar path: shortcut to `self.data_handler.path`
-    """
+    da : xr.DataArray
+        shortcut to `self.data_handler.da`
+        
+    path : Path
+        shortcut to `self.data_handler.path`
+    """    
     def __init__(
         self,
         data_handler: DataHandler,
     ) -> None:
         """
         Creates instance of Experiment
-
-        :param data_handler:  `DataHandler` that stores underlying dataarray and path in which to store results
-        :type data_handler: DataHandler
+        
+        Parameters
+        ----------
+        data_handler: DataHandler 
+            Provides underlying `DataArray` and path in which to store results
         """
         self.data_handler = data_handler
         self.da = self.data_handler.da
@@ -249,9 +291,12 @@ class Experiment(object):
 
     def load_da(self, **kwargs):
         """
-        Coerces this Experiment's `DataArray` into memory
+        Coerces this Experiment's `DataArray` into memory.
         
-        :param **kwargs: Keyword arguments that get passed to `compute()`.
+        Parameters
+        ----------
+        kwargs
+            Keyword arguments that get passed to `compute()`.
         """
         self.da = compute(self.da, **kwargs)
 
@@ -259,8 +304,10 @@ class Experiment(object):
         """
         Computes, stores and returns the normalization factor 
         
-        :return: normalization factor, computed as the square root of the latitude.
-        :rtype: xr.DataArray
+        Returns
+        -------
+        xr.DataArray
+            normalization factor, computed as the square root of the latitude.
         """
         norm_path = self.path.joinpath("norm.nc")
         if norm_path.is_file():
@@ -276,10 +323,13 @@ class Experiment(object):
         """
         Normalizes and reshapes original data into a form ready for transformation and / or clustering tasks
 
-        :return: `ndarray` of shape (n_samples, n_features). Normalized and reshaped version of original data.
-        :rtype: np.ndarray 
-        :return: Normalized but not reshaped version of the original data.
-        :rtype: xr.DataArray: 
+        Returns
+        -------
+        np.ndarray shape (n_samples, n_features)
+            Normalized and reshaped version of original data.
+        
+        xr.DataArray
+            Normalized but not reshaped version of the original data.
         """
         norm_da = self.get_norm_da()
 
@@ -291,10 +341,15 @@ class Experiment(object):
         """
         Tries to find the `.pkl` file containing the `sklearn.PCA` object that was trained on this Experiment's data with at least `n_pca` components
 
-        :param n_pcas: number of PCs
-        :type n_pcas: int
-        :return: posix path to file if it exsits, otherwise `None`
-        :rtype: str or None
+        Parameters
+        ----------
+        n_pcas : int
+            Number of components
+        
+        Returns
+        -------
+        str or None
+            posix path to file if it exsits, otherwise `None`
         """
         potential_paths = list(self.path.glob("pca_*.pkl"))
         potential_paths = {
@@ -308,13 +363,19 @@ class Experiment(object):
     def compute_pcas(self, n_pcas: int, force: bool = False) -> str:
         """
         Preprocess own data, trains scikit-learn `PCA` object, saves it and returns path to it. If a fitting PCA object is already stored, don't train and return path to it instead.
+        
+        Parameters
+        ----------
+        n_pcas : int
+            Number of components
+            
+        force : bool, optional
+            Trains PCA object even if a fitting one exists, by default False
 
-        :param n_pcas: Number of components
-        :type n_pcas: int
-        :param force: Trains PCA object even if a fitting one exists, defaults to False
-        :type force: bool, optional
-        :return: Path to `.pkl` file 
-        :rtype: str
+        Returns
+        -------
+        str
+            Posix path to `.pkl` file 
         """
         path = self._pca_file(n_pcas)
         if path is not None and not force:
@@ -336,14 +397,21 @@ class Experiment(object):
         """
         Potentially fits `PCA` object on this object's own data, and transforms input data with trained `PCA` object.
 
-        :param X: Data to transform, not necessarily the one on which `PCA` was trained.
-        :type X: np.ndarray | dask.Array
-        :param n_pcas: Number of components. If `None`, returns `X` unmodified. Defaults to `None`
-        :type n_pcas: int, optional
-        :param compute: If input was a Dask Array, whether or not to coerce output to memory, defaults to False
-        :type compute: bool, optional
-        :return: Transformed `X`
-        :rtype: np.ndarray
+        Parameters
+        ----------
+        X : np.ndarray | DaArray
+            Data to transform, not necessarily the one on which `PCA` was trained.
+            
+        n_pcas : int | None, optional
+            Number of components. If `None`, returns `X` unmodified. By default None
+            
+        compute : bool, optional
+            If input was a Dask Array, whether or not to coerce output to memory, by default False
+
+        Returns
+        -------
+        np.ndarray
+            Transformed `X`
         """
         if n_pcas is None:
             return X
@@ -368,15 +436,22 @@ class Experiment(object):
         """
         Performs inverse PCA transform on `X`, based on PCA trained on this object's data.
 
-        :param X: Data to inverse transform, not necessarily the one on which `PCA` was trained.
-        :type X: np.ndarray | DaArray
-        :param n_pcas: Number of components. If `None`, returns `X` unmodified. Defaults to `None`
-        :type n_pcas: int, optional
-        :param compute: If input was a Dask Array, whether or not to coerce output to memory, defaults to False
-        :type compute: bool, optional
-        :return: Inverse transformed `X`
-        :rtype: np.ndarray
-        """
+        Parameters
+        ----------
+        X : np.ndarray | dask.Array
+            Data to inverse transform, not necessarily the one on which `PCA` was trained.
+            
+        n_pcas : int | None, optional
+            Number of components. If `None`, returns `X` unmodified. By default None
+            
+        compute : bool, optional
+            If input was a Dask Array, whether or not to coerce output to memory, by default False
+
+        Returns
+        -------
+        np.ndarray
+            Inverse transformed `X`
+        """        
         if n_pcas is None:
             return X
         pca_path = self.compute_pcas(n_pcas)
@@ -392,11 +467,16 @@ class Experiment(object):
         """
         Transforms a labels array into a `DataArray` with named dimensions, inferred from this object's data's sample dimensions.
 
-        :param labels: Labels, output from clustering methods
-        :type labels: np.ndarray
-        :return: `labels` as a `DataArray` with named dimensions.
-        :rtype: xr.DataArray
-        """
+        Parameters
+        ----------
+        labels : np.ndarray
+            Labels, output from clustering methods
+
+        Returns
+        -------
+        xr.DataArray
+            `labels` with named sample dimensions.
+        """        
         sample_dims = determine_sample_dims(self.da)
         shape = [len(dim) for dim in sample_dims.values()]
         labels = labels.reshape(shape)
@@ -407,12 +487,17 @@ class Experiment(object):
         Transforms the centers of clusters, as directly output by the various clustering methods, into the same space as this object's data.
         Tries to guess whether it was PCA transformed by checking for a PCA file with `n_pcas=centers.shape[1]`
         Also undoes the normalization.
-        
-        :param centers: Raw cluster centers
-        :type centers: np.ndarray
-        :return: `centers` transformed back to a `DataArray` in the same space as this object's data.
-        :rtype: xr.DataArray
-        """
+
+        Parameters
+        ----------
+        centers : np.ndarray
+            Raw cluster centers
+
+        Returns
+        -------
+        xr.DataArray
+            `centers` transformed back to a `DataArray` in the same space as this object's data.
+        """        
         feature_dims = self.data_handler.get_feature_dims()
         extra_dims = self.data_handler.get_extra_dims()
         n_pcas_tentative = centers.shape[1]
@@ -437,29 +522,42 @@ class Experiment(object):
     ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
         All the clustering methods are responsible for producing their centers, potentially in in pca space and their labels in sample space. This function handles the rest. Potentially transforms `centers`, and turns both `centers` and `labels` into `DataArray`s with appropriate coordinates inferred from the original data.
+        
+        Parameters
+        ----------
+        centers : array of shape (n_centers, n_features)
+            Cluster centers, potentially in PC space.
+            
+        labels : array of shape (n_samples)
+            Timeseries Cluster labels.
+        
+        return_type : int, optional
+            four options:
+            
+            - RAW_REALSPACE: the default, transforms centers into the same space as this object's data
+            
+            - RAW_PCSPACE: leaves centers in original training space
+            
+            - ADJUST: projects the training data onto the original clusters, and re-compute the cluster labels based on the adjusted projection winners. A sample is assigned to the "0 cluster" if the maximum projection on the cluster centers is below one standard deviation of all projections. See `labels_from_projs` for more details.
 
-        :param centers: `ndarray` of shape (n_centers, n_features). Cluster centers, potentially in PC space. 
-        :type centers: np.ndarray
-        :param labels: `ndarray` of shape (n_samples). Cluster labels.
-        :type labels: np.ndarray
-        :param return_type: four options:
-        
-            RAW_REALSPACE: the default, transforms centers into the same space as this object's data
-        
-            RAW_PCSPACE: leaves centers in original training space
-        
-            ADJUST: projects the training data onto the original clusters, and re-compute the cluster labels based on the adjusted projection winners. A sample is assigned to the "0 cluster" if the maximum projection on the cluster centers is below one standard deviation of all projections. See `labels_from_projs` for more details.
+            - ADJUST_TWOSIDED: same as `ADJUST` but labels are computed with the *absolute values* of the projections of `X` onto the centers. This allows for negative cluster assignments: `labels[0]=-1` means `X[0]` had the highest absolute projection on the first cluster center, but this projection was negative. This is rarely useful.
+            
+        X : `ndarray` of shape (n_samples, n_features), optional
+            Original training data, only necessary if the projections need to be recomputed, i.e. if `return_type` is either `ADJUST` or `ADJUST_TWOSIDED`.
 
-            ADJUST_TWOSIDED: same as `ADJUST` but labels are computed with the *absolute values* of the projections of `X` onto the centers. This allows for negative cluster assignments: `labels[0]=-1` means `X[0]` had the highest absolute projection on the first cluster center, but this projection was negative. This is rarely useful.
-        
-        :type return_type: int
-        :param X: `ndarray` of shape (n_samples, n_features). Original training data, only necessary if the projections need to be recomputed, i.e. if `return_type` is either `ADJUST` or `ADJUST_TWOSIDED`.
-        :type X: np.ndarray
-        :return centers: Transformed centers, with appropriate coordinates and dimensions
-        :rtype: DataArray
-        :return labels: Potentially recomputed labels, with appropriate coordinates and dimensions
-        :rtype: DataArray
-        """
+        Returns
+        -------
+        centers: DataArray
+            Transformed centers, with appropriate coordinates and dimensions
+            
+        labels: DataArray
+            Potentially recomputed labels, with appropriate coordinates and dimensions
+
+        Raises
+        ------
+        ValueError
+            If a wrong return specifier is given
+        """ 
         n_clu = centers.shape[0]
         counts = np.zeros(n_clu)
         if return_type == RAW_PCSPACE:
@@ -505,20 +603,30 @@ class Experiment(object):
         Performs K-means clustering by wrapping the scikit-learn KMeans object, pre- and post-processing this object's data. Stores the underlying trained scikit-learn KMeans object.
         If a fitting KMeans object is already stored, use it instead unless `force=True`
 
-        :param n_clu: Number of k-means cluster
-        :type n_clu: int
-        :param n_pcas: Number of principal components. If any above 0, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
-        :type n_pcas: int
-        :param weigh_grams: Performs special weighing recommended by Grams et al. 2017, defaults to False
-        :type weigh_grams: bool
-        :param return_type: How to transform the output centers and labels, defaults to RAW_REALSPACE
-        :type return_type: int, optional
-        :param force: whether to re-train a KMeans object even if a fitting one is found, defaults to False
-        :type force: bool, optional
-        :return centers: Transformed centers, with appropriate coordinates and dimensions
-        :rtype: DataArray
-        :return labels: Potentially recomputed labels, with appropriate coordinates and dimensions
-        :rtype: DataArray
+        Parameters
+        ----------
+        n_clu : int
+            Number of k-means cluster
+            
+        n_pcas : int | None, optional
+            Number of principal components. If above 0 and not `None`, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
+            
+        weigh_grams : bool, optional
+            Performs special weighing recommended by Grams et al. 2017, by default False
+            
+        return_type : int, optional
+            How to transform the output centers and labels, by default RAW_REALSPACE
+            
+        force : bool, optional
+            Whether to re-train a KMeans object even if a fitting one is found, by default False
+
+        Returns
+        -------
+        centers: DataArray
+            Transformed centers, with appropriate coordinates and dimensions
+            
+        labels: DataArray
+            Potentially recomputed labels, with appropriate coordinates and dimensions
         """
         output_file_stem = f"kmeans_{n_clu}_{n_pcas}"
         output_path_centers = self.path.joinpath(f"centers_{output_file_stem}.nc")
@@ -576,28 +684,47 @@ class Experiment(object):
         **kwargs,
     ) -> Tuple[Simpsom, xr.DataArray, np.ndarray]:
         """
-        Performs SOM clustering by wrapping the XPySom object, pre- and post-processing this object's data. Stores the underlying trained object.
-        If a fitting XPySom object is already stored, use it instead unless `force=True`
+        Performs SOM clustering by wrapping the Simpsom object, pre- and post-processing this object's data. Stores the underlying trained object.
+        If a fitting Simpsom object is already stored, use it instead unless `force=True`
 
-        :param nx: SOM grid size in the x direction
-        :type nx: int
-        :param ny: SOM grid size in the y direction
-        :type ny: int
-        :param n_pcas: Number of principal components. If any above 0, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
-        :type n_pcas: int
-        :param PBC: _description_, defaults to True
-        :type PBC: bool, optional
-        :param activation_distance: _description_, defaults to "euclidean"
-        :type activation_distance: str, optional
-        :param return_type: _description_, defaults to RAW_REALSPACE
-        :type return_type: int, optional
-        :param force: _description_, defaults to False
-        :type force: bool, optional
-        :param train_kwargs: _description_, defaults to None
-        :type train_kwargs: dict | None, optional
-        :return: _description_
-        :rtype: Tuple[XPySom, xr.DataArray, np.ndarray]
-        """
+        Parameters
+        ----------
+        nx : int
+            SOM grid size in the x direction
+            
+        ny : int
+            SOM grid size in the y direction
+            
+        n_pcas : int, optional
+            Number of principal components. If any above 0, transforms the data into PC space, if 0 or None (the default), the data is left in real space.
+            
+        PBC : bool, optional
+            Whether to use Periodic Boundary Conditions in the SOM grid, by default True
+            
+        activation_distance : str, optional
+            SOM real space distance, by default "euclidean"
+            
+        return_type : int, optional
+            How to transform the output centers and labels, by default RAW_REALSPACE
+            
+        force : bool, optional
+            Whether to re-train a Simpsom object even if a fitting one is found, by default False
+            
+        train_kwargs : dict | None, optional
+            arguments passed to `net.train()`, by default None
+
+        Returns
+        -------
+        net: Simpsom
+            Simpsom object.
+            
+        centers: DataArray
+            Transformed centers, with appropriate coordinates and dimensions
+            
+        labels: DataArray
+            Potentially recomputed labels, with appropriate coordinates and dimensions
+            
+        """        
         pbc_flag = "_pbc" if PBC else ""
         net = Simpsom(
             nx,
@@ -671,25 +798,36 @@ class Experiment(object):
         return_type: int = RAW_REALSPACE,
     ) -> Tuple[Simpsom, xr.DataArray, np.ndarray]:
         """
-        _summary_
+        Projects this object's data onto a SOM trained by another `Experiment`.
 
-        :param other_exp: _description_
-        :type other_exp: Experiment
-        :param nx: _description_
-        :type nx: int
-        :param ny: _description_
-        :type ny: int
-        :param n_pcas: _description_, defaults to 0
-        :type n_pcas: int, optional
-        :param PBC: _description_, defaults to True
-        :type PBC: bool, optional
-        :param activation_distance: _description_, defaults to "euclidean"
-        :type activation_distance: str, optional
-        :param return_type: _description_, defaults to RAW_REALSPACE
-        :type return_type: int, optional
-        :return: _description_
-        :rtype: Tuple[XPySom, xr.DataArray, np.ndarray]
-        """
+        Parameters
+        ----------
+        other_exp : Experiment
+            _description_
+        nx : int
+            _description_
+        ny : int
+            _description_
+        n_pcas : int, optional
+            _description_, by default 0
+        PBC : bool, optional
+            _description_, by default True
+        activation_distance : str, optional
+            _description_, by default "euclidean"
+        return_type : int, optional
+            _description_, by default RAW_REALSPACE
+
+        Returns
+        -------
+        net: Simpsom
+            Original Simpsom object, whose `latest_bmus` new correspond to this data
+            
+        centers: DataArray
+            SOM centers computed from this data, transformed and with appropriate coordinates and dimensions
+            
+        labels: DataArray
+            Clustering labels corresponding to this data with appropriate coordinates and dimensions
+        """        
         pbc_flag = "_pbc" if PBC else ""
         net, _, _ = other_exp.som_cluster(nx=nx, ny=ny, n_pcas=n_pcas, PBC=PBC)
 
@@ -820,6 +958,30 @@ class Experiment(object):
         type_: int = 1,
         return_realspace: bool = False,
     ) -> Tuple[Path, dict]:
+        """
+        Compute Optimally Persistent Patters. Deprecated and probably broken.
+
+        Parameters
+        ----------
+        n_pcas : int | None, optional
+            _description_, by default None
+        lag_max : int, optional
+            _description_, by default 90
+        type_ : int, optional
+            _description_, by default 1
+        return_realspace : bool, optional
+            _description_, by default False
+
+        Returns
+        -------
+        Tuple[Path, dict]
+            _description_
+
+        Raises
+        ------
+        ValueError
+            _description_
+        """
         if type_ not in [1, 2]:
             raise ValueError("Wrong OPP type, pick 1 or 2")
         X, _ = self.prepare_for_clustering()
@@ -849,6 +1011,25 @@ class Experiment(object):
         type: int = 1,
         return_type: int = RAW_REALSPACE,
     ) -> Tuple[xr.DataArray, xr.DataArray]:
+        """
+        Cluster on type T1, type T2 or both types of Optimally Persistent Patterns. Deprecated and probably broken.
+
+        Parameters
+        ----------
+        n_clu : int
+            _description_
+        n_pcas : int
+            _description_
+        type : int, optional
+            _description_, by default 1
+        return_type : int, optional
+            _description_, by default RAW_REALSPACE
+
+        Returns
+        -------
+        Tuple[xr.DataArray, xr.DataArray]
+            _description_
+        """
         X, _ = self.prepare_for_clustering()
         X = self.pca_transform(X, n_pcas)
 

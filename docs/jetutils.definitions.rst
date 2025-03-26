@@ -1,7 +1,7 @@
-jetstream\_hugo.data module
+jetutils.definitions module
 ===========================
 
-.. automodule:: jetstream_hugo.data
+.. automodule:: jetutils.definitions
    :members:
    :show-inheritance:
    :undoc-members:

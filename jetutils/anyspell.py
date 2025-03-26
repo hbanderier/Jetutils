@@ -108,6 +108,9 @@ def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
     -------
     score : float
         Brier score loss.
+        
+    something else : float
+        another thing.
 
     References
     ----------

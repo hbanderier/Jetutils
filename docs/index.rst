@@ -1,10 +1,10 @@
-.. JetStream documentation master file, created by
-   sphinx-quickstart on Tue Mar 25 17:06:10 2025.
+.. JetUtils documentation master file, created by
+   sphinx-quickstart on Wed Mar 26 10:22:20 2025.
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-JetStream documentation
-=======================
+JetUtils documentation
+======================
 
 Add your content using ``reStructuredText`` syntax. See the
 `reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
@@ -15,4 +15,4 @@ documentation for details.
    :maxdepth: 4
    :caption: Contents:
 
-   jetstream_hugo
+   jetutils

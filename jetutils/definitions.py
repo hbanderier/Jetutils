@@ -1,4 +1,11 @@
 # coding: utf-8
+"""
+This file contains commonly used definitions of paths and compute options, gotten from the file `$HOME/.jetutils.ini` if it exists, otherwise guessed.
+
+It also contains all the constants to do physics, the common timeranges, the full names of jet variables as well as their units, default values and LaTeX symbols.
+
+Finally, it contains a few functions that are useful all over.
+"""
 import os
 import pickle as pkl
 from pathlib import Path
@@ -7,6 +14,8 @@ from itertools import groupby
 from dataclasses import dataclass, field
 import time
 import datetime
+import configparser
+from importlib import resources as impresources
 
 import numpy as np
 import pandas as pd
@@ -17,43 +26,40 @@ from dask.distributed import progress  # to use with a specified dask client
 
 np.set_printoptions(precision=5, suppress=True)
 
-if Path("/scratch/snx3000").is_dir():
-    NODE = "DAINT"
-    DATADIR = "/scratch/snx3000/hbanderi/data/persistent"
-    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = "8GiB"
-elif Path("/scratch2/hugo").is_dir():
-    NODE = "CLIM"
-    DATADIR = "/scratch2/hugo"
-    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = "4GiB"
-elif Path("/gws/nopw/j04/aopp").is_dir():
-    NODE = "JASMIN"
-    DATADIR = "/gws/nopw/j04/aopp/hbanderi/data"
-    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "60000")) // N_WORKERS
-    MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
-    FIGURES = "/home/users/hbanderi/Henrik_data/Figures"
-    RESULTS = "/home/users/hbanderi/Henrik_data/Figures"
-elif Path("/storage/workspaces/giub_meteo_impacts/ci01").is_dir():
-    NODE = "UBELIX"
-    DATADIR = "/storage/workspaces/giub_meteo_impacts/ci01"
-    os.environ["CDO"] = "/storage/homefs/hb22g102/mambaforge/envs/env11/bin/cdo"
-    os.environ["PATH"] += (
-        os.pathsep + "/storage/homefs/hb22g102/latex/bin/x86_64-linux/"
-    )
-    N_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", "8"))
-    MEMORY_LIMIT = int(os.environ.get("SLURM_MEM_PER_NODE", "150000")) // N_WORKERS
-    MEMORY_LIMIT = f"{MEMORY_LIMIT // 1000}GB"
-    FIGURES = "/storage/homefs/hb22g102/persistent-extremes-era5/Figures"
-    RESULTS = "/storage/homefs/hb22g102/persistent-extremes-era5/Results"
+# Try to find a .jetutils.ini
+config = configparser.ConfigParser()
+path_default_config = impresources.files("jetutils").joinpath("config.ini")
+path_override_config = Path.home().joinpath(".jetutils.ini")
+config.read([path_default_config, path_override_config])
+
+if path_override_config.is_file():
+    print("Found config override file at ", path_override_config)
 else:
-    NODE = "LOCAL"
-    N_WORKERS = 8
-    DATADIR = "../data"
-    MEMORY_LIMIT = "2GB"
-    FIGURES = "/Users/bandelol/Documents/code_local/local_figs"
-    RESULTS = "/Users/bandelol/Documents/code_local/data/results"
+    print("No config override found at ", path_override_config, "Guessing everything")
+
+# For what's not found, guesses and prints the guesses
+DATADIR = config.get("PATHS", "DATADIR")
+FIGURES = config.get("PATHS", "FIGURES")
+RESULTS = config.get("PATHS", "RESULTS")
+N_WORKERS = config.get("COMPUTE", "N_WORKERS")
+MEMORY_LIMIT = config.get("COMPUTE", "MEMORY_LIMIT")
+
+if DATADIR == "guess":
+    DATADIR = Path.cwd().joinpath("data")
+    print("Guessed DATADIR : ", DATADIR)
+if FIGURES == "guess":
+    FIGURES = Path.cwd().joinpath("figures")
+    print("Guessed FIGURES : ", FIGURES)
+if RESULTS == "guess":
+    RESULTS = Path.cwd().joinpath("results")
+    print("Guessed RESULTS : ", RESULTS)
+if N_WORKERS == "guess":
+    N_WORKERS = os.environ.get("SLURM_CPU_PER_NODE", os.cpu_count())
+    print("Guessed N_WORKERS : ", N_WORKERS)
+if MEMORY_LIMIT == "guess":
+    MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", "8GiB")
+    print("Guessed MEMORY_LIMIT : ", MEMORY_LIMIT)
+
 COMPUTE_KWARGS = {
     "processes": True,
     "threads_per_worker": 1,
@@ -216,19 +222,68 @@ R_SPECIFIC_AIR = 287.0500676
 
 
 def degcos(x: float) -> float:
+    """
+    Cosine of an angle expressed in degrees
+
+    Parameters
+    ----------
+    x : float
+        Angle in degrees
+
+    Returns
+    -------
+    float
+        Cosine result
+    """
     return np.cos(x / 180 * np.pi)
 
 
 def degsin(x: float) -> float:
+    """
+    Sine of an angle expressed in degrees
+
+    Parameters
+    ----------
+    x : float
+        Angle in degrees
+
+    Returns
+    -------
+    float
+        Sine results
+    """
     return np.sin(x / 180 * np.pi)
 
 
 def save_pickle(to_save: Any, filename: str | Path) -> None:
+    """
+    Save a pickleable object to file
+
+    Parameters
+    ----------
+    to_save : Any
+        Pickleable
+    filename : str | Path
+        path, it's better if it ends in `.pkl`
+    """
     with open(filename, "wb") as handle:
         pkl.dump(to_save, handle)
 
 
 def load_pickle(filename: str | Path) -> Any:
+    """
+    Save a pickleable object to file
+
+    Parameters
+    ----------
+    filename : str | Path
+        path, it's better if it ends in `.pkl`
+        
+    Returns
+    -------
+    Any
+        Pickled object
+    """
     with open(filename, "rb") as handle:
         to_ret = pkl.load(handle)
     return to_ret
@@ -238,15 +293,22 @@ def to_zero_one(X: np.ndarray | pl.DataFrame):
     """
     Normalizes an arbitrary polars DataFrame or numpy Array to the range [0, 1] along one axis. The 0 axis if numpy, the columns if polars. Returns the original minimum and maximum to be able to revert.
 
-    :param X: Input array
-    :type X: np.ndarray or pl.DataFrame
-    :return X: Input normalised to the range [0, 1]
-    :rtype: Same as input
-    :return Xmin: Original minimum of the data, used to revert this function
-    :rtype: Same as input, with one fewer dimension
-    :return Xmax: Original maximum of the data, used to revert this function
-    :rtype: Same as input, with one fewer dimension
-    """
+    Parameters
+    ----------
+    X : np.ndarray | pl.DataFrame
+        Input array
+
+    Returns
+    -------
+    X : same as input
+        Input normalised to the range [0, 1]
+    
+    Xmin : same as input, with one fewer dimension
+        Original minimum of the data, used to revert this function
+        
+    Xmax : same as input, with one fewer dimension
+        Original maximum of the data, used to revert this function
+    """    
     def expr(col):
         return (pl.col(col) - pl.col(col).min()) / (
             pl.col(col).max() - pl.col(col).min()
@@ -287,15 +349,22 @@ def normalize(X):
     """
     Normalizes an arbitrary polars DataFrame or numpy Array to a standard normal along one axis. The 0 axis if numpy, the columns if polars. Returns the original minimum and maximum to be able to revert.
 
-    :param X: Input array
-    :type X: np.ndarray or pl.DataFrame
-    :return X: Input normalised to a standard normal
-    :rtype: Same as input
-    :return meanX: Original mean of the data, used to revert this function
-    :rtype: Same as input, with one fewer dimension
-    :return stdX: Original std of the data, used to revert this function
-    :rtype: Same as input, with one fewer dimension
-    """
+    Parameters
+    ----------
+    X : np.ndarray | pl.DataFrame
+        Input array
+
+    Returns
+    -------
+    X : same as input
+        Input normalised to a standard normal
+    
+    meanX : same as input, with one fewer dimension
+        Original minimum of the data, used to revert this function
+        
+    stdX : same as input, with one fewer dimension
+        Original maximum of the data, used to revert this function
+    """    
     def expr(col):
         return (pl.col(col) - pl.col(col).mean()) / pl.col(col).std()
 
@@ -344,6 +413,19 @@ def xarray_to_polars(da: xr.DataArray | xr.Dataset):
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
     """
     Turns a polars DataFrame into a xarray DataArray if possible, a Dataset otherwise. Which columns of `df` will be dimensions of the xarray output cannot be inferred from `df` and have to be passed as `index_columns`.
+    
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Input array
+        
+    index_columns : list[str]
+        Which columns of `df` to use as dimensions for the xarray object
+        
+    Returns
+    -------
+    da : xr.DataArray or xr.Dataset
+        Data transformed in to a xarray object. If `df` had only index columns and one other column (inferred to be the data), `da` will be turned into a DataArray. If there are several other columns, then it stays a Dataset.
     """
     ds = xr.Dataset.from_dataframe(df.to_pandas().set_index(index_columns))
     data_vars = list(ds.data_vars)
@@ -366,6 +448,21 @@ def get_index_columns(
         "inside_index",
     ),
 ):
+    """
+    Finds columns in `df` that represent an index imformation more than a data information in the context of this package.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Any DataFrame
+    potentials : tuple, optional
+        Potential names of column indices, by default ( "member", "time", "cluster", "jet ID", "spell", "relative_index", "relative_time", "sample_index", "inside_index", )
+
+    Returns
+    -------
+    list
+        list of columns in `potentials` that are columns in `df`.
+    """
     index_columns = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
@@ -374,6 +471,9 @@ def extract_season_from_df(
     df: pl.DataFrame,
     season: list | str | tuple | int | None = None,
 ) -> pl.DataFrame:
+    """
+    Subsets a DataFrame containing a `"time"` column to a given season.
+    """
     if season is None:
         return df
     if isinstance(season, str):
@@ -384,10 +484,31 @@ def extract_season_from_df(
 
 
 def case_insensitive_equal(str1: str, str2: str) -> bool:
+    """
+    Returns whether two strings are equal if all letters are lowercased.
+    
+    Examples
+    --------
+    >>> case_insensitive_equal("AbC", "aBc")
+    True
+    """
     return str1.casefold() == str2.casefold()
 
 
 def infer_direction(to_plot: Any) -> int:
+    """
+    Infers the direction of an arbitrary array.
+
+    Parameters
+    ----------
+    to_plot : Any
+        Array or list of arrays
+
+    Returns
+    -------
+    int
+        -1 if the data is mostly negative, +1 if it is mostly positive and 0 if the data is symmetric
+    """
     max_ = np.nanmax(to_plot)
     min_ = np.nanmin(to_plot)
     try:
@@ -403,6 +524,29 @@ def infer_direction(to_plot: Any) -> int:
 
 
 def labels_to_mask(labels: xr.DataArray | np.ndarray, as_da: bool = False) -> np.ndarray:
+    """
+    Turns an array of labels into a mask
+
+    Parameters
+    ----------
+    labels : xr.DataArray | np.ndarray
+        Array of labels.
+    as_da : bool, optional
+        If `labels` is a DataArray and `as_da` is True, then turns the output into a DataArray, by default False
+
+    Returns
+    -------
+    xr.DataArray | np.ndarray of shape (*labels.shape, n_unique_labels)
+        Boolean mask, of the same shape as labels plus one dimension / axis at position 0. If turned into a DataArray, that new dimension is named "cluster".
+        
+    Examples
+    --------
+    >>> labels_to_mask([1, 3, 2, 1])
+    array([[True, False, False],
+       [False, False, True],
+       [False, True, False],
+       [True, False, False]])
+    """
     if isinstance(labels, np.ndarray):
         as_da = False
     else:
@@ -418,6 +562,28 @@ def labels_to_mask(labels: xr.DataArray | np.ndarray, as_da: bool = False) -> np
 
 
 def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
+    """
+    Extracts the lon-lat region spanned by an xarray object containing the `"lon"` and `"lat"` dimensions.
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object
+
+    Returns
+    -------
+    minlon: float
+        minimum longitude
+    
+    maxlon: float
+        maximum longitude
+        
+    minlat: float
+        minimum latitude
+        
+    maxlat: float
+        maximum latitude
+    """
     try:
         return (
             da.lon.min().item(),
@@ -435,6 +601,27 @@ def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
 
 
 def slice_1d(da: xr.DataArray | xr.Dataset, indexers: dict, dim: str = "points"):
+    """
+    Gets a *(N - n + 1)* dimensional slice from a *N* dimensional Xarray object using Xarray's advanced indexing, by passing *n* indexers in a dict.
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object
+    indexers : dict
+        Dictionnary whose keys must be dimensions of `da` and values are arrays of values along this dimension, and of the correct `dtype`. Each array must be of the same length. Indexers is to be interpreted as the coordinates of points onto which we wish to interpolate `da`. 
+    dim : str, optional
+        Name of the newly created dimension in the output, that will be of the same length as all of the (equally sized) arrays in `indexers`. By default "points".
+
+    Returns
+    -------
+    da_slice : same as `da`
+        Input DataArray interpolated on the points specified by `indexers`. It retains all the dimension that are in `da` but not as keys of `indexers`. It has lost all the dimensions named in `indexers` and gained a new dimension named `dim` and of the same length as all the arrays in `indexers`.
+        
+    References
+    ----------
+    https://docs.xarray.dev/en/latest/user-guide/indexing.html#more-advanced-indexing
+    """
     return da.interp(
         {key: xr.DataArray(indexer, dims=dim) for key, indexer in indexers.items()},
         method="linear",
@@ -443,6 +630,27 @@ def slice_1d(da: xr.DataArray | xr.Dataset, indexers: dict, dim: str = "points")
 
 
 def first_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.ndarray:
+    """
+    Get the smallest `n_elements` of `arr`, along the last axis.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Any array
+    n_elements : int
+        Number of elements to return along each axis
+    sort : bool, optional
+        Sort the output, only valid for 1D `arr`, by default False
+
+    Returns
+    -------
+    np.ndarray
+
+    Raises
+    ------
+    RuntimeWarning
+        If `sort=True` and `arr.ndim > 1` because it's ambiguous.
+    """
     ndim = arr.ndim
     if ndim > 1 and sort:
         print("sorting output not supported for arrays with ndim > 1")
@@ -457,6 +665,27 @@ def first_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.n
 
 
 def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.ndarray:
+    """
+    Get the largest `n_elements` of `arr`, along the last axis.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Any array
+    n_elements : int
+        Number of elements to return along each axis
+    sort : bool, optional
+        Sort the output, only valid for 1D `arr`, by default False
+
+    Returns
+    -------
+    np.ndarray
+
+    Raises
+    ------
+    RuntimeWarning
+        If `sort=True` and `arr.ndim > 1` because it's ambiguous.
+    """
     arr = np.nan_to_num(arr, posinf=0)
     ndim = arr.ndim
     if ndim > 1 and sort:
@@ -474,12 +703,15 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
 def coarsen_da(
     da: xr.Dataset | xr.DataArray, target_dx: float
 ) -> xr.Dataset | xr.DataArray:
+    """
+    Thin wrapper around `da.coarsen()` to coarsen as close as possible to a target *dx*
+    """
     dx = (da.lon[1] - da.lon[0]).item()
     coarsening = int(np.round(target_dx / dx))
     return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
 
 
-def explode_rle(df):
+def _explode_rle(df):
     return df.with_columns(
         index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(
             pl.List(pl.UInt32)
@@ -487,7 +719,7 @@ def explode_rle(df):
     ).explode("index")
 
 
-def do_rle(
+def _do_rle(
     df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr]
 ) -> pl.DataFrame:
     conditional = (
@@ -519,6 +751,34 @@ def do_rle_fill_hole(
     hole_size: int | datetime.timedelta = 4,
     unwrap: bool = False,
 ) -> pl.DataFrame:
+    """
+    Wraps around polars' `pl.Expr.rle()` to find runs of identical values, potentially interrupted by a different value, as long as this interruption is shorter than `hole_size`. 
+    
+    It can do it for the whose DataFrame or in groups specified by `group_by`.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Input DataFrame
+    condition_expr : pl.Expr
+        Expression that evaluates to True or False from one or several columns of `df`
+    group_by : str | Sequence[str] | None, optional
+        Columns to group by, by default None
+    hole_size : int | datetime.timedelta, optional
+        Maximum authorized size of holes than can be in a run without interrupting it, by default 4
+    unwrap : bool, optional
+        If False, returns the whole data as a modified run length encoded DataFrame. If True, returns the True runs exploded. By default False
+
+    Returns
+    -------
+    pl.DataFrame
+        Modified-run-length-encoded input, or exploded True runs. 
+
+    Raises
+    ------
+    ValueError
+        If `hole_size` is specified as a `datetime.timedelta` but there is no `"time"`, or `"time"` is in `group_by`.
+    """
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or (group_by is not None and "time" in group_by):
             raise ValueError
@@ -564,12 +824,12 @@ def do_rle_fill_hole(
         )
         .explode("condition", "index")
     )
-    holes_to_fill = do_rle(df, group_by=group_by)
+    holes_to_fill = _do_rle(df, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
         pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
     )
     holes_to_fill = (
-        explode_rle(holes_to_fill)
+        _explode_rle(holes_to_fill)
         .with_columns(condition=pl.lit(True))
         .drop("len", "start", "value")
     )
@@ -579,7 +839,7 @@ def do_rle_fill_hole(
         .then(pl.col("condition_right"))
         .otherwise(pl.col("condition"))
     ).drop("condition_right", "index")
-    df = do_rle(df, group_by=group_by)
+    df = _do_rle(df, group_by=group_by)
 
     if not unwrap and "year" not in group_by:
         return df.drop(*to_drop)
@@ -607,7 +867,7 @@ def do_rle_fill_hole(
 
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
-    df = explode_rle(df)
+    df = _explode_rle(df)
     if "year" not in group_by:
         return df.drop(to_drop)
     orig_time = (
@@ -623,6 +883,11 @@ def do_rle_fill_hole(
 
 # Obsolete
 def get_runs(mask, cyclic: bool = True): 
+    """
+    Obsolete basic implementaion of the Run Length Encoding algorithm using `itertools.groupby`. 
+    
+    With the `cyclic` argument on, runs are allowed to wrap around the end of the list to its start. For instance, list `[True, True, False, ..., False, True, True]` will have a `True` run going from indices `-2` to `1` included if `cyclic=True`.
+    """
     start = 0
     runs = []
     if cyclic:
@@ -642,6 +907,11 @@ def get_runs(mask, cyclic: bool = True):
 
 # Obsolete
 def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
+    """
+    Obsolete algorithm to get potentially interrupted runs of `True` values. The runs can be uninterrupted like the basic algorithm, or interrupted by `False` values if the run of `False` values within the run of `True` values is shorter than `hole_size`.
+    
+    The algorithm first performs RLE using `get_runs`, then fills the short `False` runs with `True` and applies `get_runs` a second time on the modified input.
+    """
     runs = get_runs(mask, cyclic=cyclic)
     for run in runs:
         key, start, end = run
@@ -668,6 +938,23 @@ def get_runs_fill_holes(mask, cyclic: bool = True, hole_size: int = 8):
 
 
 def compute(obj, progress_flag: bool = False, **kwargs):
+    """
+    Computes a Dask object. If a dask client named `client` exists in the globals, uses it.
+
+    Parameters
+    ----------
+    obj : Any
+        Dask object to force compute
+    progress_flag : bool, optional
+        Whether to show a progress bar, by default False
+    kwargs
+        Keyword arguments passed to `obj.compute()` if no client exists
+
+    Returns
+    -------
+    obj : Any
+        Computed object. 
+    """
     kwargs = COMPUTE_KWARGS | kwargs
     try:
         client  # in globals # type: ignore # noqa: F821
@@ -698,14 +985,18 @@ class TimerError(Exception):
 @dataclass
 class Timer:
     """
-    This is stolen from a gist somewhere I don't remember. Nice context manager timer that you can use like
-    ```python
-    with Timer():
-        do_something_long()
-    >>> "elapsed time: 5.3s"
+    This is stolen from a gist somewhere I don't remember. Nice context manager timer.
+    
+    Raises
+    ------
+    TimerError
+    
+    Examples
+    --------
+    >>> with Timer():
+    ...    do_something_long()
+    "elapsed time: 5.3s"
     ```
-
-    :raises TimerError:
     """
     timers: ClassVar[Dict[str, float]] = {}
     name: Optional[str] = None

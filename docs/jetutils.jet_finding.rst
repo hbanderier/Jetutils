@@ -1,7 +1,7 @@
-jetstream\_hugo.plots module
+jetutils.jet\_finding module
 ============================
 
-.. automodule:: jetstream_hugo.plots
+.. automodule:: jetutils.jet_finding
    :members:
    :show-inheritance:
    :undoc-members:

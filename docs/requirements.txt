@@ -10,12 +10,13 @@ matplotlib
 numpy
 pandas
 polars
-polars_ols
-scikit_learn
+polars-ols
+scikit-learn
 scipy
 shap
-simpsom_dask
+simpsom-dask
 tqdm
 xarray
 xgboost
-sphinx_rtd_theme
+numpydoc
+pydata-sphinx-theme
