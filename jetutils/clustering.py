@@ -13,7 +13,7 @@ from scipy.optimize import minimize
 
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from simpsom_dask import Simpsom
+from simpsom_dask.simpsom import Simpsom
 
 from .definitions import (
     coarsen_da,
