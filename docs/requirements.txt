@@ -3,6 +3,7 @@ cf_xarray
 colormaps
 contourpy
 dask
+distributed
 fasttreeshap
 intake
 ipython
