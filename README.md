@@ -23,7 +23,7 @@ It can do:
 
 **Predictor importance studies**: Which jet metrics are important for predicting heat waves in France at a 10 day lag?
 
-**And more**
+**And more**: see [the documentation](https://jet-stream.readthedocs.io/en/latest/index.html). It is about half complete right now. 
 
 ## Configuration
 
