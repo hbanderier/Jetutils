@@ -1,4 +1,7 @@
 # coding: utf-8
+"""
+This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
+"""
 import warnings
 from itertools import product
 from datetime import timedelta
@@ -84,12 +87,16 @@ def jet_integral_haversine(
 def has_periodic_x(df: pl.DataFrame) -> bool:
     """
     Checks if the `lon` column contains both sides of the +-180 line. Only makes sense if data went through `.data.standardize()`.
-    
-    :param df: A DataFrame containing the `lon` column.
-    :type df: pl.DataFrame
-    :return:
-    :rtype: bool
-    """
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        A DataFrame containing the `lon` column.
+
+    Returns
+    -------
+    bool
+    """    
     lon = df["lon"].unique().sort().to_numpy()
     dx = lon[1] - lon[0]
     return (-180 in lon) and ((180 - dx) in lon)
@@ -184,9 +191,6 @@ def coarsen(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
 def round_polars(col: str, factor: int = 2) -> pl.Expr:
     """
     Generates an Expression that rounds the given column to a given base, one over the factor. 
-    ```python
-    
-    ```
     """
     return (pl.col(col) * factor).round() / factor
 
@@ -286,17 +290,22 @@ def find_contours_maybe_periodic(x: np.ndarray, y: np.ndarray, z: np.ndarray) ->
     """
     Finds zero-contours on the 2D function defined at `x[i]` and `y[i]` as `z[i]` for all i. Handles the cases where `x` is a periodic longitude and contours can be, e.g. a deformed circle around the pole.  
 
-    :param x: Potentially periodic `x` coordinate (e.g. longitude)
-    :type x: np.ndarray
-    :param y: `y` coordinate (e.g. latitude)
-    :type y: np.ndarray
-    :param z: Value of the function at `x` and `y`. 
-    :type z: np.ndarray
-    :return contours: all the zero contours of `z`.
-    :rtype: list of np.ndarray
-    :return cyclic: which contours are cyclic (first and last point are close)
-    :rtype: list of bool
-    """
+    Parameters
+    ----------
+    x : np.ndarray
+        Potentially periodic `x` coordinate (e.g. longitude)
+    y : np.ndarray
+        `y` coordinate (e.g. latitude)
+    z : np.ndarray
+        Value of the function at `x` and `y`. 
+
+    Returns
+    -------
+    list of np.ndarray
+        all the zero contours of `z`.
+    list of bool
+        which contours are cyclic (first and last point are close)
+    """    
     dx = x[1] - x[0]
     if (-180 not in x) or ((180 - dx) not in x):
         contours, types = contour_generator(
@@ -391,7 +400,7 @@ def inner_compute_contours(args):
 
 def compute_contours(df: pl.DataFrame):
     """
-    Used to be parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`.
+    Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`.
     """
     index_columns = get_index_columns(df)
     iterator = df.group_by(index_columns, maintain_order=True)
@@ -408,6 +417,9 @@ def compute_contours(df: pl.DataFrame):
 def compute_alignment(
     all_contours: pl.DataFrame, periodic: bool = False
 ) -> pl.DataFrame:
+    """
+    This function computes the alignment criterion for zero-sigma-contours. It is the scalar product betweeen the vector from a contour point to the next and the horizontal wind speed vector.
+    """
     index_columns = get_index_columns(
         all_contours, ("member", "time", "cluster", "spell", "relative_index")
     )
@@ -899,6 +911,33 @@ def map_maybe_parallel(
     pool_kwargs: dict | None = None,
     ctx=None,
 ) -> list:
+    """
+    Maps a function on the components of an Iterable. Can be parallel if processes is greater than one. In this case the other arguments are used to create a `multiprocessing.Pool`. In most cases, I recommend using `ctx = get_context("spawn")` instead of the default (on linux) `fork`.
+
+    Parameters
+    ----------
+    iterator : Iterable
+        Data
+    func : Callable
+        Function to apply to each element of `iterator`
+    len_ : int
+        len of the `iterator`, so we can display a progress bar.
+    processes : int, optional
+        Number of parallel processes, will not create a `Pool` if 1, by default N_WORKERS
+    chunksize : int, optional
+        How many elements to send to a worker at once, by default 100
+    progress : bool, optional
+        Show a progress bar using `tqdm`, by default True
+    pool_kwargs : dict | None, optional
+        Keyword arguments passed to `multiprocessing.Pool`, by default None
+    ctx : optional
+        Multiporcessing context, created using `multiprocessing.get_context()`, by default None, will be `spawn` on windowd and mac, and `fork` on linux at time of writing, but it should change in python 3.15.
+
+    Returns
+    -------
+    list
+        result of the map coerced into a list.
+    """
     processes = min(processes, len_)
     if processes == 1 and progress:
         return list(tqdm(map(func, iterator), total=len_))
@@ -925,6 +964,25 @@ def create_mappable_iterator(
     others: Sequence | None = None,
     potentials: Tuple = ("member", "time", "cluster"),
 ) -> Tuple:
+    """
+    I' not sure about this one anymore. I don't think I use it ?
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        _description_
+    das : Sequence | None, optional
+        _description_, by default None
+    others : Sequence | None, optional
+        _description_, by default None
+    potentials : Tuple, optional
+        _description_, by default ("member", "time", "cluster")
+
+    Returns
+    -------
+    Tuple
+        _description_
+    """
     if das is None:
         das = []
     if others is None:
@@ -942,6 +1000,19 @@ def create_mappable_iterator(
 
 
 def round_half(x):
+    """
+    Round to the nearest integer or half integer
+
+    Parameters
+    ----------
+    x : Number or array
+        Array-like to round
+
+    Returns
+    -------
+    Same as input
+        Rounded input
+    """
     return np.round(x * 2) / 2
 
 
@@ -950,6 +1021,9 @@ def extract_features(
     feature_names: Sequence = None,
     season: list | str | tuple | int | None = None,
 ) -> pl.DataFrame:
+    """
+    Tiny wrapper to extract columns and subset time from a polars DataFrame. 
+    """
     df = extract_season_from_df(df, season)
     if feature_names is None:
         feature_names = ["mean_lon", "mean_lat", "s_star"]
@@ -963,6 +1037,29 @@ def one_gmix(
     n_init=20,
     init_params="random_from_data",
 ):
+    """
+    Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
+
+    Parameters
+    ----------
+    X : pl.DataFrame
+        Input data
+    n_components : int
+        Number of Gaussian components, by default 2
+    n_init : int
+        Number of repeated independent training with. Can massively increase run time. By default 20
+    init_params : str, optional
+        Type of init, by default "random_from_data"
+
+    Returns
+    -------
+    ndarray
+        Probabilities of every point on the Gaussian component identified as the eddy-driven jet.
+        
+    References
+    ----------
+    https://scikit-learn.org/stable/modules/generated/sklearn.mixture.GaussianMixture.html
+    """
     model = GaussianMixture(
         n_components=n_components, init_params=init_params, n_init=n_init
     )
@@ -979,7 +1076,7 @@ def one_gmix(
 def is_polar_gmix(
     df: pl.DataFrame,
     feature_names: list,
-    mode: Literal["year"]
+    mode: Literal["all"]
     | Literal["season"]
     | Literal["month"]
     | Literal["week"] = "week",
@@ -987,11 +1084,34 @@ def is_polar_gmix(
     n_init: int = 20,
     init_params: str = "random_from_data",
 ) -> pl.DataFrame:
+    """
+    Trains one or several Gaussian Mixture model independently, depending on the `mode` argument.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        DataFrame to cluster
+    feature_names : list
+        Which columns to cluster on
+    mode : "all", "season", "month" or "week
+        Trains one model if "all", otherwise train one independent model for each season, month or week of the year. By default "week".
+    n_components : int
+        Number of Gaussian components, by default 2
+    n_init : int
+        Number of repeated independent training with. Can massively increase run time. By default 20
+    init_params : str, optional
+        Type of init, by default "random_from_data"
+        
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame of same length as `df` with the same index columns, the `feature_names` columns and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
+    """
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
     kwargs = dict(n_init=n_init, init_params=init_params)
     if "time" not in df.columns:
-        mode = "year"
-    if mode == "year":
+        mode = "all"
+    if mode == "all":
         X = extract_features(df, feature_names, None)
         kwargs["n_components"] = n_components
         probas = one_gmix(X, **kwargs)
@@ -1045,6 +1165,25 @@ def average_jet_categories(
     polar_cutoff: float | None = None,
     allow_hybrid: bool = False,
 ):
+    """
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
+    
+    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
+
+    Parameters
+    ----------
+    props_as_df : pl.DataFrame
+        Uncategorized jet properties, that contain at least the `jet ID` column.
+    polar_cutoff : float | None, optional
+        Cutoff, by default None
+    allow_hybrid : bool, optional
+        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
+
+    Returns
+    -------
+    props_as_df
+        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
+    """
     if allow_hybrid and polar_cutoff is None:
         polar_cutoff = 0.15
     elif polar_cutoff is None:
@@ -1142,11 +1281,13 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
     """
     Generates two expressions; the mean latitudinal distances between jets and the longitudinal overlaps.
 
-    :return: Latitudinal mean distance between jets, for each jet pair
-    :rtype: pl.Expr
-    :return: Longitudinal overlap, for each jet pair
-    :rtype: pl.Expr
-    """
+    Returns
+    -------
+    pl. Expr
+        Latitudinal mean distance between jets, for each jet pair
+    pl.Expr
+        Longitudinal overlap, for each jet pair
+    """    
     x1 = pl.col("lon").flatten()
     y1 = pl.col("lat").flatten()
     x2 = pl.col("lon_right").flatten()
@@ -1172,11 +1313,18 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
 def _track_jets(df: pl.DataFrame):
     """
     Big sequential worker function to track jets in a DataFrame that has a time column
-    
-    :return: All jets ordered by their flag first, relative time step second. Absolute time is also recorded.
-    :rtype: pl.DataFrame
-    :return: Flag of each jet in `df`
-    :rtype: pl.DataFrame
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        _description_
+
+    Returns
+    -------
+    pl.DataFrame
+        All jets ordered by their flag first, relative time step second. Absolute time is also recorded.
+    pl.DataFrame
+        Flag of each jet in `df`
     """
     index_columns = get_index_columns(df)
     df = df.select([*index_columns, "lon", "lat", "is_polar"])
@@ -1346,7 +1494,7 @@ def _track_jets(df: pl.DataFrame):
 
 def track_jets(all_jets_one_df: pl.DataFrame, processes: int = N_WORKERS):
     """
-    Potentially parallel wrapper for `_track_jets()`. If "members" is a column in `all_jets_one_df`, then paralell-iterates over members.
+    Potentially parallel wrapper for `_track_jets()`. If "members" is a column in `all_jets_one_df`, then paralell-iterates over members. Otherwise just calls `_track_jets()`
     """
     inner = ["time", "jet ID", "orig_points"]
     index_indices = min(
@@ -1381,6 +1529,21 @@ def track_jets(all_jets_one_df: pl.DataFrame, processes: int = N_WORKERS):
 
 
 def add_persistence_to_props(props_as_df: pl.DataFrame, flags: pl.DataFrame):
+    """
+    Compute the lifetime of jets by counting how many timesteps each flag is present. If `"member"` is a column of `props_as_df` does it independently for each member.
+
+    Parameters
+    ----------
+    props_as_df : pl.DataFrame
+        Jet properties
+    flags : pl.DataFrame
+        Flags, the output of `track_jets`
+
+    Returns
+    -------
+    pl.DataFrame
+        `props_as_df` with a new column named "persistence"
+    """
     if "member" in flags.columns:
         unique_to_count = (
             flags.group_by("member", maintain_order=True)
@@ -1408,6 +1571,9 @@ def add_persistence_to_props(props_as_df: pl.DataFrame, flags: pl.DataFrame):
 
 
 def compute_prop_anomalies(ds_props: xr.Dataset) -> xr.Dataset:
+    """
+    Needs to be deleted in favor of .data.compute_anomalies_pl()
+    """
     prop_anomalies = ds_props.copy()
 
     for varname in ds_props.data_vars:
@@ -1417,24 +1583,6 @@ def compute_prop_anomalies(ds_props: xr.Dataset) -> xr.Dataset:
             dim="time"
         )
     return prop_anomalies
-
-
-def inner_jet_pos_as_da(args: Tuple):
-    (time, jets), are_polar, da_template = args
-    jets = jets.droplevel(0)
-    jet_names = da_template.jet.values
-    for j, (_, jet) in enumerate(jets.groupby(level=0)):
-        jet = jet.droplevel(0)
-        is_polar = are_polar.sel(jet=j)
-        x, y, s = jet[["lon", "lat", "s"]].to_numpy().T
-        x_ = xr.DataArray(round_half(x), dims="points")
-        y_ = xr.DataArray(round_half(y), dims="points")
-        try:
-            is_polar = int(is_polar)
-        except ValueError:
-            continue
-        da_template.loc[jet_names[int(is_polar)], y_, x_] += s
-    return da_template
 
 
 def jet_position_as_da(
@@ -1565,7 +1713,11 @@ def iterate_over_year_maybe_member(
     if "member" not in df.columns:
         return zip(zip(indexer_polars), indexer_xarray)
     """
-        weird inner zip: don't worry lol. I want to always be able call for idx in indexer: df.filter(*idx), so I need to put it in zip by itself if it's not out of product, so it's always a tuple.
+        weird inner zip: don't worry lol. I want to always be able call::
+        
+            for idx in indexer: df.filter(*idx)
+            
+        so I need to put it in zip by itself if it's not out of product, so it's always a tuple.
     """
     members = df["member"].unique(maintain_order=True).to_numpy()
     member_lists = np.array_split(members, len(members) // several_members)
@@ -1583,6 +1735,22 @@ def iterate_over_year_maybe_member(
 
 
 class JetFindingExperiment(object):
+    """
+    Convenience class that wraps basically all the functions in this module, applying it to the data held by its `DataHandler` and storing the results to avoid recomputing in the subfolder of its `DataHandler`.
+
+    Attributes
+    ----------
+    data_handler : DataHandler
+        Stores data and provides a subfolder in which to store results that is uniquely defined by the data (see `.data.DataHandler`)
+    ds : xr.Dataset
+        shortcut to `self.data_handler.da`
+    path : Path
+        shortcut to `self.data_handler.path`
+    metadata : dict
+        shortcut to `self.data_handler.metadata`
+    time : xr.Dataset
+        shortcut to `self.data_handler.get_sample_dims()["time"]`
+    """
     def __init__(
         self,
         data_handler: DataHandler,
@@ -1593,7 +1761,15 @@ class JetFindingExperiment(object):
         self.metadata = self.data_handler.metadata
         self.time = data_handler.get_sample_dims()["time"]
 
-    def find_low_wind(self):  # relies on Ubelix storage logic, cannot be used elsewhere
+    def find_low_wind(self):
+        """
+        Assuming the same file structure as me, finds the data corresponding to this Experiment's specs except for another `varname`: `"mid_wind"`.
+
+        Returns
+        -------
+        ds: xr.Dataset
+            A Dataset with the same specs as this object's `DataHandler`, but for another varname.
+        """
         metadata = self.data_handler.metadata
         dataset = "CESM2" if "member" in metadata else "ERA5"
         dt = self.time[1] - self.time[0]
@@ -1601,7 +1777,7 @@ class JetFindingExperiment(object):
         ds_ = open_da(
             dataset,
             "plev",
-            "low_wind",
+            "mid_wind",
             resolution,
             metadata["period"],
             metadata["season"],
@@ -1614,6 +1790,9 @@ class JetFindingExperiment(object):
         return ds_
 
     def find_jets(self, **kwargs) -> pl.DataFrame:
+        """
+        Wraps `find_all_jets(**kwargs)` and stores the output
+        """
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
 
         if ofile_ajdf.is_file():
@@ -1653,6 +1832,29 @@ class JetFindingExperiment(object):
         n_init: int = 20,
         init_params: str = "random_from_data",
     ):
+        """
+        Makes sure the necessary columns are present in `jets`, then wraps `is_polar_gmix()` and and stores the output.
+
+        Parameters
+        ----------
+        low_wind : xr.Dataset | xr.DataArray
+            Wind at lower levels to compute the vertical wind shear 
+        force : int
+            to recompute the categorization even if the jets already have a `is_polar` column. With `force > 1`, also re-interpolates `theta` and `ratio` on the jet points. By default 0
+        mode : "all", "season", "month" or "week
+            Trains one model if "all", otherwise train one independent model for each season, month or week of the year. By default "week".
+        n_components : int
+            Number of Gaussian components, by default 2
+        n_init : int
+            Number of repeated independent training with. Can massively increase run time. By default 20
+        init_params : str, optional
+            Type of init, by default "random_from_data"
+
+        Returns
+        -------
+        pl.DataFrame
+            DataFrame of same length as the jets with the same index columns, the `feature_names` columns: "ratio" and "theta", and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
+        """        
         all_jets_one_df = self.find_jets()
         if "is_polar" in all_jets_one_df.columns and not force:
             if not all_jets_one_df["s_low"].is_null().all():
@@ -1725,14 +1927,25 @@ class JetFindingExperiment(object):
 
     def compute_jet_props(
         self,
-        processes: int = N_WORKERS,
-        chunksize=100,
         force: bool = False,
-    ) -> xr.Dataset:
+    ) -> pl.DataFrame:
+        """
+        Compute "raw" jet properties from the jets
+
+        Parameters
+        ----------
+        force : bool
+            To recompute the properties even if the file "props_as_df_raw.parquet" exists in the subfolder, by default False
+
+        Returns
+        -------
+        pl.DataFrame
+            Jet properties for all jets
+        """
         jet_props_incomplete_path = self.path.joinpath("props_as_df_raw.parquet")
         if jet_props_incomplete_path.is_file() and not force:
             return pl.read_parquet(jet_props_incomplete_path)
-        all_jets_one_df = self.find_jets(processes=processes, chunksize=chunksize)
+        all_jets_one_df = self.find_jets()
         props_as_df = compute_jet_props(all_jets_one_df)
         width = []
         da = self.ds["s"]
@@ -1751,6 +1964,9 @@ class JetFindingExperiment(object):
         return props_as_df
 
     def track_jets(self) -> Tuple:
+        """
+        Wraps `track_jets()` for this object's jets
+        """        
         all_jets_one_df = self.find_jets()
         ofile_ajot = self.path.joinpath("all_jets_over_time.parquet")
         ofile_flags = self.path.joinpath("flags.parquet")
@@ -1776,9 +1992,21 @@ class JetFindingExperiment(object):
             flags,
         )
 
-    def props_as_df(self, categorize: bool = True, force: int = 0) -> xr.Dataset:
+    def props_as_df(self, categorize: bool = True, force: int = 0) -> pl.DataFrame:
         """
-        force = 1: don't redo raw but do rest, force = 2: redo everything
+        Compute full jet properties from the jets, with or without categorization
+
+        Parameters
+        ----------
+        categorize: bool
+            whether to return the uncatd or categorized jet properties. Will contain either the `jet ID` column and have a value for each jet at each timestep, or the `jet` category aggregating over the two or three categories of jets: EDJ, STJ and maybe hybrid.
+        force : int
+            To recompute the properties even if the file "props_as_df.parquet" exists in the subfolder, by default False. If set to *2* or more, also recomputes the `raw` props.s
+
+        Returns
+        -------
+        pl.DataFrame
+            Jet properties for all jets
         """
         ofile_padu = self.path.joinpath("props_as_df_uncat.parquet")
         ofile_pad = self.path.joinpath("props_as_df.parquet")
@@ -1810,6 +2038,25 @@ class JetFindingExperiment(object):
         save: bool = True,
         force: bool = False,
     ) -> pl.DataFrame:
+        """
+        Reorders the jet props like `all_jets_over_time`, that is with flag and relative time as indices.
+
+        Parameters
+        ----------
+        all_jets_over_time : pl.DataFrame
+            the first output of `track_jets()`
+        props_as_df_uncat : pl.DataFrame
+            uncategorized jet categories, output of `self.compute_props()` for example
+        save : bool, optional
+            not always useful to save, by default True
+        force : bool, optional
+            whether to recompute even though a saved file is found, by default False
+
+        Returns
+        -------
+        pl.DataFrame
+            Reordered jet props.
+        """
         out_path = self.path.joinpath("all_props_over_time.parquet")
         if out_path.is_file() and not force:
             return pl.read_parquet(out_path)
@@ -1836,6 +2083,23 @@ class JetFindingExperiment(object):
         props_as_df: pl.DataFrame,
         force: bool = False,
     ) -> pl.DataFrame:
+        """
+        Computes the jets' center of mass (COM) speed as a new property in `props_as_df`.
+
+        Parameters
+        ----------
+        all_jets_over_time : pl.DataFrame
+            the first output of `track_jets()`
+        props_as_df : pl.DataFrame
+            jet properties
+        force : bool, optional
+            whether to recompute even if `com_speed` is already a column in `props_as_df`, by default False
+
+        Returns
+        -------
+        pl.DataFrame
+            `props_as_df` with a new column: `com_speed`.
+        """
         all_props_over_time = self.props_over_time(
             all_jets_over_time,
             props_as_df,
@@ -1870,6 +2134,9 @@ class JetFindingExperiment(object):
         return props_as_df.sort(get_index_columns(props_as_df))
 
     def jet_position_as_da(self, force: bool = False):
+        """
+        Creates and saves a DataArray with the same dimensions as `self.ds`. Its values are NaN where no jet is present, and if a jet is present the value is this jet's local `is_polar` value.
+        """
         ofile = self.path.joinpath("jet_pos.nc")
         if ofile.is_file() and not force:
             return open_dataarray(ofile)
@@ -1880,6 +2147,16 @@ class JetFindingExperiment(object):
         return da_jet_pos
 
     def compute_extreme_clim(self, varname: str, subsample: int = 5):
+        """
+        Computes this object's data's extreme climatology.
+
+        Parameters
+        ----------
+        varname : str
+            If `self.ds` is a dataset, the variable to look at.
+        subsample : int, optional
+            Don't take every year in the data but only one every `subsample`, by default 5
+        """
         da = self.ds[varname]
         time = pl.Series("time", self.time)
         years = time.dt.year().to_numpy()
