@@ -29,13 +29,20 @@ from .definitions import (
 
 def to_netcdf(da: xr.Dataset | xr.DataArray, path: Path | str, **kwargs):
     """
-    Wrapper around `da.to_netcdf()` that handles multiindex.
+    Wrapper around `da.to_netcdf()` that handles MultiIndex using `cf_xarray.encode_multi_index_as_compress()`.
 
-    :param da: Object to sace
-    :type da: xr.Dataset | xr.DataArray
-    :param path: Path
-    :type path: Path | str
-    """
+    Parameters
+    ----------
+    da : xr.Dataset | xr.DataArray
+        Object to save
+    path : Path | str
+        Path 
+
+    Raises
+    ------
+    e
+        If `cf_xarray` is needed to transform a MultiIndex and it is not found
+    """ 
     try:
         da.to_netcdf(path, **kwargs)
     except (NotImplementedError, ValueError) as e:
@@ -51,13 +58,17 @@ def to_netcdf(da: xr.Dataset | xr.DataArray, path: Path | str, **kwargs):
 
 def open_dataset(path: Path | str, **kwargs) -> xr.Dataset:
     """
-    Wrapper around `xr.open_dataset` that handles multiindex
+    Wrapper around `xr.open_dataset` that handles MultiIndex using `cf_xarray.decode_compress_to_multi_index()`.
 
-    :param path: Path to file
-    :type path: Path | str
-    :return: Dataset
-    :rtype: xr.Dataset
-    """
+    Parameters
+    ----------
+    path : Path | str
+        Path to file
+
+    Returns
+    -------
+    xr.Dataset
+    """    
     ds = xr.open_dataset(path, **kwargs)
     try:
         import cf_xarray
@@ -71,13 +82,22 @@ def open_dataset(path: Path | str, **kwargs) -> xr.Dataset:
 
 def open_dataarray(path: Path | str, **kwargs) -> xr.DataArray:
     """
-    Wrapper around xr.open_dataarray to handle multiindex.
+    If possible, turn the output of `open_dataset()` into a DataArray 
 
-    :param path: Path to file
-    :type path: Path | str
-    :return: Dataset at file
-    :rtype: xr.DataArray
-    """
+    Parameters
+    ----------
+    path : Path | str
+        Path to file
+
+    Returns
+    -------
+    xr.DataArray
+
+    Raises
+    ------
+    ValueError
+        If more than one variable is in the output of `open_dataset()`.
+    """    
     ds = open_dataset(path, **kwargs)
     if len(ds.data_vars) != 1:
         raise ValueError("More than one data var in ds!")
@@ -91,13 +111,18 @@ def _open_many_da_wrapper(
     """
     Reimplementation of of `xr.open_mfdataset` with a handlful of special rules. Tries to extract a DataArray if possible, guessing the variable name if `varname=None`. This function calls `standardize()`
 
-    :param filename: Path or list of Paths to file(s)
-    :type filename: Path | list[Path]
-    :param varname: Gives the function the correct varname instead of letting it guess, defaults to None
-    :type varname: str | None, optional
-    :return: Dataarray if possible, dataset if several data variables are found.
-    :rtype: xr.DataArray | xr.Dataset
-    """
+    Parameters
+    ----------
+    filename : Path | list[Path]
+        Path or list of Paths to file(s)
+    varname : str | None, optional
+        Gives the function the correct varname instead of letting it guess, which happens if `varname` is left to None, by default None
+
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        Dataarray if possible, dataset if several data variables are found.
+    """    
     if isinstance(filename, list) and len(filename) == 1:
         filename = filename[0]
     if isinstance(filename, list):
@@ -145,9 +170,11 @@ def get_land_mask() -> xr.DataArray:
     """
     Gets the land mask if it's at the standard location
 
-    :return: Land mask, a 2d dataarray at 0.5 degreees resolution, gridded like the standardized data.
-    :rtype: xr.DataArray
-    """
+    Returns
+    -------
+    land_mask : xr.DataArray
+        Land mask for the whole globe, a 2d dataarray at 0.5 degreees resolution, gridded like the standardized data: `lon` going from -180 to +179.5 and `lat` from -90 to +90.
+    """    
     mask = open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
     mask = (
         mask.squeeze()
@@ -161,12 +188,21 @@ def determine_file_structure(path: Path) -> str:
     """
     Determines if files in the folder pointed by `path` are monthly, yearly, or all-in-one.
 
-    :param path: Path to a folder containing data
-    :type path: Path
-    :raises RuntimeError: _description_
-    :return: One of "one_file", "yearly" or "monthly" depending on the files found in `path`.
-    :rtype: str
-    """
+    Parameters
+    ----------
+    path : Path
+        Path to a folder containing data
+
+    Returns
+    -------
+    str
+        One of "one_file", "yearly" or "monthly" depending on the files found in `path`.
+
+    Raises
+    ------
+    RuntimeError
+        If no files are present that match the patterns looked for
+    """    
     if path.joinpath("full.nc").is_file():
         return "one_file"
     if any([path.joinpath(f"{year}.nc").is_file() for year in YEARS]):
@@ -181,11 +217,16 @@ def determine_sample_dims(da: xr.DataArray) -> Mapping:
     """
     Returns which dimensions, among "member", "time" or "megatime", are present in `da`, along with the coordinates as indices.
 
-    :param da: Xarray object from which to extract the sample dimensions and coordinates
-    :type da: xr.DataArray
-    :return: Dictionary whose keys are dimension names and values are the corresponding indices.
-    :rtype: Mapping
-    """
+    Parameters
+    ----------
+    da : xr.DataArray
+        Xarray object from which to extract the sample dimensions and coordinates
+
+    Returns
+    -------
+    Mapping
+        Dictionary whose keys are dimension names and values are the corresponding indices.
+    """ 
     included = ["member", "time", "megatime"]
     return {key: da[key].to_index() for key in da.dims if key in included}
 
@@ -194,11 +235,16 @@ def determine_feature_dims(da: xr.DataArray) -> Mapping:
     """
     Returns all dimensions, except for "member", "time", "cluster" or "megatime", are present in `da`, along with the coordinates as indices.
 
-    :param da: Xarray object from which to extract the feature dimensions and coordinates
-    :type da: xr.DataArray
-    :return: Dictionary whose keys are dimension names and values are the corresponding indices.
-    :rtype: Mapping
-    """
+    Parameters
+    ----------
+    da : xr.DataArray
+        Xarray object from which to extract the feature dimensions and coordinates
+
+    Returns
+    -------
+    Mapping
+        Dictionary whose keys are dimension names and values are the corresponding indices.
+    """    
     excluded = ["member", "time", "cluster", "megatime"]
     return {key: da[key].to_index() for key in da.dims if key not in excluded}
 
@@ -218,32 +264,41 @@ def data_path(
     for_compute_anomaly: bool = False,
 ) -> Path | Tuple[Path, Path, Path]:
     """
-    Constructs a path from various, mostly optional, path elements. Note that the name of the path elements refer to the data structure used by the author, but only their order matter, since this function essentially does
-    ```python
-    return Path(DATADIR, dataset, level_type, varname, resolution, clim_type + unpack_smooth_map(clim_smoothing), smoothing)
-    ```
+    Constructs a path from various, mostly optional, path elements. Note that the name of the path elements refer to the data structure used by the author, but only their order matter, since this function essentially does::
+    
+        return Path(DATADIR, dataset, level_type, varname, resolution, clim_type + unpack_smooth_map(clim_smoothing), smoothing)
 
-    :param dataset: name of the dataset, typically "ERA5" or "CESM2"
-    :type dataset: str
-    :param level_type: Level type, defaults to None
-    :type level_type: Literal[&quot;plev&quot;] | Literal[&quot;thetalev&quot;] | Literal[&quot;surf&quot;] | Literal[&quot;2PVU&quot;] | None, optional
-    :param varname: Name of the variable, or name of the group of variables like "high_wind", defaults to None
-    :type varname: str | None, optional
-    :param resolution: Time resolution, typically "6H" or "dailymean", defaults to None
-    :type resolution: str | None, optional
-    :param clim_type: type of climatology, like "dayofyear", defaults to None
-    :type clim_type: str | None, optional
-    :param clim_smoothing: time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, defaults to None
-    :type clim_smoothing: Mapping | None, optional
-    :param smoothing: smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, defaults to None
-    :type smoothing: Mapping | None, optional
-    :param for_compute_anomaly: is this function called by `compute_anomaly` or not, defaults to False
-    :type for_compute_anomaly: bool, optional
-    :raises TypeError: _description_
-    :raises FileNotFoundError: _description_
-    :return: path to the folder containing the data fitting the description
-    :rtype: Path | Tuple[Path, Path, Path]
-    """
+    Parameters
+    ----------
+    dataset : str
+        Name of the dataset, typically "ERA5" or "CESM2"
+    level_type : Literal["plev"] | Literal["thetalev"] | Literal["surf"] | Literal["2PVU"] | None, optional
+        Level type, by default None
+    varname : str | None, optional
+        Name of the variable, or name of the group of variables like "high_wind", by default None
+    resolution : str | None, optional
+        Time resolution, typically "6H" or "dailymean", by default None
+    clim_type : str | None, optional
+        Type of climatology, like "dayofyear", by default None
+    clim_smoothing : Mapping | None, optional
+        Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
+    smoothing : Mapping | None, optional
+        Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
+    for_compute_anomaly : bool, optional
+        Is this function called by `compute_anomaly` or not, by default False
+
+    Returns
+    -------
+    Path | Tuple[Path, Path, Path]
+        path to the folder containing the data fitting the description
+
+    Raises
+    ------
+    TypeError
+        If `clim_smoothing` is passed but not `clim_type`
+    FileNotFoundError
+        If the looked for folder does not exist
+    """    
     if clim_type is None and for_compute_anomaly:
         clim_type = "none"
     elif clim_type is None:
@@ -285,11 +340,16 @@ def standardize(da):
     """
     Applies a bunch of different rules to standardize Xarray objects. Names of variables, dimensions, coordinates and indices are modified as specified by the `standard_dict` defined at the start of the function. The longitudes are forced to go from -180 to +180 - dx, the latitudes are forced to be in increasing order. Finally, the data is coerced into a dask array.
 
-    :param da: Xarray object to standardize
-    :type da: xr.DataArray or xr.Dataset
-    :return: standardized Xarray object
-    :rtype: same as input
-    """
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object to standardize
+
+    Returns
+    -------
+    Same as input
+        Standardized Xarray object
+    """    
     standard_dict = {
         "valid_time": "time",
         "time_counter": "time",
@@ -382,13 +442,18 @@ def extract_period(
     """
     Extracts a period, specified by a list of years or a tuple or year bounds, or "all".
 
-    :param da: Xarray object that has a "time" dimension from which to extract a period
-    :type da: xr.DataArray or xr.Dataset
-    :param period: period specified, expressed as list of years, the string "all" or a 2-tuple specifying the first and last year (both included) to extract, defaults to "all"
-    :type period: list | tuple | Literal[&quot;all&quot;] | int | str, optional
-    :return da:
-    :rtype:
-    """
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object that has a "time" dimension from which to extract a period
+    period : list | tuple | Literal[all] | int | str, optional
+        Period specified, expressed as list of years, the string "all" or a 2-tuple specifying the first and last year (both included) to extract, by default "all"
+
+    Returns
+    -------
+    same as input
+        subset of `da`
+    """    
     if period == "all":
         return da
     if isinstance(period, tuple):
@@ -401,15 +466,104 @@ def extract_period(
     return da.isel(time=np.isin(da.time.dt.year, period))
 
 
+def extract_season(
+    da: xr.DataArray | xr.Dataset, season: list | str | tuple
+) -> xr.DataArray | xr.Dataset:
+    """
+    Extract certain months, specified as a list of ints or as a standard string.
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object to subset. It must have a `"time"` dimension.
+    season : list | str | tuple
+        List or tuple of ints between 1 and 12, or one of the xarray season strings: "DJF", "MAM", "JJA" or "SON"
+
+    Returns
+    -------
+    Same as input
+        Subset of `da`
+
+    Raises
+    ------
+    ValueError
+        If a string different from "DJF", "MAM", "JJA" or "SON" is passed as the `season`.
+    """    
+    if isinstance(season, list):
+        da = da.isel(time=np.isin(da.time.dt.month, season))
+    elif isinstance(season, str):
+        if season in ["DJF", "MAM", "JJA", "SON"]:
+            da = da.isel(time=da.time.dt.season == season)
+        else:
+            print(f"Wrong season specifier : {season} is not a valid xarray season")
+            raise ValueError
+    elif isinstance(season, tuple):
+        if season[1] > season[0]:
+            time_mask = (da.time.dt.dayofyear >= season[0]) & (
+                da.time.dt.dayofyear <= season[1]
+            )
+        else:  # over winter
+            time_mask = (da.time.dt.dayofyear >= season[1]) | (
+                da.time.dt.dayofyear >= season[1]
+            )
+        da = da.sel(time=time_mask)
+    return da
+
+
+def extract_region(
+    da: xr.DataArray | xr.Dataset,
+    minlon: Optional[int | float] = None,
+    maxlon: Optional[int | float] = None,
+    minlat: Optional[int | float] = None,
+    maxlat: Optional[int | float] = None,
+) -> xr.DataArray | xr.Dataset:
+    """
+    Extracts a spatial box from a Xarray object
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object to subset. It must have `"lon"` and `"lat"` dimensions
+    minlon : int or float, optional
+        left side of the box, by default None
+    maxlon : int or float, optional
+        right side of the box, by default None
+    minlat : int or float, optional
+        bottom side of the box, by default None
+    maxlat : int or float, optional
+        top side of the box, by default None
+
+    Returns
+    -------
+    da: same as input
+        subset `da`
+    """    
+    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
+        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+    return da
+
+
 def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
     """
-    uh
+    Unpacks a level specifications that can be an int, a str, a tuple, specifying a range to average, a list, or a list of tuples specifying several ranges to average separately. 
+    Outputs a modified and sorted `levels` and another list `level_names` that names the levels created by averaging.
 
-    :param levels: _description_
-    :type levels: int | str | tuple | list
-    :return: _description_
-    :rtype: Tuple[list, list]
-    """
+    Parameters
+    ----------
+    levels : int | str | tuple | list
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
+
+            f"{level[0]}-{len(level)}-{level[-1]}"
+
+    Returns
+    -------
+    levels: list
+        sorted, standardized input
+        
+    level_names: list
+        giving names to level-means created by the tuples
+    """    
     if isinstance(levels, int | str | tuple | np.int64 | np.int32):
         levels = [levels]
     to_sort = []
@@ -429,7 +583,25 @@ def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
     return levels, level_names
 
 
-def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal["all"]):
+def extract_levels(da: xr.DataArray | xr.Dataset, levels: int | str | list | tuple | Literal["all"]):
+    """
+    Extract levels from a Xarray object
+
+    Parameters
+    ----------
+    da : DataArray or Dataset
+        Xarray object from which to extract. It must have a `"lev"` dimension.
+    levels : int | str | list | tuple | Literal[all]
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
+
+            f"{level[0]}-{len(level)}-{level[-1]}"
+
+    Returns
+    -------
+    same as input
+        subset of `da`
+    """
     if levels == "all":
         if da.lev.values.size == 1:
             try:
@@ -464,42 +636,6 @@ def extract_levels(da: xr.DataArray, levels: int | str | list | tuple | Literal[
     return da2.squeeze()
 
 
-def extract_season(
-    da: xr.DataArray | xr.Dataset, season: list | str | tuple
-) -> xr.DataArray | xr.Dataset:
-    if isinstance(season, list):
-        da = da.isel(time=np.isin(da.time.dt.month, season))
-    elif isinstance(season, str):
-        if season in ["DJF", "MAM", "JJA", "SON"]:
-            da = da.isel(time=da.time.dt.season == season)
-        else:
-            print(f"Wrong season specifier : {season} is not a valid xarray season")
-            raise ValueError
-    elif isinstance(season, tuple):
-        if season[1] > season[0]:
-            time_mask = (da.time.dt.dayofyear >= season[0]) & (
-                da.time.dt.dayofyear <= season[1]
-            )
-        else:  # over winter
-            time_mask = (da.time.dt.dayofyear >= season[1]) | (
-                da.time.dt.dayofyear >= season[1]
-            )
-        da = da.sel(time=time_mask)
-    return da
-
-
-def extract_region(
-    da: xr.DataArray | xr.Dataset,
-    minlon: Optional[int | float] = None,
-    maxlon: Optional[int | float] = None,
-    minlat: Optional[int | float] = None,
-    maxlat: Optional[int | float] = None,
-) -> xr.DataArray | xr.Dataset:
-    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
-        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
-    return da
-
-
 def extract(
     da: xr.DataArray | xr.Dataset,
     period: list | tuple | Literal["all"] | int | str = "all",
@@ -512,29 +648,37 @@ def extract(
     members: str | list | Literal["all"] = "all",
 ) -> xr.DataArray | xr.Dataset:
     """
-    Applies all the extract_something functions.
+    Applies all the extract_something functions after checking that `da` contains the correct dimensions
 
-    :param da: _description_
-    :type da: xr.DataArray | xr.Dataset
-    :param period: _description_, defaults to "all"
-    :type period: list | tuple | Literal[&quot;all&quot;] | int | str, optional
-    :param season: _description_, defaults to None
-    :type season: list | str | tuple | None, optional
-    :param minlon: _description_, defaults to None
-    :type minlon: Optional[int  |  float], optional
-    :param maxlon: _description_, defaults to None
-    :type maxlon: Optional[int  |  float], optional
-    :param minlat: _description_, defaults to None
-    :type minlat: Optional[int  |  float], optional
-    :param maxlat: _description_, defaults to None
-    :type maxlat: Optional[int  |  float], optional
-    :param levels: _description_, defaults to "all"
-    :type levels: int | str | list | tuple | Literal[&quot;all&quot;], optional
-    :param members: _description_, defaults to "all"
-    :type members: str | list | Literal[&quot;all&quot;], optional
-    :return: _description_
-    :rtype: xr.DataArray | xr.Dataset
-    """
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object to subset
+    period : list | tuple | Literal[all] | int | str, optional
+        Period specified, expressed as list of years, the string "all" or a 2-tuple specifying the first and last year (both included) to extract, by default "all"
+    season : list | str | tuple | None, optional
+        List or tuple of ints between 1 and 12, or one of the xarray season strings: "DJF", "MAM", "JJA" or "SON", by default None
+    minlon : int or float, optional
+        left side of the box, by default None
+    maxlon : int or float, optional
+        right side of the box, by default None
+    minlat : int or float, optional
+        bottom side of the box, by default None
+    maxlat : int or float, optional
+        top side of the box, by default None
+    levels : int | str | tuple | list | Literal["all"], optional
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
+
+            f"{level[0]}-{len(level)}-{level[-1]}"
+    members : str | list | Literal["all"], optional
+        Member or members to extract, by default "all"
+
+    Returns
+    -------
+    da: same as input
+        Subset `da`
+    """    
     da = standardize(da)
 
     da = extract_period(da, period)
@@ -560,11 +704,16 @@ def determine_period(path: Path):
     """
     Determines the full list of years spanned by the data in a given data folder.
 
-    :param path: Path to a folder containing many .nc files, whose names are of either YYYYMM.nc or YYYY.nc format.
-    :type path: Path
-    :return: list of years spanned by the data in the folder.
-    :rtype: list
-    """
+    Parameters
+    ----------
+    path : Path
+        Path to a folder containing many .nc files, whose names are of either YYYYMM.nc or YYYY.nc format.
+
+    Returns
+    -------
+    list
+        list of years spanned by the data in the folder.
+    """    
     yearlist = []
     for f in path.glob("*.nc"):
         try:
@@ -598,37 +747,45 @@ def open_da(
     """
     Applies `data_path()`, `_open_many_da_wrapper()`, and `extract()` one after the other.
 
-    :param dataset: _description_
-    :type dataset: str
-    :param level_type: _description_, defaults to None
-    :type level_type: Literal[&quot;plev&quot;] | Literal[&quot;thetalev&quot;] | Literal[&quot;surf&quot;] | Literal[&quot;2PVU&quot;] | None, optional
-    :param varname: _description_, defaults to None
-    :type varname: str | None, optional
-    :param resolution: _description_, defaults to None
-    :type resolution: str | None, optional
-    :param period: _description_, defaults to "all"
-    :type period: list | tuple | Literal[&quot;all&quot;] | int | str, optional
-    :param season: _description_, defaults to None
-    :type season: list | str | tuple | None, optional
-    :param minlon: _description_, defaults to None
-    :type minlon: Optional[int  |  float], optional
-    :param maxlon: _description_, defaults to None
-    :type maxlon: Optional[int  |  float], optional
-    :param minlat: _description_, defaults to None
-    :type minlat: Optional[int  |  float], optional
-    :param maxlat: _description_, defaults to None
-    :type maxlat: Optional[int  |  float], optional
-    :param levels: _description_, defaults to "all"
-    :type levels: int | str | list | tuple | Literal[&quot;all&quot;], optional
-    :param clim_type: _description_, defaults to None
-    :type clim_type: str | None, optional
-    :param clim_smoothing: _description_, defaults to None
-    :type clim_smoothing: Mapping | None, optional
-    :param smoothing: _description_, defaults to None
-    :type smoothing: Mapping | None, optional
-    :return: _description_
-    :rtype: xr.DataArray
-    """
+    Parameters
+    ----------
+    dataset : str
+        Name of the dataset, typically "ERA5" or "CESM2"
+    level_type : Literal["plev"] | Literal["thetalev"] | Literal["surf"] | Literal["2PVU"] | None, optional
+        Level type, by default None
+    varname : str | None, optional
+        Name of the variable, or name of the group of variables like "high_wind", by default None
+    resolution : str | None, optional
+        Time resolution, typically "6H" or "dailymean", by default None
+    period : list | tuple | Literal[all] | int | str, optional
+        Period specified, expressed as list of years, the string "all" or a 2-tuple specifying the first and last year (both included) to extract, by default "all"
+    season : list | str | tuple | None, optional
+        List or tuple of ints between 1 and 12, or one of the xarray season strings: "DJF", "MAM", "JJA" or "SON", by default None
+    minlon : int or float, optional
+        left side of the box, by default None
+    maxlon : int or float, optional
+        right side of the box, by default None
+    minlat : int or float, optional
+        bottom side of the box, by default None
+    maxlat : int or float, optional
+        top side of the box, by default None
+    levels : int | str | tuple | list | Literal["all"], optional
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
+
+            f"{level[0]}-{len(level)}-{level[-1]}"
+    clim_type : str | None, optional
+        Type of climatology, like "dayofyear", by default None
+    clim_smoothing : Mapping | None, optional
+        Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
+    smoothing : Mapping | None, optional
+        Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
+
+    Returns
+    -------
+    da: xr.DataArray or xr.Dataset
+        The Xarray object fitting all the specifications. A DataArray if possible (one data variable), a Dataset otherwise.
+    """    
     if isinstance(varname, Tuple):
         varname_in_path, varname_in_file = varname
     else:
@@ -701,23 +858,28 @@ def open_da(
     return da
 
 
-def unpack_smooth_map(smooth_map: Mapping | Sequence) -> str:
+def unpack_smooth_map(smooth_map: Mapping) -> str:
     """
     Creates a unique string out of a smoothing map, useful for path creation
-    Example:
-    ```python
-    unpack_smooth_map({"dayofyear": ("win", 10)})
-    >>> "doywin10"
-    
-    unpack_smooth_map({"time": ("win", 10), "lon": ("fft", 10)})
-    >>> "timewin10_lonfft10"
-    ```
 
-    :param smooth_map: _description_
-    :type smooth_map: Mapping | Sequence
-    :return: _description_
-    :rtype: str
-    """
+    Parameters
+    ----------
+    smooth_map : Mapping
+        Dictionnary whose keys are dimensions and whose values are 2-tuples. The first element of the tuple if the type of smoothing ("win" or "fft") and the second is the strength of the smoothing, the window size for window smoothing and the number of frequencies to zero out for fft. Special case is detrending in time, specified with the **key** `"detrended"` and any value that will be ignored.
+
+    Returns
+    -------
+    str
+        Short deterministic unambiguous string summarizing the smoothing map
+        
+    Examples
+    --------
+    >>> unpack_smooth_map({"dayofyear": ("win", 10)})
+    "doywin10"
+    
+    >>> unpack_smooth_map({"time": ("win", 10), "lon": ("fft", 10)})
+    "timewin10_lonfft10"
+    """    
     strlist = []
     for dim, value in smooth_map.items():
         if dim == "detrended":
@@ -735,17 +897,22 @@ def unpack_smooth_map(smooth_map: Mapping | Sequence) -> str:
     return "_".join(strlist)
 
 
-def pad_wrap(da: xr.DataArray, dim: str) -> bool:
+def pad_wrap(da: xr.DataArray | xr.Dataset, dim: str) -> bool:
     """
     Checks whether we need to wrap-pad the data before smoothing. This is the case if we deal with a periodic dimension like longitude (but only if -180 and 180 - dx are present) or any of the climatology time dimensions ("dayofyear", "hourofyear", "month" or "week")
 
-    :param da: dataarray on which smoothing will be applied
-    :type da: xr.DataArray
-    :param dim: dimension on which the smoothing is applied
-    :type dim: str
-    :return: whether or not to wrap_pad
-    :rtype: bool
-    """
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object to smooth.
+    dim : str
+        Dimension to check
+
+    Returns
+    -------
+    bool
+        Whether or not to wrap-pad
+    """   
     resolution = da[dim][1] - da[dim][0]
     if dim in ["lon", "longitude"]:
         return 360 >= da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
@@ -753,21 +920,26 @@ def pad_wrap(da: xr.DataArray, dim: str) -> bool:
 
 
 def _window_smoothing(
-    da: xr.DataArray, dim: str, winsize: int, center: bool = True
-) -> xr.DataArray:
+    da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool = True
+) -> xr.DataArray | xr.Dataset:
     """
-    inner worker function for window smoothing. Either simply calls the xarray method or implements the complicated logic for "hourofyear" smoothing. 
+    Inner worker function for window smoothing. Either simply calls the xarray method or implements the complicated logic for "hourofyear" smoothing. 
 
-    :param da: DataArray on which the smoothing is applied
-    :type da: xr.DataArray
-    :param dim: dimension along which to window-smooth
-    :type dim: str
-    :param winsize: length of the running window
-    :type winsize: int
-    :param center: whether the result of the window smoothing is at the center or at the start of the window, defaults to True
-    :type center: bool
-    :return: Input array smoothed along `dim`. 
-    :rtype: xr.DataArray
+    Parameters
+    ----------
+    da : xr.DataArray or xr.Dataset
+        Xarray object to smooth. Must contain `dim` as a dimension. If a xr.Dataset, all variables are smoothed identically.
+    dim : str
+        Dimension along which to window-smooth
+    winsize : int
+        Size of the running window
+    center : bool, optional
+        Whether the result of the window smoothing is at the center or at the start of the window, by default True
+
+    Returns
+    -------
+    da: same as input
+        Input object smoothed along `dim`.
     """
     if dim != "hourofyear":
         return da.rolling({dim: winsize}, center=True, min_periods=1).mean()
@@ -786,21 +958,26 @@ def _window_smoothing(
 
 
 def window_smoothing(
-    da: xr.DataArray, dim: str, winsize: int, center: bool = True
-) -> xr.DataArray:
+    da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool = True
+) -> xr.DataArray | xr.Dataset:
     """
     Outer function for window smoothing. Determines is wrap padding needs to be done, and if yes does and undoes it. In the middle, calls `_window_smoothing()`
 
-    :param da: DataArray on which the smoothing is applied
-    :type da: xr.DataArray
-    :param dim: dimension along which to window-smooth
-    :type dim: str
-    :param winsize: length of the running window
-    :type winsize: int
-    :param center: whether the result of the window smoothing is at the center or at the start of the window, defaults to True
-    :type center: bool
-    :return: Input array smoothed along `dim`. 
-    :rtype: xr.DataArray
+    Parameters
+    ----------
+    da : xr.DataArray or xr.Dataset
+        Xarray object to smooth. Must contain `dim` as a dimension. If a xr.Dataset, all variables are smoothed identically.
+    dim : str
+        Dimension along which to window-smooth
+    winsize : int
+        Size of the running window
+    center : bool, optional
+        Whether the result of the window smoothing is at the center or at the start of the window, by default True
+
+    Returns
+    -------
+    da: same as input
+        Input object smoothed along `dim`.
     """
     dims = dim.split("+")
     for dim in dims:
@@ -815,19 +992,24 @@ def window_smoothing(
     return newda
 
 
-def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
+def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.DataArray | xr.Dataset:
     """
     Probably broken for now fft_smoothing. FFT means Fast Fourier Transform, which is the central function we use to perforn this smoothing, whose more correct name would be a low-pass filter. Transforms the data along `dim` in the frequency domain, zeroes out the elements corresponding to the `winsize` highest frequencies, and transforms this back into real space.
 
-    :param da: DataArray to smooth along one or several dimensions
-    :type da: xr.DataArray
-    :param dim: Dim name or a string constructed like "{dim1}+{dim2}" for 2D fft smoothing.
-    :type dim: str
-    :param winsize: Number of the highest frequencies to zero out
-    :type winsize: int
-    :return: Input DataArray smoothed along `dim`.
-    :rtype: xr.DataArray
-    """
+    Parameters
+    ----------
+    da : xr.DataArray or xr.Dataset
+        Xarray object to smooth. Must contain `dim` as a dimension, or `dim1` and `dim2` if `dim` is constructed as `"{dim1}+{dim2}"`. If a xr.Dataset, all variables are smoothed identically.
+    dim : str
+        Dim name or a string constructed like `"{dim1}+{dim2}"` for 2D fft smoothing.
+    winsize : int
+        Number of the highest frequencies to zero out
+
+    Returns
+    -------
+    da: same as input
+        Input object smoothed along `dim`.
+    """    
     import xrft
 
     name = da.name
@@ -857,16 +1039,24 @@ def fft_smoothing(da: xr.DataArray, dim: str, winsize: int) -> xr.DataArray:
     return newda
 
 
-def spharm_smoothing(da: xr.DataArray, trunc: int): 
+def spharm_smoothing(da: xr.DataArray | xr.Dataset, dim: str, trunc: int) -> xr.DataArray | xr.Dataset: 
     """
     One day i'll implement this. This is meant to be another type of spectral smoothing like fft, but with spherical harmonics instead.
 
-    :param da: _description_
-    :type da: xr.DataArray
-    :param trunc: _description_
-    :type trunc: int
-    :raises NotImplementedError: _description_
-    """
+    Parameters
+    ----------
+    da : xr.DataArray or xr.Dataset
+        _description_
+    dim : str
+        _description_
+    trunc : int
+        _description_
+
+    Raises
+    ------
+    NotImplementedError
+        Always for now
+    """    
     raise NotImplementedError("Spharmt is broken for now")
     # spharmt = Spharmt(len(da.lon), len(da.lat))
     # fieldspec = spharmt.grdtospec(da.values, ntrunc=trunc)
@@ -877,18 +1067,22 @@ def spharm_smoothing(da: xr.DataArray, trunc: int):
 def smooth(
     da: xr.DataArray | xr.Dataset,
     smooth_map: Mapping | None,
-) -> xr.DataArray:
+) -> xr.DataArray | xr.Dataset:
     """
     Unpacks the smooth_map and calls the appropriate functions along each dimension specified.
-    A smooth map is a dictionnary whose keys are dimensions and whose values are 2-tuples. The first element of the tuple if the type of smoothing ("win" or "fft") and the second is the strength of the smoothing, the window size for window smoothing and the number of frequencies to zero out for fft.
 
-    :param da: _description_
-    :type da: xr.DataArray | xr.Dataset
-    :param smooth_map: _description_
-    :type smooth_map: Mapping | None
-    :return: _description_
-    :rtype: xr.DataArray
-    """
+    Parameters
+    ----------
+    da : xr.DataArray or xr.Dataset
+        Xarray object to smooth. Must contain the dimensions specified in `smooth_map`. Must contain the `"time"` dimension if `"detrended"` is a key of `smooth_map`. If a xr.Dataset, all variables are smoothed identically.
+    smooth_map : Mapping | None
+        Dictionnary whose keys are dimensions and whose values are 2-tuples. The first element of the tuple if the type of smoothing ("win" or "fft") and the second is the strength of the smoothing, the window size for window smoothing and the number of frequencies to zero out for fft. Special case is detrending in time, specified with the **key** `"detrended"` and any value that will be ignored.
+
+    Returns
+    -------
+    da: same as input
+        Smoothed input
+    """    
     import xrft
 
     if smooth_map is None:
@@ -908,11 +1102,46 @@ def smooth(
     return da
 
 
-def compute_hourofyear(da: xr.DataArray) -> xr.DataArray:
+def compute_hourofyear(da: xr.DataArray | xr.Dataset) -> xr.DataArray:
+    """
+    An extension of dayofyear for every unique hour of the year, from 1st of January midnight to 31st of December 23:00.
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object with a `"time"` dimension
+
+    Returns
+    -------
+    xr.DataArray
+        Hourofyear index relative to input array's time.
+    """
     return da.time.dt.hour + 24 * (da.time.dt.dayofyear - 1)
 
 
-def assign_clim_coord(da: xr.DataArray, clim_type: str):
+def assign_clim_coord(da: xr.DataArray | xr.Dataset, clim_type: str):
+    """
+    Assign the climatology coordinate to the array, specified by `clim_type`.
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Xarray object with a `"time"` dimension
+    clim_type : str
+        type of climatology, one of ["month", "week", "dayofyear" or "hourofyear"]
+
+    Returns
+    -------
+    da: same as input
+        Input with extra coordinate corresponding to `clim_type`
+    coord: xr.DataArray
+        Also returns the coordinate itself, can be convenient.
+
+    Raises
+    ------
+    NotImplementedError
+        If `clim_type` is incorrect.
+    """
     if clim_type.lower() == "hourofyear":
         da = da.assign_coords(hourofyear=compute_hourofyear(da))
         coord = da.hourofyear
@@ -920,31 +1149,66 @@ def assign_clim_coord(da: xr.DataArray, clim_type: str):
         att for att in dir(da.time.dt) if not att.startswith("_")
     ]:
         coord = getattr(da.time.dt, clim_type)
+        da = da.assign_coords(**{clim_type: coord})
     else:
         raise NotImplementedError
     return da, coord
 
 
 def compute_clim(da: xr.DataArray, clim_type: str) -> xr.DataArray:
+    """
+    Computes climatology
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Xarray object with a `"time"` dimension.
+    clim_type : str
+        type of climatology, one of ["month", "week", "dayofyear" or "hourofyear"]
+
+    Returns
+    -------
+    xr.DataArray
+        climatology
+    """
     da, coord = assign_clim_coord(da, clim_type)
     clim = da.groupby(coord).mean()
     return compute(clim, progress_flag=True)
 
 
 def compute_anom(
-    anom: xr.DataArray, clim: xr.DataArray, clim_type: str, normalized: bool = False
+    da: xr.DataArray, clim: xr.DataArray, clim_type: str, standardized: bool = False
 ):
-    anom, coord = assign_clim_coord(anom, clim_type)
-    this_gb = anom.groupby(coord)
-    if not normalized:
-        anom = this_gb - clim
+    """
+    Compute anomalies from an input array of absolute values and a climatology.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Xarray object whose anomalies from `clim` are computed
+    clim : xr.DataArray
+        climatology createed by `compute_clim()`
+    clim_type : str
+        type of climatology, one of ["month", "week", "dayofyear" or "hourofyear"]
+    standardized : bool, optional
+        Optionally, one can create standardize the anomalies by the standard deviation of the data. It's a bit broken. By default False
+
+    Returns
+    -------
+    anom: xr.DataArray
+        Anomalies, potentially standardized, of `da` relative to `clim`.
+    """
+    da, coord = assign_clim_coord(da, clim_type)
+    this_gb = da.groupby(coord)
+    if not standardized:
+        da = this_gb - clim
     else:
-        variab = anom.groupby(coord).std()
-        anom = ((this_gb - clim).groupby(coord) / variab).reset_coords(
+        variab = da.groupby(coord).std()
+        da = ((this_gb - clim).groupby(coord) / variab).reset_coords(
             "hourofyear", drop=True
         )
-        anom = anom.where((anom != np.nan) & (anom != np.inf) & (anom != -np.inf), 0)
-    return anom.reset_coords(clim_type, drop=True)
+        da = da.where((da != np.nan) & (da != np.inf) & (da != -np.inf), 0)
+    return da.reset_coords(clim_type, drop=True)
 
 
 def compute_all_smoothed_anomalies(
@@ -960,6 +1224,27 @@ def compute_all_smoothed_anomalies(
     clim_smoothing: Mapping = None,
     smoothing: Mapping = None,
 ) -> None:
+    """
+    Computes a (potentially smoothed) climatology and (potentially smoothed) anomalies for the absolute data specified by the first four arguments.
+
+    Parameters
+    ----------
+    dataset : str
+        Name of the dataset, typically "ERA5" or "CESM2"
+    level_type : Literal["plev"] | Literal["thetalev"] | Literal["surf"] | Literal["2PVU"] | None, optional
+        Level type, by default None
+    varname : str | None, optional
+        Name of the variable, or name of the group of variables like "high_wind", by default None
+    resolution : str | None, optional
+        Time resolution, typically "6H" or "dailymean", by default None
+    clim_type : str | None, optional
+        Type of climatology, like "dayofyear", by default None
+    clim_smoothing : Mapping | None, optional
+        Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
+    smoothing : Mapping | None, optional
+        Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
+
+    """
     path, clim_path, anom_path = data_path(
         dataset,
         level_type,
@@ -1025,6 +1310,9 @@ def compute_all_smoothed_anomalies(
 
 
 def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
+    """
+    I don't think I ever use this
+    """
     if filename == "full.nc":
         return np.ones(len(time_da)).astype(bool)
 
@@ -1043,6 +1331,9 @@ def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
 
 
 def get_nao(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Broken too
+    """
     nao = pl.read_csv(f"{DATADIR}/ERA5/daily_nao.csv")
     nao = (
         nao.with_columns(
@@ -1055,6 +1346,16 @@ def get_nao(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def compute_extreme_climatology(da: xr.DataArray, opath: Path):
+    """
+    Compute a dayofyear climatology for some spatial quantiles. Useful to create intensity thresholds for jet finding.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Array that contains `"time"`, `"lon"` and `"lat"` dimensions
+    opath : Path
+        where to store the output
+    """
     q = da.quantile(np.arange(60, 100) / 100, dim=["lon", "lat"])
     q_clim = compute_clim(q, "dayofyear")
     q_clim = smooth(q_clim, {"dayofyear": ("win", 60)})
@@ -1062,13 +1363,34 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
 
 
 def compute_anomalies_ds(
-    ds: xr.Dataset, clim_type: str, normalized: bool = False, return_clim: bool = False
+    ds: xr.Dataset, clim_type: str, standardized: bool = False, return_clim: bool = False
 ) -> xr.Dataset:
+    """
+    Compute anomalies for a dataset by iterating over variables. Will load all data into memory so the ds needs to fit.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        A dataset wuth the "`time`" dimension
+    clim_type : str
+        Type of climatology, like "dayofyear", by default None
+    normalized : bool, optional
+        Optionally, one can create standardize the anomalies by the standard deviation of the data. By default False
+    return_clim : bool, optional
+        Optionally, also return the climatology, by default False
+
+    Returns
+    -------
+    anom: xr.Dataset
+        Potentially standardized anomalies of all variables in `ds`.
+    clim: xr.Dataset, optional
+        Climatology of all variables in `ds`.
+    """
     ds, coord = assign_clim_coord(ds, clim_type)
     clim = ds.groupby(coord).mean()
     clim = smooth(clim, {clim_type: ("win", 61)})
     this_gb = ds.groupby(coord)
-    if not normalized:
+    if not standardized:
         if return_clim:
             return (this_gb - clim).reset_coords(clim_type, drop=True), clim
         return (this_gb - clim).reset_coords(clim_type, drop=True)
@@ -1084,6 +1406,25 @@ def compute_anomalies_ds(
 def periodic_rolling_pl(
     df: pl.DataFrame, winsize: int, data_vars: list, dim: str = "dayofyear"
 ):
+    """
+    Window smoothing for a polars DataFrame, for a dimension that is periodic like `"dayofyear"`.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Data to smooth
+    winsize : int
+        Window size
+    data_vars : list
+        List of data variables, i.e. not indices.
+    dim : str, optional
+        Dim along which to window smooth, by default "dayofyear". Other index columns with be grouped by. 
+
+    Returns
+    -------
+    df: pl.DataFrame
+        smoothed `df` along `dim`
+    """
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
     other_columns = get_index_columns(df, ("member", "jet"))
@@ -1119,8 +1460,27 @@ def compute_anomalies_pl(
     df: pl.DataFrame,
     other_index_columns: Tuple = ("jet",),
     smooth_clim: int = 0,
-    normalize: bool = False,
+    standardize: bool = False,
 ):
+    """
+    Anomalizes a polars DataFrame. All columns except `"time"` and the columns in `other_index_columns` will be amomalized.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        _description_
+    other_index_columns : Tuple, optional
+        Columns to group by, by default ("jet",)
+    smooth_clim : int, optional
+        Window size for rolling window smoothing, by default 0
+    standardize : bool, optional
+        Optionally, one can create standardize the anomalies by the grouped standard deviation of the data. By default False
+
+    Returns
+    -------
+    df: pl.DataFrame
+        Anomalized `df` with the same column names and size.
+    """
     data_columns = [
         col for col in df.columns if col not in ["time", *other_index_columns]
     ]
@@ -1129,7 +1489,7 @@ def compute_anomalies_pl(
     if smooth_clim > 1:
         clim = periodic_rolling_pl(clim, smooth_clim, data_columns)
     df = df.join(clim, on=["dayofyear", *other_index_columns], suffix="_clim")
-    if not normalize:
+    if not standardize:
         df = df.select(
             *["time", *other_index_columns],
             **{col: pl.col(col) - pl.col(f"{col}_clim") for col in data_columns},
@@ -1152,6 +1512,9 @@ def compute_anomalies_pl(
 
 
 def _fix_dict_lists(dic: dict) -> dict:
+    """
+    Makes sure no numpy arrays are in the dict and instead sequences are list, so that the `==` operator works as intended by `find_spot`
+    """
     for key, val in dic.items():
         if isinstance(val, np.ndarray):
             dic[key] = val.tolist()
@@ -1159,6 +1522,21 @@ def _fix_dict_lists(dic: dict) -> dict:
 
 
 def find_spot(basepath: Path, metadata: Mapping) -> Path:
+    """
+    Finds a subfolder of `basepath` with a `metadata.pkl` file identical to `metadata`. If none are found, create a new subfolder and write `metadata` in it.
+
+    Parameters
+    ----------
+    basepath : Path
+        Base folder in which to look for subfolders
+    metadata : Mapping
+        metadata of a `DataHandler`
+
+    Returns
+    -------
+    Path
+        Path of the subfolder with matching metadata, potentially created by this function call if none was found.
+    """
     found = False
     metadata = _fix_dict_lists(metadata)
     for dir in basepath.iterdir():
@@ -1189,6 +1567,21 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
 
 
 def flatten_by(ds: xr.Dataset, by: str = "s") -> xr.Dataset:
+    """
+    Flatten a Dataset over its `"lev"` coordinate (vertical level of any kind, pressure or theta) by only keeping the level of maximum `by` at every point in time, space and / or member (if applicable).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset containing the `by` data variable.
+    by : str, optional
+        The variable whose maximum is searched over levels, by default "s"
+
+    Returns
+    -------
+    xr.Dataset
+        Flattened input with an extra data variable: `"lev"`, for all points in time, space and / or member (if applicable), the level at which the maximum of `by` was found.
+    """
     if "lev" not in ds.dims:
         return ds
     unique_levs = np.unique(ds.lev.values)
@@ -1210,6 +1603,20 @@ def flatten_by(ds: xr.Dataset, by: str = "s") -> xr.Dataset:
 def metadata_from_da(
     da: xr.DataArray | xr.Dataset, varname: str | list | None = None
 ) -> dict:
+    """
+    Generates a metadata dictionnary from a DataArray or Dataset
+
+    Parameters
+    ----------
+    da : xr.DataArray | xr.Dataset
+        Input array
+    varname : str | list | None, optional
+        specific varnames to look at if input is a Dataset, by default None, meaning all variables found are used.
+
+    Returns
+    -------
+    metadata: dict
+    """
     if isinstance(da, xr.DataArray) and varname is None:
         varname = da.name
     elif isinstance(da, xr.Dataset) and varname is None:
@@ -1244,11 +1651,31 @@ def metadata_from_da(
 
 
 class DataHandler(object):
+    """
+    Convenience class, holding an Xarray data source and path to a unique subfolder in which to store related stuff.
+
+    Attributes
+    ----------
+    da : xr.DataArray | xr.Dataset
+        The data
+    metadata : Metadata uniquely qualifying this DataHandler from others
+        The data
+    path: Path
+        Path to a subfolder containing at least the metadata as a .pkl file, and where the various Experiment classes that contain a `DataHandler` will store their results.
+    """
     def __init__(
         self,
         path: Path | str,
         da: xr.DataArray | xr.Dataset | None = None,
     ) -> None:
+        """
+        Initializes a DataHandler from an already created subfolder at `path`.
+        
+        Raises
+        ------
+        ValueError
+            If `da` is not specified and no file named `da.nc` is found in the subfolder.
+        """
         self.path = Path(path)
         if da is None:
             try:
@@ -1264,6 +1691,9 @@ class DataHandler(object):
     def from_basepath_and_da(
         cls, basepath: Path | str, da: xr.DataArray | xr.Dataset, save_da: bool = False
     ) -> "DataHandler":
+        """
+        Creates a new DataHandler by finding a spot based on the metadata inferred from `da`.
+        """
         basepath = Path(basepath)
         metadata = metadata_from_da(da)
         path = find_spot(basepath, metadata)
@@ -1273,6 +1703,9 @@ class DataHandler(object):
         return cls(path, da)
 
     def _setup_dims(self):
+        """
+        Stores the array's dimensions and coordinates, and splits them into "sample" and "feature" dimensions. This is mostly useful for clustering, where the underlying clustering algorithms want as input array of shape (n_samples, n_features). Sample dims are "time" and / or "member", and feature dims are the other dims, like "lon", "lat" or "lev".
+        """
         self.sample_dims = determine_sample_dims(self.da)
         self.feature_dims = determine_feature_dims(self.da)
         self.extra_dims = {}
@@ -1330,6 +1763,9 @@ class DataHandler(object):
         smoothing: Mapping = None,
         reduce_da: bool = True,
     ) -> "DataHandler":
+        """
+        Creates a new DataHandler by opening and subsetting an Xarray object using `open_da()`. Only works if the file structure within the global `DATADIR` is compatible. Otherwise, use `from_basepath_and_da()`.
+        """
         if isinstance(varname, Tuple):
             varname_in_path, varname_in_file = varname
         else:
@@ -1410,6 +1846,9 @@ class DataHandler(object):
         data_handlers: Mapping[str, "DataHandler"],
         flatten_ds: bool = True,
     ):
+        """
+        Creates a new DataHandler by merging several `DataHandler`. Not useful anymore and should not be used.
+        """
         varnames = list(data_handlers)
         if flatten_ds:
             varnames.append("lev")
@@ -1471,6 +1910,9 @@ class DataHandler(object):
         members: str | list | Literal["all"] = "all",
         reduce_da: bool = True,
     ) -> "DataHandler":
+        """
+        Creates a new DataHandler by opening a remote CESM2 dataset on AWS using intake and subset it based on the specifications. Probably broken. Download the data separately in a script then use `.from_basepath_and_da()`
+        """
         import intake
 
         basepath = Path(basepath)
