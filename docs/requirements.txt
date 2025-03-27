@@ -12,6 +12,7 @@ numpy
 pandas
 polars
 polars-ols
+pyarrow
 scikit-learn
 scipy
 shap
