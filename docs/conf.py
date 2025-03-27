@@ -10,7 +10,7 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('../'))
 
-project = 'JetStream'
+project = 'Jetutils'
 copyright = '2025, Hugo Banderier'
 author = 'Hugo Banderier'
 
