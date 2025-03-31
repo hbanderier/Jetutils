@@ -54,11 +54,13 @@ if RESULTS == "guess":
     RESULTS = Path.cwd().joinpath("results")
     print("Guessed RESULTS : ", RESULTS)
 if N_WORKERS == "guess":
-    N_WORKERS = os.environ.get("SLURM_CPU_PER_NODE", os.cpu_count())
+    N_WORKERS = os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count())
     print("Guessed N_WORKERS : ", N_WORKERS)
 if MEMORY_LIMIT == "guess":
-    MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", "8GiB")
+    MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", "8000")
     print("Guessed MEMORY_LIMIT : ", MEMORY_LIMIT)
+MEMORY_LIMIT = int(MEMORY_LIMIT) // N_WORKERS
+MEMORY_LIMIT = f"{MEMORY_LIMIT / 1000}GiB"
 
 COMPUTE_KWARGS = {
     "processes": True,
