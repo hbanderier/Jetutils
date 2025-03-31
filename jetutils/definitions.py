@@ -24,203 +24,206 @@ import xarray as xr
 from dask.diagnostics import ProgressBar  # to use without a specified dask client
 from dask.distributed import progress  # to use with a specified dask client
 
-np.set_printoptions(precision=5, suppress=True)
 
-# Try to find a .jetutils.ini
-config = configparser.ConfigParser()
-path_default_config = impresources.files("jetutils").joinpath("config.ini")
-path_override_config = Path.home().joinpath(".jetutils.ini")
-config.read([path_default_config, path_override_config])
+if "DATADIR" not in globals():
+    np.set_printoptions(precision=5, suppress=True)
 
-if path_override_config.is_file():
-    print("Found config override file at ", path_override_config)
-else:
-    print("No config override found at ", path_override_config, "Guessing everything")
+    # Try to find a .jetutils.ini
+    config = configparser.ConfigParser()
+    path_default_config = impresources.files("jetutils").joinpath("config.ini")
+    path_override_config = Path.home().joinpath(".jetutils.ini")
+    config.read([path_default_config, path_override_config])
 
-# For what's not found, guesses and prints the guesses
-DATADIR = config.get("PATHS", "DATADIR")
-FIGURES = config.get("PATHS", "FIGURES")
-RESULTS = config.get("PATHS", "RESULTS")
-N_WORKERS = config.get("COMPUTE", "N_WORKERS")
-MEMORY_LIMIT = config.get("COMPUTE", "MEMORY_LIMIT")
+    if path_override_config.is_file():
+        print("Found config override file at ", path_override_config)
+    else:
+        print("No config override found at ", path_override_config, "Guessing everything")
 
-if DATADIR == "guess":
-    DATADIR = Path.cwd().joinpath("data")
-    print("Guessed DATADIR : ", DATADIR)
-if FIGURES == "guess":
-    FIGURES = Path.cwd().joinpath("figures")
-    print("Guessed FIGURES : ", FIGURES)
-if RESULTS == "guess":
-    RESULTS = Path.cwd().joinpath("results")
-    print("Guessed RESULTS : ", RESULTS)
-if N_WORKERS == "guess":
-    N_WORKERS = os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count())
-    print("Guessed N_WORKERS : ", N_WORKERS)
-if MEMORY_LIMIT == "guess":
-    MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", "8000")
-    print("Guessed MEMORY_LIMIT : ", MEMORY_LIMIT)
-MEMORY_LIMIT = int(MEMORY_LIMIT) // N_WORKERS
-MEMORY_LIMIT = f"{MEMORY_LIMIT / 1000}GiB"
+    # For what's not found, guesses and prints the guesses
+    DATADIR = config.get("PATHS", "DATADIR")
+    FIGURES = config.get("PATHS", "FIGURES")
+    RESULTS = config.get("PATHS", "RESULTS")
+    N_WORKERS = config.get("COMPUTE", "N_WORKERS")
+    MEMORY_LIMIT = config.get("COMPUTE", "MEMORY_LIMIT")
 
-COMPUTE_KWARGS = {
-    "processes": True,
-    "threads_per_worker": 1,
-    "n_workers": N_WORKERS,
-    "memory_limit": MEMORY_LIMIT,
-}
+    if DATADIR == "guess":
+        DATADIR = Path.cwd().joinpath("data")
+        print("Guessed DATADIR : ", DATADIR)
+    if FIGURES == "guess":
+        FIGURES = Path.cwd().joinpath("figures")
+        print("Guessed FIGURES : ", FIGURES)
+    if RESULTS == "guess":
+        RESULTS = Path.cwd().joinpath("results")
+        print("Guessed RESULTS : ", RESULTS)
+    if N_WORKERS == "guess":
+        N_WORKERS = os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count())
+        print("Guessed N_WORKERS : ", N_WORKERS)
+    N_WORKERS = int(N_WORKERS)
+    if MEMORY_LIMIT == "guess":
+        MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", "8000")
+        print("Guessed MEMORY_LIMIT : ", MEMORY_LIMIT)
+    MEMORY_LIMIT = int(MEMORY_LIMIT) // N_WORKERS
+    MEMORY_LIMIT = f"{MEMORY_LIMIT / 1000}GiB"
 
-CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
-DEFAULT_VARNAME = "__xarray_dataarray_variable__"
+    COMPUTE_KWARGS = {
+        "processes": True,
+        "threads_per_worker": 1,
+        "n_workers": N_WORKERS,
+        "memory_limit": MEMORY_LIMIT,
+    }
 
-DATERANGE = pd.date_range("19590101", "20221231")
-TIMERANGE = pd.date_range("19590101", "20230101", freq="6h", inclusive="left")
-LEAPYEAR = pd.date_range("19600101", "19601231")
-JJADOYS = LEAPYEAR[np.isin(LEAPYEAR.month, [6, 7, 8])].dayofyear
-YEARS = np.unique(DATERANGE.year)
-DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
+    CLIMSTOR = "/mnt/climstor/ecmwf/era5/raw"
+    DEFAULT_VARNAME = "__xarray_dataarray_variable__"
 
-SMALLNAME = {
-    "Geopotential": "z",
-    "Wind": "s",
-    "Temperature": "t",
-    "Precipitation": "tp",
-}
+    DATERANGE = pd.date_range("19590101", "20221231")
+    TIMERANGE = pd.date_range("19590101", "20230101", freq="6h", inclusive="left")
+    LEAPYEAR = pd.date_range("19600101", "19601231")
+    JJADOYS = LEAPYEAR[np.isin(LEAPYEAR.month, [6, 7, 8])].dayofyear
+    YEARS = np.unique(DATERANGE.year)
+    DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
 
-SHORTHAND = {
-    "subtropical": "STJ",
-    "polar": "EDJ",
-}
+    SMALLNAME = {
+        "Geopotential": "z",
+        "Wind": "s",
+        "Temperature": "t",
+        "Precipitation": "tp",
+    }
 
-PRETTIER_VARNAME = {
-    "mean_lon": "Avg. longitude",
-    "mean_lat": "Avg. latitude",
-    "mean_lev": "Avg. p. level",
-    "mean_s": "Avg. speed",
-    "mean_P": "Avg. p. level",
-    "mean_theta": "Avg. theta level",
-    "lon_star": "Lon. of max. speed",
-    "lat_star": "Lat. of max. speed",
-    "s_star": "Max. speed",
-    "lon_ext": "Extent in lon.",
-    "lat_ext": "Extent in lat.",
-    "tilt": "Tilt",
-    "waviness1": "Linear waviness",
-    "waviness2": "Flat waviness",
-    "wavinessR16": "R16 waviness",
-    "wavinessDC16": "DC16 waviness",
-    "wavinessFV15": "FV15 waviness",
-    "width": "Width",
-    "int": "Integrated speed",
-    "int_low": "Intd. speed low level",
-    "int_over_europe": "Intd. speed over Eur.",
-    "persistence": "Lifetime",
-    "njets": r"\# Jets",
-    "int_ratio": "Ratio low / high ints",
-    "com_speed": "COM speed",
-    "double_jet_index": "Double jet index",
-}
+    SHORTHAND = {
+        "subtropical": "STJ",
+        "polar": "EDJ",
+    }
 
-UNITS = {
-    "mean_lon": r"$~^{\circ} \mathrm{E}$",
-    "mean_lat": r"$~^{\circ} \mathrm{N}$",
-    "mean_lev": r"$\mathrm{hPa}$",
-    "mean_s": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
-    "lon_star": r"$~^{\circ} \mathrm{E}$",
-    "lat_star": r"$~^{\circ} \mathrm{N}$",
-    "s_star": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
-    "lon_ext": r"$~^{\circ} \mathrm{E}$",
-    "lat_ext": r"$~^{\circ} \mathrm{N}$",
-    "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
-    "waviness1": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
-    "waviness2": r"$~^{\circ} \mathrm{N}$",
-    "wavinessR16": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
-    "wavinessDC16": "$~$",
-    "wavinessFV15": "$~$",
-    "width": r"$\mathrm{m}$",
-    "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
-    "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
-    "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
-    "persistence": r"$\mathrm{day}$",
-    "njets": r"$~$",
-    "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
-    "double_jet_index": "$~$",
-}
+    PRETTIER_VARNAME = {
+        "mean_lon": "Avg. longitude",
+        "mean_lat": "Avg. latitude",
+        "mean_lev": "Avg. p. level",
+        "mean_s": "Avg. speed",
+        "mean_P": "Avg. p. level",
+        "mean_theta": "Avg. theta level",
+        "lon_star": "Lon. of max. speed",
+        "lat_star": "Lat. of max. speed",
+        "s_star": "Max. speed",
+        "lon_ext": "Extent in lon.",
+        "lat_ext": "Extent in lat.",
+        "tilt": "Tilt",
+        "waviness1": "Linear waviness",
+        "waviness2": "Flat waviness",
+        "wavinessR16": "R16 waviness",
+        "wavinessDC16": "DC16 waviness",
+        "wavinessFV15": "FV15 waviness",
+        "width": "Width",
+        "int": "Integrated speed",
+        "int_low": "Intd. speed low level",
+        "int_over_europe": "Intd. speed over Eur.",
+        "persistence": "Lifetime",
+        "njets": r"\# Jets",
+        "int_ratio": "Ratio low / high ints",
+        "com_speed": "COM speed",
+        "double_jet_index": "Double jet index",
+    }
 
-DEFAULT_VALUES = {
-    "mean_lon": 0,
-    "mean_lat": 45,
-    "mean_lev": 250,
-    "mean_s": 0,
-    "lon_star": 0,
-    "lat_star": 45,
-    "s_star": 0,
-    "lon_ext": 0,
-    "lat_ext": 0,
-    "tilt": 0,
-    "waviness1": 0,
-    "waviness2": 0,
-    "wavinessR16": 0,
-    "wavinessDC16": 0,
-    "wavinessFV15": 0,
-    "width": 0,
-    "int": 0,
-    "int_low": 0,
-    "int_over_europe": 0,
-    "persistence": 1,
-    "njets": 0,
-    "com_speed": 0,
-    "double_jet_index": 0,
-}
+    UNITS = {
+        "mean_lon": r"$~^{\circ} \mathrm{E}$",
+        "mean_lat": r"$~^{\circ} \mathrm{N}$",
+        "mean_lev": r"$\mathrm{hPa}$",
+        "mean_s": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
+        "lon_star": r"$~^{\circ} \mathrm{E}$",
+        "lat_star": r"$~^{\circ} \mathrm{N}$",
+        "s_star": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
+        "lon_ext": r"$~^{\circ} \mathrm{E}$",
+        "lat_ext": r"$~^{\circ} \mathrm{N}$",
+        "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+        "waviness1": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+        "waviness2": r"$~^{\circ} \mathrm{N}$",
+        "wavinessR16": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+        "wavinessDC16": "$~$",
+        "wavinessFV15": "$~$",
+        "width": r"$\mathrm{m}$",
+        "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
+        "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
+        "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
+        "persistence": r"$\mathrm{day}$",
+        "njets": r"$~$",
+        "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
+        "double_jet_index": "$~$",
+    }
 
-LATEXY_VARNAME = {
-    "mean_lon": r"$\overline{\lambda}$",
-    "mean_lat": r"$\overline{\phi}$",
-    "mean_lev": r"$\overline{p}$",
-    "mean_s": r"$\overline{U}$",
-    "lon_star": r"$\lambda_{s^*}$",
-    "lat_star": r"$\phi_{s^*}$",
-    "s_star": r"$s^*$",
-    "lon_ext": r"$\Delta \lambda$",
-    "lat_ext": r"$\Delta \phi$",
-    "tilt": r"$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$",
-    "waviness1": r"$s_1$",
-    "waviness2": r"$s_2$",
-    "wavinessR16": r"$s_3$",
-    "wavinessDC16": r"$s_4$",
-    "wavinessFV15": r"$s_5$",
-    "width": "$w$",
-    "int": r"$\int s \mathrm{d}\lambda$",
-    "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",
-    "int_over_europe": r"$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$",
-    "persistence": r"$\Delta t$",
-}
+    DEFAULT_VALUES = {
+        "mean_lon": 0,
+        "mean_lat": 45,
+        "mean_lev": 250,
+        "mean_s": 0,
+        "lon_star": 0,
+        "lat_star": 45,
+        "s_star": 0,
+        "lon_ext": 0,
+        "lat_ext": 0,
+        "tilt": 0,
+        "waviness1": 0,
+        "waviness2": 0,
+        "wavinessR16": 0,
+        "wavinessDC16": 0,
+        "wavinessFV15": 0,
+        "width": 0,
+        "int": 0,
+        "int_low": 0,
+        "int_over_europe": 0,
+        "persistence": 1,
+        "njets": 0,
+        "com_speed": 0,
+        "double_jet_index": 0,
+    }
 
-SEASONS = {
-    "DJF": [1, 2, 12],
-    "MAM": [3, 4, 5],
-    "JJA": [6, 7, 8],
-    "SON": [9, 10, 11],
-}
+    LATEXY_VARNAME = {
+        "mean_lon": r"$\overline{\lambda}$",
+        "mean_lat": r"$\overline{\phi}$",
+        "mean_lev": r"$\overline{p}$",
+        "mean_s": r"$\overline{U}$",
+        "lon_star": r"$\lambda_{s^*}$",
+        "lat_star": r"$\phi_{s^*}$",
+        "s_star": r"$s^*$",
+        "lon_ext": r"$\Delta \lambda$",
+        "lat_ext": r"$\Delta \phi$",
+        "tilt": r"$\overline{\frac{\mathrm{d}\phi}{\mathrm{d}\lambda}}$",
+        "waviness1": r"$s_1$",
+        "waviness2": r"$s_2$",
+        "wavinessR16": r"$s_3$",
+        "wavinessDC16": r"$s_4$",
+        "wavinessFV15": r"$s_5$",
+        "width": "$w$",
+        "int": r"$\int s \mathrm{d}\lambda$",
+        "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",
+        "int_over_europe": r"$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$",
+        "persistence": r"$\Delta t$",
+    }
 
-MONTH_NAMES = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-]
+    SEASONS = {
+        "DJF": [1, 2, 12],
+        "MAM": [3, 4, 5],
+        "JJA": [6, 7, 8],
+        "SON": [9, 10, 11],
+    }
 
-RADIUS = 6.371e6  # m
-OMEGA = 7.2921e-5  # rad.s-1
-KAPPA = 0.2854
-R_SPECIFIC_AIR = 287.0500676
+    MONTH_NAMES = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+
+    RADIUS = 6.371e6  # m
+    OMEGA = 7.2921e-5  # rad.s-1
+    KAPPA = 0.2854
+    R_SPECIFIC_AIR = 287.0500676
 
 
 def degcos(x: float) -> float:

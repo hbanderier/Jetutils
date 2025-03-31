@@ -440,7 +440,7 @@ class Clusterplot:
 
     def add_contour(
         self,
-        to_plot: list,
+        to_plot: list | xr.DataArray,
         lon: np.ndarray = None,
         lat: np.ndarray = None,
         levels: int | Sequence | None = None,
@@ -499,7 +499,7 @@ class Clusterplot:
 
     def setup_contourf(
         self,
-        to_plot: list,
+        to_plot: list | xr.DataArray,
         levels: int | Sequence | None = None,
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
@@ -554,7 +554,7 @@ class Clusterplot:
 
     def add_contourf(
         self,
-        to_plot: list,
+        to_plot: list | xr.DataArray,
         lon: np.ndarray = None,
         lat: np.ndarray = None,
         levels: int | Sequence | None = None,

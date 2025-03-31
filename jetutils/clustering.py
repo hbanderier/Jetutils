@@ -598,7 +598,7 @@ class Experiment(object):
         weigh_grams: bool = False,
         return_type: int = RAW_REALSPACE,
         force: bool = False,
-    ) -> str | Tuple[xr.DataArray, xr.DataArray, str]:
+    ) -> Tuple[xr.DataArray, xr.DataArray]:
         """
         Performs K-means clustering by wrapping the scikit-learn KMeans object, pre- and post-processing this object's data. Stores the underlying trained scikit-learn KMeans object.
         If a fitting KMeans object is already stored, use it instead unless `force=True`

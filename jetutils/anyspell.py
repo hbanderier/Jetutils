@@ -293,7 +293,7 @@ def get_spells_sigma(
 def get_persistent_spell_times_from_som(
     labels,
     dists: np.ndarray,
-    sigma: int = 0,
+    sigma: float = 0.,
     minlen: int = 4,
     nt_before: int = 0,
     nt_after: int = 0,
