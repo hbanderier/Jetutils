@@ -891,6 +891,7 @@ def clear(func):
             del fig
             plt.close()
             clear_output()
+            return
         return fig
     return wrapper
 
