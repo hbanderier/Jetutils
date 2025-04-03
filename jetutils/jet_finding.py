@@ -563,7 +563,7 @@ def find_all_jets(
     all_contours = compute_contours(df)
     all_contours = all_contours.with_columns(
         index=all_contours.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(index=pl.int_range(0, pl.col("lon").len()))
+        .agg(index=pl.int_range(0, pl.col("lon").len(), dtype=pl.UInt32))
         .explode("index")["index"]
     )
     for index_column in index_columns:
