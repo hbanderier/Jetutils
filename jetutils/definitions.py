@@ -153,6 +153,7 @@ if "DATADIR" not in globals():
         "mean_lon": 0,
         "mean_lat": 45,
         "mean_lev": 250,
+        "mean_theta": 300,
         "mean_s": 0,
         "lon_star": 0,
         "lat_star": 45,
@@ -173,6 +174,9 @@ if "DATADIR" not in globals():
         "njets": 0,
         "com_speed": 0,
         "double_jet_index": 0,
+        "is_polar": True,
+        "n_jets": 0,
+        "flag": 0,
     }
 
     LATEXY_VARNAME = {
@@ -725,8 +729,10 @@ def _explode_rle(df):
 
 
 def _do_rle(
-    df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr]
+    df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr
 ) -> pl.DataFrame:
+    if isinstance(group_by, str | pl.Expr):
+        group_by = [group_by]
     conditional = (
         df.group_by(group_by, maintain_order=True)
         .agg(
@@ -752,7 +758,7 @@ def _do_rle(
 def do_rle_fill_hole(
     df: pl.DataFrame,
     condition_expr: pl.Expr,
-    group_by: str | Sequence[str] | None = None,
+    group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None,
     hole_size: int | datetime.timedelta = 4,
     unwrap: bool = False,
 ) -> pl.DataFrame:
@@ -767,7 +773,7 @@ def do_rle_fill_hole(
         Input DataFrame
     condition_expr : pl.Expr
         Expression that evaluates to True or False from one or several columns of `df`
-    group_by : str | Sequence[str] | None, optional
+    group_by : Sequence[str] | Sequence[pl.Expr] | str | pl.Expr, optional
         Columns to group by, by default None
     hole_size : int | datetime.timedelta, optional
         Maximum authorized size of holes than can be in a run without interrupting it, by default 4
@@ -784,6 +790,8 @@ def do_rle_fill_hole(
     ValueError
         If `hole_size` is specified as a `datetime.timedelta` but there is no `"time"`, or `"time"` is in `group_by`.
     """
+    if isinstance(group_by, str | pl.Expr):
+        group_by = [group_by]
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or (group_by is not None and "time" in group_by):
             raise ValueError
@@ -814,8 +822,6 @@ def do_rle_fill_hole(
                 orig_time = orig_time.with_columns(
                     year=pl.col("time").dt.year(),
                 )
-    if not isinstance(group_by, Sequence):
-        group_by = [group_by]
 
     if len(group_by) == 0:
         df = df.with_columns(dummy=1)

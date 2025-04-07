@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
+import polars_ds as pds
 from numba import njit
 from tqdm import tqdm, trange
 from scipy.spatial.distance import squareform
@@ -44,6 +45,7 @@ from .definitions import (
     extract_season_from_df,
 )
 from .data import (
+    compute_anomalies_pl,
     find_spot,
     get_land_mask,
     extract_season,
@@ -109,7 +111,7 @@ def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
     -------
     score : float
         Brier score loss.
-        
+
     something else : float
         another thing.
 
@@ -150,121 +152,6 @@ ALL_SCORES = {
 }
 
 
-def spells_from_da(  # TODO: remove, get_spells is the new cool kid
-    da: xr.DataArray,
-    q: float = 0.95,
-    fill_holes: int = 2,
-    minlen: np.timedelta64 = np.timedelta64(3, "D"),
-    time_before: np.timedelta64 = np.timedelta64(0, "D"),
-    time_after: np.timedelta64 = np.timedelta64(0, "D"),
-    output_type: Literal["arr"] | Literal["list"] | Literal["both"] = "arr",
-) -> xr.DataArray | Tuple[list[np.ndarray]]:
-    dt = pd.Timedelta(da.time.values[1] - da.time.values[0])
-    months = np.unique(da.time.dt.month.values)
-    months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
-    days = quantile_exceedence(da, q)
-    runs = get_runs_fill_holes(days.values.copy(), hole_size=fill_holes)
-    run_times = [da.time.values[run] for run in runs]
-    spells = []
-    spells_ts = []
-    lengths = []
-    for run in run_times:
-        years = run.astype("datetime64[Y]").astype(int) + 1970
-        cond1 = years[0] == years[-1]
-        len_ = run[-1] - run[0]
-        cond2 = len_ >= minlen
-        if not (cond1 and cond2):
-            continue
-        spells.append([run[0], run[-1]])
-        ts_extended = pd.date_range(
-            run[0] - time_before, run[-1] + time_after, freq=dt
-        ).values
-        ts_extended = ts_extended[np.isin(ts_extended, da.time.values)]
-        spells_ts.append(ts_extended)
-        lengths.append(len_.astype("timedelta64[D]").astype(int))
-    spells = np.asarray(spells)
-    if output_type == "list":
-        return spells_ts, spells
-    da_spells = da.copy(data=np.zeros(da.shape, dtype=int))
-    indexer = np.concatenate(spells_ts)
-    lengths = np.concatenate(
-        [np.full(len(spell_ts), len_) for spell_ts, len_ in zip(spells_ts, lengths)]
-    )
-    da_spells.loc[indexer] = lengths
-
-    if output_type == "arr":
-        return da_spells
-    return spells_ts, spells, da_spells
-
-
-def mask_from_spells(
-    ds: xr.Dataset,
-    spells_ts: list,
-    spells: np.ndarray,
-    da: xr.DataArray | None = None,
-    time_before: np.timedelta64 = np.timedelta64(0, "D"),
-) -> xr.Dataset:
-    months = np.unique(ds.time.dt.month.values)
-    months = [str(months[0]).zfill(2), str(min(12, months[-1] + 1)).zfill(2)]
-    try:
-        lengths = spells[:, 1] - spells[:, 0]
-        longest_spell = np.argmax(lengths)
-        dt = np.amin(np.unique(np.diff(spells_ts[0])))
-        time_around_beg = np.arange(
-            -time_before,
-            spells[longest_spell, 1] - spells[longest_spell, 0] + dt,
-            dt,
-            dtype="timedelta64[ns]",
-        )
-    except ValueError:
-        time_around_beg = np.atleast_1d(np.timedelta64(0, "ns"))
-    ds_masked = (
-        ds.loc[dict(time=ds.time.values[0])]
-        .reset_coords("time", drop=True)
-        .copy(deep=True)
-    )
-    ds_masked.loc[dict()] = np.nan
-    ds_masked = ds_masked.load()
-    ds_masked = ds_masked.expand_dims(
-        spell=np.arange(len(spells)),
-        time_around_beg=time_around_beg,
-    ).copy(deep=True)
-    ds_masked = ds_masked.assign_coords(lengths=("spell", lengths))
-    dims = list(ds_masked.sizes.values())[:2]
-    dummy_da = np.zeros(dims) + np.nan
-    ds_masked = ds_masked.assign_coords(
-        avg_val=(["spell", "time_around_beg"], dummy_da)
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=UserWarning)
-        ds_masked = ds_masked.assign_coords(
-            absolute_time=(
-                ["spell", "time_around_beg"],
-                dummy_da.astype("datetime64[h]"),
-            )
-        )
-    if len(ds_masked.time_around_beg) <= 1:
-        return ds_masked
-    for i, spell in enumerate(spells_ts):
-        unexpected_offset = time_before - (spells[i][0] - spell[0])
-        this_tab = time_around_beg[: len(spell)] + unexpected_offset
-        this_tab = np.clip(
-            this_tab, None, ds_masked.time_around_beg.max().values
-        )  # Unexpected offset is weird
-        spell = spell[: len(this_tab)]
-        to_assign = (
-            ds.loc[dict(time=spell)]
-            .assign_coords(time=this_tab)
-            .rename(time="time_around_beg")
-        )
-        indexer = dict(spell=i, time_around_beg=this_tab)
-        ds_masked.loc[indexer] = to_assign
-        ds_masked.absolute_time.loc[indexer] = spell
-        if da is not None:
-            ds_masked.avg_val.loc[indexer] = da.loc[dict(time=spell)].values
-    return ds_masked
-
-
 def get_spells_sigma(
     df: pl.DataFrame, dists: np.ndarray, sigma: int = 1
 ) -> pl.DataFrame:
@@ -294,7 +181,7 @@ def get_spells_sigma(
 def get_persistent_spell_times_from_som(
     labels,
     dists: np.ndarray,
-    sigma: float = 0.,
+    sigma: float = 0.0,
     minlen: int = 4,
     nt_before: int = 0,
     nt_after: int = 0,
@@ -436,89 +323,108 @@ def _get_persistent_spell_times_from_som(
     return out
 
 
+def gb_index(
+    df: pl.DataFrame,
+    group_by: list | tuple,
+    name: str = "index",
+    dtype: pl.DataType = pl.UInt32,
+):
+    index_ = {name: pl.int_ranges(pl.col(name), dtype=dtype)}
+    count = df.group_by(group_by, maintain_order=True).len().rename({"len": name})
+    count = {name: count.with_columns(**index_)[name].explode()}
+    return df.sort(group_by).with_columns(**count)
+
+
+def extend_spells(
+    spells: pl.DataFrame,
+    time_before: datetime.timedelta = datetime.timedelta(0),
+    time_after: datetime.timedelta = datetime.timedelta(0),
+) -> pl.DataFrame:
+    times = spells["time"].unique()
+    dt = times[1] - times[0]
+    index_columns = get_index_columns(spells, ["member", "region", "spell"])
+    exprs = {
+        "len": pl.col("len").first(),
+        "time": pl.datetime_range(
+            pl.col("time").first() - time_before,
+            pl.col("time").last() + time_after,
+            interval=dt,
+            closed="both",
+        ),
+        "relative_time": pl.datetime_range(
+            pl.col("time").first() - time_before,
+            pl.col("time").last() + time_after,
+            interval=dt,
+            closed="both",
+        )
+        - pl.col("time").first(),
+    }
+    spells = (
+        spells.group_by(index_columns, maintain_order=True)
+        .agg(**exprs)
+        .explode(list(exprs)[1:])
+        .with_columns(relative_index=(pl.col("relative_time") / dt).cast(pl.Int32))
+    )
+    return spells
+
+
+def make_daily(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None, data_vars: list[str] | None = None) -> pl.DataFrame:
+    if data_vars is None:
+        data_vars = [col for col in df.columns if col not in ["time", *group_by]]
+    aggs = [pl.mean(data_var) for data_var in data_vars]
+    return df.group_by_dynamic("time", every="1d", group_by=group_by).agg(*aggs)
+
+
 def get_spells(
-    df,
-    varname: str,
+    df: pl.DataFrame,
+    expr: pl.Expr,
+    group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None,
     fill_holes: datetime.timedelta = datetime.timedelta(hours=12),
     minlen: datetime.timedelta = datetime.timedelta(days=3),
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
-    q: float = 0.95,
     daily: bool = False,
 ):
+    if isinstance(group_by, str | pl.Expr):
+        group_by = [group_by]
+    if daily:
+        df = make_daily(df, group_by)
     times = df["time"].unique()
     dt = times[1] - times[0]
-    if varname in ["com_speed", "speed"]:
-        expr = pl.col(varname) < df[varname].quantile(1 - q)
-    else:
-        expr = pl.col(varname) > df[varname].quantile(q)
-    out = do_rle_fill_hole(df, expr, None, fill_holes)
+    out = do_rle_fill_hole(df, expr, group_by, fill_holes)
     minlen = int(minlen / dt)
-    nt_before, nt_after = int(time_before / dt), int(time_after / dt)
     out = out.filter(pl.col("value"), pl.col("len") >= minlen).with_columns(
         range=pl.int_ranges(
-            pl.col("start") - nt_before, pl.col("start") + pl.col("len") + nt_after
+            pl.col("start"),
+            pl.col("start") + pl.col("len"),
+            dtype=pl.UInt32,
         ),
-        relative_index=pl.int_ranges(-nt_before, pl.col("len") + nt_after),
+        relative_index=pl.int_ranges(0, pl.col("len"), dtype=pl.Int32),
     )
-    out = out.with_row_index("spell").explode(["range", "relative_index"])
-    indices = out["range"].to_numpy()
-    mask_valid = (indices < len(times)) & (indices >= 0)
-    indices = indices[mask_valid]
-    out = (
-        out.filter(mask_valid)
-        .with_columns(time=times[indices])
-        .drop("value", "start", "range")
-        .sort("spell", "relative_index")
-        .cast({"time": pl.Datetime("ns")})
-        .with_columns(pl.col("spell").rle_id())
-    )
-    out = out.with_columns(
-        out.group_by("spell", maintain_order=True)
-        .agg(
-            relative_time=pl.col("time")
-            - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0)).first()
-        )
-        .explode("relative_time")
-    )
-    min_rel_index = out["relative_index"].min()
-    max_rel_index = out["relative_index"].max()
-    out = out.filter(
-        pl.col("relative_time") >= pl.duration(days=min_rel_index),
-        pl.col("relative_time") <= pl.duration(days=max_rel_index),
-    )
-
-    if not daily:
-        return out
-
-    ratio = out.filter(pl.col("relative_index") == 1)[
-        0, "relative_time"
-    ] / datetime.timedelta(days=1)
-    out = out.with_columns(pl.col("time").dt.round("1d")).unique(
-        ["spell", "time"], maintain_order=True
-    )
-    out = out.with_columns(
-        out.group_by("spell", maintain_order=True)
-        .agg(
-            pl.col("relative_index").rle_id()
-            + (pl.col("relative_index").first() * ratio).round().cast(pl.Int16)
-        )
-        .explode("relative_index")
-    )
-    out = out.with_columns(relative_time=pl.col("relative_index") * pl.duration(days=1))
+    out = gb_index(out, group_by, "spell").explode("range", "relative_index")
+    df = gb_index(df[*group_by, "time"], group_by)
+    out = out.join(df, left_on=["range", *group_by], right_on=["index", *group_by])
+    out = extend_spells(out, time_before=time_before, time_after=time_after)
+    out = out.sort([*group_by, "spell", "relative_index"])
     return out
 
 
 def get_persistent_jet_spells(
     props_as_df,
     metric: str,
+    q: float = 0.9,
     jet: str | None = None,
     season: list | str | None = None,
     **kwargs,
 ):
     props_as_df = extract_season_from_df(props_as_df, season)
     onejet = props_as_df.filter(pl.col("jet") == jet)
-    return get_spells(onejet, metric, **kwargs)
+    if metric in ["com_speed", "speed"]:
+        expr = pl.col(metric) < onejet[metric].quantile(1 - q)
+    else:
+        expr = pl.col(metric) > onejet[metric].quantile(q)
+    group_by = "member" if ("member" in props_as_df.columns) else None
+    return get_spells(onejet, expr, group_by=group_by, **kwargs)
 
 
 def subset_around_onset(df, around_onset: int | datetime.timedelta | None = None):
@@ -533,11 +439,13 @@ def mask_from_spells_pl(
     spells: pl.DataFrame,
     to_mask: xr.DataArray | xr.Dataset | pl.DataFrame,
     force_pl: bool = False,
-):  # TODO: add time_before
+    time_before: datetime.timedelta = datetime.timedelta(0),
+    time_after: datetime.timedelta = datetime.timedelta(0),
+):
+    spells = extend_spells(spells, time_before=time_before, time_after=time_after)
     unique_times_spells = spells["time"].unique().to_numpy()
     unique_times_to_mask = np.unique(to_mask["time"].to_numpy())
     unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask)
-    spells = spells.filter(pl.col("time").is_in(unique_times))
     if isinstance(to_mask, xr.DataArray | xr.Dataset):
         to_mask = compute(to_mask.sel(time=unique_times), progress=True)
         to_mask = xarray_to_polars(to_mask)
@@ -546,14 +454,17 @@ def mask_from_spells_pl(
         )
     else:
         to_mask = to_mask.cast({"time": pl.Datetime("ns")})
-        to_mask = to_mask.filter(pl.col("time").is_in(unique_times))
         index_columns_xarray = None
     to_mask = to_mask.cast({"time": pl.Datetime("ns")})
     spells = spells.cast(
         {"time": pl.Datetime("ns"), "relative_time": pl.Duration("ns")}
     )
     index_columns = get_index_columns(to_mask, ["member", "time"])
+    if "region" in spells.columns and "region" in to_mask.columns:
+        index_columns.append("region")
     masked = spells.join(to_mask, on=index_columns)
+    if "len_right" in masked:
+        masked.drop_in_place("len_right")
     if not index_columns_xarray or (masked.shape[0] == 0) or force_pl:
         return masked
     index_to_mask = ["spell", "relative_index"]
@@ -587,47 +498,7 @@ def mask_name(mask: xr.DataArray | Literal["land"] | None = None) -> str:
     return mask
 
 
-def mask_from_da(
-    da: xr.DataArray,
-    ds: xr.Dataset,
-    q: float = 0.95,
-    fill_holes: bool = False,
-    minlen: np.timedelta64 = np.timedelta64(3, "D"),
-    time_before: pd.Timedelta = pd.Timedelta(0, "D"),
-    time_after: pd.Timedelta = pd.Timedelta(0, "D"),
-) -> xr.Dataset:
-    spells_ts, spells = spells_from_da(
-        da, q, fill_holes, minlen, time_before, time_after, output_type="list"
-    )
-    return mask_from_spells(ds, spells_ts, spells, da, time_before)
-
-
-def mask_from_spells_multi_region(
-    timeseries: xr.DataArray | xr.Dataset,
-    targets: xr.DataArray,
-    all_spells_ts: list,
-    all_spells: list,
-    time_before: pd.Timedelta = pd.Timedelta(0, "D"),
-):
-    all_masked_ts = []
-    for spells_ts, spells, target in zip(
-        all_spells_ts, all_spells, targets.transpose("region", ...)
-    ):
-        masked_ts = mask_from_spells(
-            timeseries,
-            spells_ts,
-            spells,
-            target,
-            time_before=time_before,
-        )
-        all_masked_ts.append(masked_ts)
-    regions = targets.region.values
-    regions = xr.DataArray(regions, name="region", dims="region")
-    all_masked_ts = xr.concat(all_masked_ts, dim=regions)
-    return all_masked_ts
-
-
-def quantile_exceedence(  # 2 directional based on quantile above or below 0.5
+def quantile_exceedence(
     da: xr.DataArray, q: float = 0.95, dim: str = "time"
 ) -> xr.DataArray:
     if q > 0.5:
@@ -657,582 +528,294 @@ def spatial_pairwise_jaccard(
     return pairwise_distances(to_cluster_flat.T, metric=metric, n_jobs=N_WORKERS)
 
 
-def _add_timescales(predictors, timescales: Sequence, indexer: Mapping):
-    for timescale in timescales[1:]:
-        indexer["timescale"] = timescale
-        predictors.loc[indexer] = (
-            predictors.loc[indexer].rolling(time=timescale, center=False).mean()
+def handle_nan_predictors(
+    predictors: pl.DataFrame,
+    index_columns_no_time: list[str],
+    nan_method: Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"] = "fill",
+) -> pl.DataFrame:
+    data_vars = [
+        col for col in predictors.columns if col not in [*index_columns_no_time, "time"]
+    ]
+    if nan_method == "fill":
+        fill_dict = {
+            data_var: (
+                pl.col(data_var)
+                .fill_nan(DEFAULT_VALUES[data_var])
+                .fill_null(DEFAULT_VALUES[data_var])
+            )
+            for data_var in data_vars
+        }
+        predictors = predictors.with_columns(**fill_dict)
+        return predictors
+    elif nan_method == "fill_mean":
+        fill_dict = {
+            data_var: (
+                pl.col(data_var)
+                .fill_nan(pl.mean(data_var))
+                .fill_null(pl.mean(data_var))
+            )
+            for data_var in data_vars
+        }
+        predictors = predictors.with_columns(**fill_dict)
+        return predictors
+    elif nan_method not in ["linear", "nearest"]:
+        print("Wrong nan method")
+        raise ValueError("Wrong nan method")
+    aggs = {
+        data_var: (
+            pl.col(data_var)
+            .interpolate(nan_method)
+            .fill_nan(DEFAULT_VALUES[data_var])
+            .fill_null(DEFAULT_VALUES[data_var])
         )
-    return predictors
-
-
-def add_timescales_to_predictors(
-    predictors, timescales: Sequence, yearbreak: bool = True
-):
-    # TODO: polarize with .join
-    if 1 not in timescales:
-        timescales.append(1)
-    timescales.sort()
-    predictors = predictors.expand_dims(axis=-1, **dict(timescale=timescales)).copy(
-        deep=True
+        for data_var in data_vars
+    }
+    predictors = predictors.group_by(*index_columns_no_time, maintain_order=True).agg(
+        **aggs
     )
-    if not yearbreak:
-        return _add_timescales(predictors, timescales, {})
-    for year in np.unique(predictors.time.dt.year):
-        year_mask = predictors.time.dt.year == year
-        indexer = {"time": year_mask}
-        predictors.loc[indexer] = _add_timescales(
-            predictors, timescales, indexer.copy()
-        ).loc[indexer]
     return predictors
 
 
-def _add_lags(predictors, lags: Sequence, indexer: Mapping):
-    for lag in lags[1:]:
-        indexer["lag"] = lag
-        predictors.loc[indexer] = predictors.loc[indexer].shift(time=lag)
-    return predictors
+def detrend_pl(
+    df: pl.DataFrame,
+    index_columns_no_time: list[str],
+) -> pl.DataFrame:
+    data_vars = [
+        col for col in df.columns if col not in [*index_columns_no_time, "time"]
+    ]
+    aggs = {"time": pl.col("time")}
+    aggs = aggs | {data_var: pds.detrend(pl.col(data_var), "linear") for data_var in data_vars}
+    df = df.group_by(index_columns_no_time, maintain_order=True).agg(
+        **aggs
+    ).explode(list(aggs))
+    return df
 
 
-def add_lags_to_predictors(predictors, lags: Sequence, yearbreak: bool = True):
-    # TODO: polarize with group_by + shift
-    if 0 not in lags:
-        lags.append(0)
-    lags.sort()
-    predictors = predictors.expand_dims(axis=-1, **dict(lag=lags)).copy(deep=True)
-    if not yearbreak:
-        return _add_lags(predictors, lags, {})
-    for year in np.unique(predictors.time.dt.year):
-        year_mask = predictors.time.dt.year == year
-        indexer = {"time": year_mask}
-        predictors.loc[indexer] = _add_lags(predictors, lags, indexer.copy()).loc[
-            indexer
-        ]
-    return predictors
+def add_timescales_no_gb(
+    df: pl.DataFrame,
+    data_vars: list[str],
+    timescales: list[datetime.timedelta] | None = None,
+) -> pl.DataFrame:
+    out = []
+    for timescale in timescales:
+        aggs = {
+            col: (pl.mean(col).rolling("time", period=timescale))
+            for col in data_vars
+        }
+        out_ = df.with_columns(timescale=timescale, time=pl.col("time"), **aggs)
+        out.append(out_)
+    return pl.concat(out)
+
+
+def add_timescales(
+    df: pl.DataFrame,
+    index_columns: list[str],
+    timescales: list[datetime.timedelta] | None = None,
+) -> pl.DataFrame:
+    data_vars = [
+        col for col in df.columns if col not in [*index_columns, "time"]
+    ]
+    if not index_columns:
+        return add_timescales_no_gb(df, data_vars, timescales)
+    out = []
+    for _, predictors_ in df.group_by(index_columns):
+        predictors_ = add_timescales_no_gb(
+            predictors_, data_vars, timescales
+        )
+        out.append(predictors_)
+    return pl.concat(df)
+
+
+def add_lags(
+    df: pl.DataFrame,
+    index_columns: list[str],
+    lags: list[datetime.timedelta] | None = None,
+) -> pl.DataFrame:
+    unique_times = df["time"].unique()
+    dt = unique_times[1] - unique_times[0]
+    ilags = (np.asarray(lags) / dt).astype(int)
+    jump_times = unique_times.filter((unique_times.diff() > dt).fill_null(True))
+    data_vars = [col for col in df.columns if col not in [*index_columns, "time"]]
+    def _aggs_add_lags(
+        lag: datetime.timedelta,
+        ilag: int,
+    ) -> pl.DataFrame:
+        flagged_times = (
+            jump_times.to_frame()
+            .group_by("time", maintain_order=True)
+            .agg(
+                pl.datetime_range(
+                    pl.col("time"), pl.col("time") + lag, interval=dt, closed="both" if ilag != 0 else "none"
+                ).alias("times")
+            )["times"]
+            .explode()
+        )
+        aggs = {
+            data_var: (
+                pl.when(pl.col("time").is_in(flagged_times)).then(None).otherwise(pl.col(data_var).shift(ilag))   
+            )
+            for data_var in data_vars
+        }
+        return aggs
+    out = []
+    for lag, ilag in zip(lags, ilags):
+        aggs = _aggs_add_lags(lag, ilag)
+        predictors_ = df.with_columns(
+            lag=lag,
+            **aggs,
+        )
+        out.append(predictors_)
+    return pl.concat(out)
 
 
 def prepare_predictors(
-    predictors,
-    subset: list = None,
+    predictors: pl.DataFrame,
+    subset: list | None = None,
     anomalize: bool = False,
-    normalize: bool = False,
+    standardize: bool = False,
     detrend: bool = False,
-    nan_method: Literal["fill"] | Literal["linear"] | Literal["nearest"] = "fill",
+    to_daily: bool = False,
+    nan_method: Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"] = "fill",
     season: str | list | None = None,
-    timescales: Sequence | None = None,
-    lags: Sequence | None = None,
-) -> xr.DataArray:
+    timescales: list[datetime.timedelta] | None = None,
+    lags: list[datetime.timedelta] | None = None,
+) -> pl.DataFrame:
+    index_columns = get_index_columns(predictors, ["member", "time", "jet"])
+    index_columns_no_time = get_index_columns(predictors, ["member", "jet"])
+    index_columns_no_jet = get_index_columns(predictors, ["member", "time"])
     if subset is not None:
-        predictors = predictors[subset]
+        predictors = predictors[[*index_columns, *subset]]
     if anomalize:
-        predictors = compute_anomalies_ds(predictors, "dayofyear", normalize)
-    if nan_method == "fill":
-        for varname in predictors.data_vars:
-            predictors[varname] = predictors[varname].fillna(DEFAULT_VALUES[varname])
-    elif nan_method in ["linear", "nearest"]:
-        predictors = predictors.interpolate_na(
-            "time", method=nan_method, fill_value="extrapolate"
+        predictors = compute_anomalies_pl(
+            predictors,
+            other_index_columns=index_columns_no_time,
+            standardize=standardize,
         )
-    else:
-        print("Wrong nan method")
-        raise ValueError("Wrong nan method")
-
+        if nan_method == "fill":
+            nan_method = "fill_mean"
+    predictors = handle_nan_predictors(predictors, index_columns_no_time, nan_method=nan_method)
     if detrend:
-        for varname in predictors.data_vars:
-            p = predictors[varname].polyfit(dim="time", deg=1)
-            fit = xr.polyval("time", p.polyfit_coefficients)
-            predictors[varname] = predictors[varname] - fit
-
-    predictors = predictors.to_array(dim="varname", name="predictors")
-    yearbreak = np.all(
-        np.isin(np.arange(1, 13), np.unique(predictors.time.dt.month.values))
-    )
-    if timescales is not None and len(timescales) > 1:
-        predictors = add_timescales_to_predictors(predictors, timescales, yearbreak)
-    dims_to_stack = ["varname"]
-    for potential in ["jet", "timescale"]:
-        if potential in predictors.dims:
-            dims_to_stack.append(potential)
-    predictors = predictors.stack(predictor=dims_to_stack)
-    newindex = ["_".join([str(t) for t in ts]) for ts in predictors.predictor.values]
-    dims_to_stack.append("predictor")
-    predictors = predictors.assign_coords(predictor_name=("predictor", newindex))
-    predictors = predictors.set_index(predictor="predictor_name")
-    if lags is not None and len(lags) > 1:
-        predictors = add_lags_to_predictors(predictors, lags, yearbreak)
-    predictors = extract_season(predictors, season)
+        predictors = detrend_pl(predictors, index_columns_no_time)
+    if to_daily:
+        predictors = make_daily(predictors, index_columns_no_time)
+    if "jet" in predictors.columns:
+        predictors = predictors.pivot("jet", index=index_columns_no_jet)
+        index_columns = [col for col in index_columns if col != "jet"]
+        index_columns_no_time = [col for col in index_columns_no_time if col != "jet"]
+    if timescales:
+        predictors = add_timescales(
+            predictors, index_columns_no_time, timescales
+        )
+        predictors = predictors.with_columns(pl.col("timescale").dt.to_string())
+        predictors = predictors.pivot("timescale", index=index_columns)
+    if lags:
+        predictors = add_lags(predictors, index_columns_no_time, lags)
+    predictors = extract_season_from_df(predictors, season=season)
     return predictors
 
 
-def augment_targets(targets, timescales):
-    targets = targets.expand_dims(axis=-1, **dict(timescale=timescales)).copy(deep=True)
-    for timescale in tqdm(timescales[1:]):
-        for year in np.unique(targets.time.dt.year):
-            year_mask = targets.time.dt.year == year
-            indexer = {"time": year_mask, "timscale": timescale}
-            targets.loc[indexer] = (
-                targets.loc[indexer]
-                .rolling(time=timescale, center=False)
-                .mean()
-                .shift(time=-timescale + 1)
-            )
-    return targets
-
-
-def create_all_triplets(
-    predictors: xr.DataArray, targets: xr.DataArray, lags: Sequence
-):
-    if 0 not in lags:
-        lags.append(0)
-    lags.sort()
-    triplets = []
-
-    for predictor in predictors.T:
-        for lag in lags:
-            triplets.append(((predictor.predictor.item(), lag), predictor, targets))
-    return triplets
-
-
-def stacked_lstsq(
-    L, b, rcond=1e-10
-):  # https://stackoverflow.com/questions/30442377/how-to-solve-many-overdetermined-systems-of-linear-equations-using-vectorized-co
-    """
-    Solve L x = b, via SVD least squares cutting of small singular values
-    L is an array of shape (..., M, N) and b of shape (..., M).
-    Returns x of shape (..., N)
-    """
-    u, s, v = np.linalg.svd(L, full_matrices=False)
-    s_max = s.max(axis=-1, keepdims=True)
-    s_min = rcond * s_max
-    inv_s = np.zeros_like(s)
-    inv_s[s >= s_min] = 1 / s[s >= s_min]
-    x = np.einsum(
-        "...ji,...j->...i", v, inv_s * np.einsum("...ji,...j->...i", u, b.conj())
-    )
-    return np.conj(x, x)
-
-
-def compute_r(triplet, season: str | list | None = "JJA") -> np.ndarray:
-    (predictor, lag), predictor_, target_ = triplet
-    if "timescale" in target_.dims:
-        timescale = target_.timescale.item()
-    else:
-        timescale = 1
-    shape = target_.shape
-    predictors, targets = [], []
-    for year in YEARS:
-        predictor = extract_season(
-            predictor_.sel(time=predictor_.time.dt.year == year), season
-        ).values
-        predictor_resid = np.linalg.lstsq(
-            predictor[timescale:, None], predictor[:-timescale], rcond=None
-        )[0][0]
-        predictor[:-timescale] = (
-            predictor[:-timescale] - predictor[timescale:] * predictor_resid
+def regress_against_time(targets: pl.DataFrame) -> pl.DataFrame:
+    index_columns = get_index_columns(targets, ["member", "region", "time"])
+    index_columns_notime = get_index_columns(targets, ["member", "region"])
+    targets = targets[[*index_columns, "len"]]
+    targets = targets.with_columns(pl.col("len") > 0)
+    base_pred = []
+    for _, df in targets.group_by(index_columns_notime, maintain_order=True):
+        time_ = np.arange(len(df)).reshape(-1, 1)
+        pred = (
+            LogisticRegression(solver="liblinear")
+            .fit(time_, df["len"].cast(bool))
+            .predict_proba(time_)
         )
-
-        target = extract_season(
-            target_.sel(time=target_.time.dt.year == year), season
-        ).values
-        target = target.reshape(target.shape[0], -1)
-        target_resid = stacked_lstsq(target[timescale:, None], target[:-timescale])
-        target[:-timescale] = target[:-timescale] - target[timescale:] * target_resid
-        target = target.reshape(target.shape[0], *shape[-2:])
-
-        if lag > 0:
-            predictor = predictor[lag:]
-            target = target[:-lag]
-
-        predictors.append(predictor)
-        targets.append(target)
-    predictor = np.concatenate(predictors, axis=0)
-    target = np.concatenate(targets, axis=0)
-    r = np.sum(predictor[:, None, None] * target, axis=0) / np.sqrt(
-        np.sum(predictor[:, None, None] ** 2, axis=0) * np.sum(target**2, axis=0)
-    )
-    return r
-
-
-def compute_all_responses(
-    predictors: xr.DataArray, targets: xr.DataArray, lags: Sequence | None = None
-) -> xr.DataArray:
-    if "lag" in predictors.dims:
-        if lags is None:
-            lags = predictors.lags.values
-        predictors = predictors[dict(lag=0)].reset_coords("lag", drop=True)
-    if lags is None:
-        lags = [0]
-    coords = {
-        "predictor": predictors.predictor.values,
-        "lag": lags,
-        "lat": targets.lat.values,
-        "lon": targets.lon.values,
-    }
-    shape = [len(c) for c in coords.values()]
-    corr_da = xr.DataArray(np.zeros(shape), coords=coords)
-    triplets = create_all_triplets(predictors, targets, lags)
-    ctx = get_context("spawn")
-    with ctx.Pool(processes=N_WORKERS) as pool:
-        all_r = list(
-            tqdm(
-                pool.imap(compute_r, triplets, chunksize=1),
-                total=len(triplets),
-            )
-        )
-    # all_r = list(map(compute_r, triplets))
-    all_r = np.asarray(all_r)
-    corr_da[:] = all_r.reshape(shape)
-    return corr_da
-
-
-def compute_all_scores(y_test, y_pred, y_pred_prob) -> Mapping:
-    scores = {}
-    for scorename, scorefunc in ALL_SCORES.items():
-        if scorename in ["roc_auc_score", "brier_score_loss"]:
-            scores[scorename] = scorefunc(y_test, y_pred_prob)
-        else:
-            scores[scorename] = scorefunc(y_test, y_pred)
-    return scores
-
-
-def regress_against_time(targets: xr.DataArray) -> xr.DataArray:
-    targets = targets.transpose("time", ...)
-    X_base = (
-        (targets.time.values - targets.time.values[0])
-        .astype("timedelta64[h]")
-        .astype(int)[:, None]
-    )
-
-    extra_dims = {dim: targets[dim].values for dim in targets.dims if dim != "time"}
-
-    base_pred = targets.copy(data=np.zeros(targets.shape, dtype=np.float32))
-    creation_template = (list(extra_dims), np.zeros(*targets.shape[1:]))
-    to_assign = {score_name: creation_template for score_name in ALL_SCORES}
-    base_pred = base_pred.assign_coords(to_assign)
-    for vals in product(*list(extra_dims.values())):
-        indexer = {dim: val for dim, val in zip(extra_dims, vals)}
-        if not targets.loc[indexer].any("time"):
-            continue
-        y = targets.loc[indexer].values
-        X_train, X_test, y_train, y_test = train_test_split(X_base, y, test_size=0.2)
-        lr = LogisticRegression(class_weight=None).fit(X_train, y_train)
-        y_pred_prob = lr.predict_proba(X_test)[:, 1]
-        y_pred = lr.predict(X_test)
-        base_pred.loc[indexer] = lr.predict_proba(X_base)[:, 1]
-        scores = compute_all_scores(y_test, y_pred, y_pred_prob)
-        for scorename, score in scores.items():
-            base_pred[scorename].loc[indexer] = score
-    return base_pred
+        df = df.with_columns(pred=pred[:, -1])
+        base_pred.append(df)
+    return pl.concat(base_pred)
 
 
 def predict_all(
-    predictors: xr.DataArray,
-    orig_targets: xr.DataArray,
-    base_pred: xr.DataArray | None = None,
-    type_: Literal["rf", "lr", "xgb"] = "rf",
+    predictors: pl.DataFrame,
+    orig_targets: pl.DataFrame,
+    base_pred: pl.DataFrame | None = None,
+    model_type: Literal["rf", "lr", "xgb"] = "rf",
     compute_shap: bool = False,
     n_folds: int = 1,
-    save_path: Path | None = None,
     **kwargs,
 ):
+    """
+    One model per region, lag and fold. One model for all times and members if applicable
+
+    Parameters
+    ----------
+    predictors : pl.DataFrame
+        _description_
+    orig_targets : pl.DataFrame
+        _description_
+    base_pred : pl.DataFrame | None, optional
+        _description_, by default None
+    model_type : Literal[&quot;rf&quot;, &quot;lr&quot;, &quot;xgb&quot;], optional
+        _description_, by default "rf"
+    compute_shap : bool, optional
+        _description_, by default False
+    n_folds : int, optional
+        _description_, by default 1
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
+    index_columns_targets = get_index_columns(orig_targets, ["region", "member", "time"])
+    index_columns_predictors = get_index_columns(predictors, ["member", "time", "lag"])
+    predictor_names = [col for col in predictors.columns if col not in index_columns_predictors]
     # Handle base_pred
-    if type_ == "lr" and base_pred is not None:
-        print(f"Base pred is incompatible with {type_}, ignoring")
+    if model_type == "lr" and base_pred is not None:
+        print(f"Base pred is incompatible with {model_type}, ignoring")
         base_pred = None
-    orig_targets = orig_targets.transpose("time", ...)
     if base_pred is not None:
-        base_pred = base_pred.transpose("time", ...)
-        targets = orig_targets - base_pred
+        targets = orig_targets[*index_columns_targets, "len"].join(base_pred.drop("len"), on=index_columns_targets)
+        targets = targets.with_columns(target=pl.col("len").cast(pl.Float32) - pl.col("pred").cast(pl.Float32)).drop("pred", "len")
     else:
-        targets = orig_targets
-        base_pred = orig_targets.copy(data=np.zeros(orig_targets.shape))
-    # Prepare full_pred and iterator
-    full_pred = targets.copy(data=np.zeros(targets.shape, dtype=np.float32))
-    extra_dims = {dim: targets[dim].values for dim in targets.dims if dim != "time"}
-    if "lag" in predictors.dims:
-        lags = predictors.lag.values
-        full_pred = full_pred.expand_dims(axis=-1, **dict(lag=lags))
-        extra_dims["lag"] = lags
-    if n_folds > 1:
-        full_pred = full_pred.expand_dims(axis=-1, **dict(fold=np.arange(n_folds)))
-        extra_dims["fold"] = np.arange(n_folds)
-    # Create score coordinates
-    if len(extra_dims) == 0:
-        creation_template = 0.0
-    else:
-        creation_template = (list(extra_dims), np.zeros(full_pred.shape[1:]))
-    to_assign = {score_name: creation_template for score_name in ALL_SCORES}
-    full_pred = full_pred.assign_coords(to_assign).copy(deep=True)
-    # Prepare feature importance da
-    if type_ == "xgb" and "importance_type" not in kwargs:
+        targets = orig_targets[[*index_columns_targets, "len"]].rename({"len": "target"}).cast({"target": pl.Boolean})
+    join_columns = np.intersect1d(index_columns_targets, index_columns_predictors)
+    targets = targets.join(predictors.cast({"time": pl.Datetime("us")}), on=join_columns)
+    group_by_columns = get_index_columns(targets, ["region", "lag"])
+    full_pred = []
+    scores = []
+    feature_importances = []
+    
+    if model_type == "xgb" and "importance_type" not in kwargs:
         kwargs["importance_type"] = "cover"
     if "importance_type" in kwargs:
         importance_type = kwargs["importance_type"]
-    elif type_ == "rf":
+    elif model_type == "rf":
         importance_type = "impurity"
     else:
         importance_type = "coefs"
-    importance_coords = {
-        "type": [
-            "correlation",
-            importance_type,
-            "permutation",
-            "mean_shap",
-            "mean_abs_shap",
-        ],
-        "predictor": predictors.predictor.values,
-    } | extra_dims
-
-    feature_importances = xr.DataArray(
-        np.zeros([len(c) for c in importance_coords.values()]), coords=importance_coords
-    )
-    # Prepare loop
-    raw_shap = {}
-    len_ = np.prod([len(co) for co in extra_dims.values()])
-    if len_ > 2:
-        iter_ = tqdm(product(*list(extra_dims.values())), total=len_)
-    else:
-        iter_ = product(*list(extra_dims.values()))
-    for vals in iter_:
-        indexer = {dim: val for dim, val in zip(extra_dims, vals)}
-        indexer_str = ["=".join((dim, str(val))) for dim, val in indexer.items()]
-        indexer_str = "_".join(indexer_str)
-        # Check if we actually need to proceed, load ofile otherwise
-        if save_path is not None:
-            full_pred_fn = save_path.joinpath(f"pred_{indexer_str}.nc")
-            feature_importance_fn = save_path.joinpath(f"importance_{indexer_str}.nc")
-            raw_shap_fn = save_path.joinpath(f"shap_{indexer_str}.pkl")
-            if (
-                full_pred_fn.is_file()
-                and feature_importance_fn.is_file()
-                and raw_shap_fn.is_file()
-            ):
-                this_full_pred = open_dataarray(full_pred_fn)
-                full_pred.loc[indexer] = this_full_pred
-                for score in ALL_SCORES:
-                    full_pred[score].loc[indexer] = this_full_pred[score].item()
-                feature_importances.loc[indexer] = open_dataarray(feature_importance_fn)
-                raw_shap[indexer_str] = load_pickle(raw_shap_fn)
-                continue
-        # Sub indexers from main, main for output, one for targets, one for predictors
-        indexer_targets = indexer.copy()
-        try:
-            lag = indexer_targets.pop("lag")
-            indexer_pred = {"lag": lag}
-            predictors_ = predictors.loc[indexer_pred]
-        except KeyError:
-            predictors_ = predictors 
-        # Turn to pandas so shap keeps predictor names and makes easier to understand plots
-        predictors_ = predictors_.transpose("time", ...)
-        X = predictors_.drop_vars(
-            ["varname", "jet", "timescale"], errors="ignore"
-        ).to_pandas()
-        if not targets.loc[indexer_targets].any("time"):
-            continue
-        y = targets.loc[indexer_targets].to_pandas()
-        y_orig = orig_targets.loc[indexer_targets].to_pandas()
-        y_base = base_pred.loc[indexer_targets].to_pandas()
-        X_train, X_test, y_train, y_test, _, y_orig_test, _, y_base_test = (
-            train_test_split(X, y, y_orig, y_base, test_size=0.2)
-        )
-        # Cannot handle the two cases the same way. Do prediction, prepare test and full outputs
-        if base_pred.mean() == 0:
-            if "class_weight" not in kwargs and type_ == "lr":
-                kwargs["class_weight"] = "balanced"
-            if type_ == "lr":
-                model = LogisticRegression(n_jobs=1, **kwargs).fit(X_train, y_train)
-            elif type_ == "rf":
-                model = RandomForestClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
-            elif type_ == "xgb":
-                from xgboost import XGBClassifier
-
-                model = XGBClassifier(n_jobs=1, **kwargs).fit(X_train, y_train)
-            y_pred = model.predict(X_test)
-            y_pred_prob = model.predict_proba(X_test)[:, 1]
-            full_pred.loc[indexer] = model.predict_proba(X)[:, 1]
-        else:
-            if type_ == "rf":
-                model = RandomForestRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
-            elif type_ == "xgb":
-                from xgboost import XGBRegressor
-
-                model = XGBRegressor(n_jobs=1, **kwargs).fit(X_train, y_train)
-            y_pred_prob = model.predict(X_test) + y_base_test
-            y_pred_prob = np.clip(y_pred_prob, 0, 1)
-            y_pred = y_pred_prob > 0.5
-            full_pred.loc[indexer] = model.predict(X) + y_base
-        # Compute scores
-        scores = compute_all_scores(y_orig_test, y_pred, y_pred_prob)
-        for scorename, score in scores.items():
-            full_pred[scorename].loc[indexer] = score
-        # Predictor importances
-        # 1. Correlation
-        X = X.values
-        y = y.values
-        corr = (
-            np.mean((X - X.mean(axis=0)[None, :]) * (y - y.mean())[:, None], axis=0)
-            / np.std(X, axis=0)[None, :]
-            / np.std(y)
-        )
-        feature_importances.loc[dict(type="correlation", **indexer)] = corr.squeeze()
-        # 2. Impurity (rf) or regression coefficients (lr; should be exponentiated)
-        if type_ in ["rf", "xgb"]:
-            imp = model.feature_importances_
-        elif type_ == "lr":
-            imp = model.coef_.ravel()
-        feature_importances.loc[dict(type=importance_type, **indexer)] = imp
-        # 3. Permutation importance
-        r = permutation_importance(
-            model, X_test, y_test, n_repeats=30, random_state=0, n_jobs=1
-        )
-        feature_importances.loc[dict(type="permutation", **indexer)] = r[
-            "importances_mean"
-        ]
-        # 3. Potentially shap (mean and mean_abs)
-        if compute_shap:
-            if type_ == "xgb":
-                # to solve UnicodeDecodeError
-                mybooster = model.get_booster()
-                model_bytearray = mybooster.save_raw()[4:]
-
-                def myfun(self=None):
-                    return model_bytearray
-
-                mybooster.save_raw = myfun
-            try:
-                from fasttreeshap import TreeExplainer, Explainer
-            except ModuleNotFoundError:
-                from shap import TreeExplainer, Explainer
-            shap_explainer = TreeExplainer if type_ == "rf" else Explainer
-            shap_ = shap_explainer(model)(X, y, check_additivity=False)
-            raw_shap[indexer_str] = shap_
-            shap_values = shap_.values
-            feature_importances.loc[dict(type="mean_shap", **indexer)] = (
-                shap_values.mean(axis=0)
-            )
-            feature_importances.loc[dict(type="mean_abs_shap", **indexer)] = np.abs(
-                shap_values
-            ).mean(axis=0)
-        # Save because this is very slow, ~2 minutes per iteration without shap, 4+ with
-        if save_path is not None:
-            to_netcdf(full_pred.loc[indexer], full_pred_fn)
-            to_netcdf(feature_importances.loc[indexer], feature_importance_fn)
-            save_pickle(raw_shap[indexer_str], raw_shap_fn)
-    return full_pred, feature_importances, raw_shap
-
-
-def multi_combination_prediction(
-    predictors: xr.DataArray,
-    targets: xr.DataArray,
-    base_pred: xr.DataArray | None = None,
-    type_: Literal["rf", "lr"] = "rf",
-    max_n_predictors: int = 10,
-    save_path: Path | None = None,
-    **kwargs,
-):
-    predictor_names = predictors.predictor.values
-    extra_dims = {dim: targets[dim].values for dim in targets.dims if dim != "time"}
-    if "lag" in predictors.dims:
-        lags = predictors.lag.values
-        extra_dims["lag"] = lags
-    if save_path is None:
-        identifier = [f"{len(co)}{dim}" for dim, co in extra_dims.items()]
-        identifier = "_".join(identifier)
-        save_path = Path(RESULTS, "multi_prediction", type_, identifier)
-        save_path.mkdir(mode=0o777, parents=True, exist_ok=True)
-    flat_len = np.prod([len(co) for co in extra_dims.values()])
-    best_combinations = {}
-    for vals in tqdm(product(*list(extra_dims.values())), total=flat_len):
-        indexer = {dim: val for dim, val in zip(extra_dims, vals)}
-        indexer_str = ["=".join((dim, str(val))) for dim, val in indexer.items()]
-        indexer_str = "_".join(indexer_str)
-        thispath = save_path.joinpath(indexer_str)
-        thispath.mkdir(mode=0o777, parents=True, exist_ok=True)
-        targets_ = targets.loc[indexer].squeeze()
-        if base_pred is None:
-            base_pred_ = None
-        else:
-            base_pred_ = base_pred.loc[indexer].squeeze()
-        try:
-            lag = indexer.pop("lag")
-            indexer_pred = {"lag": lag}
-            predictors_ = predictors.loc[indexer_pred]
-        except KeyError:
-            predictors_ = predictors
-        combinations = [
-            [
-                predictor,
-            ]
-            for predictor in predictor_names
-        ]
-        best_combinations[indexer_str] = {}
-        for n_predictors in trange(1, max_n_predictors + 1, leave=False):
-            full_pred_fn = thispath.joinpath(f"full_pred_{n_predictors}")
-            feature_importances_fn = thispath.joinpath(
-                f"feature_importances_{n_predictors}"
-            )
-            if full_pred_fn.is_file() and feature_importances_fn.is_file():
-                full_pred = open_dataarray(full_pred_fn)
-                feature_importances = open_dataarray(feature_importances_fn)
-                this_combination = feature_importances.predictor.values
-                best_combinations[indexer_str][n_predictors] = (
-                    full_pred,
-                    feature_importances,
-                    this_combination,
-                )
-                combinations = [
-                    [*this_combination, predictor]
-                    for predictor in predictor_names
-                    if predictor not in this_combination
-                ]
-                continue
-            full_pred_list = []
-            feature_importance_list = []
-            for predictor_list in combinations:
-                full_pred, feature_importances, _ = predict_all(
-                    predictors_.sel(predictor=predictor_list),
-                    targets_,
-                    base_pred_,
-                    type_,
-                    compute_shap=True,
-                    **kwargs,
-                )
-                full_pred_list.append(full_pred)
-                feature_importance_list.append(feature_importances)
-            imax = np.argmax(
-                [full_pred.roc_auc_score.item() for full_pred in full_pred_list]
-            )
-
-            best_combinations[indexer_str][n_predictors] = (
-                full_pred_list[imax],
-                feature_importance_list[imax],
-                combinations[imax],
-            )
-            to_netcdf(full_pred_list[imax], full_pred_fn)
-            to_netcdf(feature_importance_list[imax], feature_importances_fn)
-            combinations = [
-                [*combinations[imax], predictor]
-                for predictor in predictor_names
-                if predictor not in combinations[imax]
-            ]
-    return best_combinations
-
-
-def get_best_combination(
-    best_combinations: Mapping,
-    according_to: str,
-):
-    best_combination = {}
-    for identifier, best_combinations_ in best_combinations.items():
-        df = []
-        for n in best_combinations_:
-            bcs = best_combinations_[n][0]
-            df.append({scorekey: bcs[scorekey].item() for scorekey in ALL_SCORES})
-        df = pd.DataFrame(df)
-        imax = 1 + np.argmax(df[according_to])
-        best_combination[identifier] = best_combinations[identifier][imax]
-    return best_combination
-
+    feature_importance_types = [
+        "correlation",
+        importance_type,
+        "permutation",
+        "mean_shap",
+        "mean_abs_shap",
+    ]
+    
+    for indexer, df in targets.group_by(group_by_columns, maintain_order=True):
+        x = targets["target"]
+        y = targets[predictor_names]
+        indexer_dict = dict(zip(group_by_columns, indexer))
+        for fold in n_folds:
+            indexer_dict_with_fold = indexer_dict | {"fold": fold}
+            
+            pred = 0
+            
+            this_pred = df.drop(["target", *predictor_names]).with_columns(pred=pred, fold=fold)
+            full_pred.append(this_pred)
+    full_pred = pl.concat(full_pred)
+    scores = pl.from_dicts(scores)
+    feature_importances = pl.concat(feature_importances)
+    return full_pred, scores, feature_importances
+    
+    
 
 class ExtremeExperiment(object):
     def __init__(
@@ -1330,13 +913,13 @@ class ExtremeExperiment(object):
             simple=simple,
             **kwargs,
         )
+        sample_dims = list(self.data_handler.sample_dims)
+        sample_dims_no_time = [dim for dim in sample_dims if dim != "time"]
         thispath = self.pred_path
         thispath = find_spot(thispath, metadata)
         ofiles = [
-            "targets.nc",
-            "length_targets.nc",
-            "all_spells_ts.pkl",
-            "all_spells.pkl",
+            "targets.parquet",
+            "spells.parquet",
         ]
         ofiles = [thispath.joinpath(ofile) for ofile in ofiles]
         if all([ofile.is_file() for ofile in ofiles]):
@@ -1344,68 +927,52 @@ class ExtremeExperiment(object):
                 return thispath
             to_ret = []
             for ofile in ofiles:
-                if ofile.suffix == ".nc":
-                    to_ret.append(open_dataarray(ofile))
-                elif ofile.suffix == ".pkl":
-                    to_ret.append(load_pickle(ofile))
+                to_ret.append(pl.read_parquet(ofile))
             return tuple(to_ret)
-        clusters_da = self.spatial_clusters_as_da(n_clu)
-
-        targets = xr.DataArray(
-            np.zeros((len(self.da.time), n_clu)),
-            coords={"time": self.da.time.values, "region": np.arange(n_clu)},
+        clusters = self.spatial_clusters_as_da(n_clu)
+        clusters = (
+            xarray_to_polars(clusters)
+            .drop_nulls("lsm")
+            .rename({"lsm": "region"})
+            .cast({"region": pl.UInt16})
         )
-        for i_clu in trange(n_clu):
-            targets.loc[:, i_clu] = compute(
-                self.da.where(clusters_da == i_clu).mean(["lon", "lat"])
-            )
-        targets = extract_season(targets, self.season)
-        length_targets = targets.copy(data=np.zeros(targets.shape, dtype=int))
-        all_spells = []
-        all_spells_ts = []
-        for i_clu in trange(n_clu):
-            targets_ = targets[:, i_clu]
-            if simple:
-                da_spells = quantile_exceedence(targets_, q)
-            else:
-                spells_ts, spells, da_spells = spells_from_da(
-                    targets_,
-                    q,
-                    output_type="both",
-                    **kwargs,
-                )
-                all_spells_ts.append(spells_ts)
-                all_spells.append(spells)
-            length_targets[:, i_clu] = da_spells
-        to_ret = targets, length_targets, all_spells_ts, all_spells
+        df = xarray_to_polars(self.da)
+
+        targets = (
+            df.join(clusters, on=["lon", "lat"])
+            .group_by([*sample_dims, "region"], maintain_order=True)
+            .agg(pl.col(self.da.name).mean())
+        )
+        targets = targets.cast({"time": pl.Datetime("us")})
+
+        targets = extract_season_from_df(targets, self.season)
+        expr = pl.col(self.da.name)
+        expr = expr > expr.quantile(q)
+        spells = get_spells(targets, expr, group_by=[*sample_dims_no_time, "region"])
+        targets = targets.join(
+            spells[[*sample_dims, "region", "len"]],
+            on=[*sample_dims, "region"],
+            how="left",
+        ).fill_null(0)
+        targets = targets.rename({self.da.name: "value"})
+        to_ret = targets, spells
         for to_save, ofile in zip(to_ret, ofiles):
-            if ofile.suffix == ".nc":
-                to_netcdf(to_save, ofile)
-            elif ofile.suffix == ".pkl":
-                save_pickle(to_save, ofile)
+            to_save.write_parquet(ofile)
         if return_folder:
             return thispath
         return to_ret
 
     def mask_timeseries(
         self,
-        timeseries: xr.DataArray | xr.Dataset,
+        timeseries: xr.DataArray | xr.Dataset | pl.DataFrame,
         n_clu: int,
         i_clu: int | Sequence[int] | Literal["all"] = "all",
         q: float | None = None,
         simple: bool = False,
         **kwargs,
     ):
-        targets, _, all_spells_ts, all_spells = self.create_targets(
-            n_clu, i_clu, q, simple, **kwargs
-        )
-        if "time_before" in kwargs:
-            new_kwargs = {"time_before": kwargs["time_before"]}
-        else:
-            new_kwargs = {}
-        return mask_from_spells_multi_region(
-            timeseries, targets, all_spells_ts, all_spells, **new_kwargs
-        )
+        _, spells = self.create_targets(n_clu, i_clu, q, simple, **kwargs)
+        return mask_from_spells_pl(spells, timeseries)
 
     def full_prediction(
         self,
