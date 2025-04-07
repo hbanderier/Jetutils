@@ -1,4 +1,5 @@
 # coding: utf-8
+from statistics import LinearRegression
 from typing import Tuple, Mapping, Literal, Callable, Sequence
 from functools import partial
 from itertools import product
@@ -28,6 +29,17 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+try:
+    from xgboost import XGBClassifier, XGBRegressor
+    xgboost_avail = True
+except ModuleNotFoundError:
+    xgboost_avail = False
+    
+try:
+    from fasttreeshap import TreeExplainer, Explainer
+except ModuleNotFoundError:
+    from shap import TreeExplainer, Explainer
+    
 
 from .definitions import (
     DEFAULT_VALUES,
@@ -38,7 +50,6 @@ from .definitions import (
     do_rle_fill_hole,
     load_pickle,
     save_pickle,
-    get_runs_fill_holes,
     xarray_to_polars,
     polars_to_xarray,
     get_index_columns,
@@ -50,7 +61,6 @@ from .data import (
     get_land_mask,
     extract_season,
     DataHandler,
-    compute_anomalies_ds,
     open_dataarray,
     to_netcdf,
 )
@@ -140,7 +150,6 @@ def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
         y_true, y_proba, sample_weight=sample_weight, pos_label=pos_label
     )
 
-
 ALL_SCORES = {
     func.__name__.split("loss")[0]: func
     for func in (
@@ -150,6 +159,17 @@ ALL_SCORES = {
         brier_score,
     )
 }
+
+ALL_MODELS = {
+    "lr": [LogisticRegression, LinearRegression],
+    "rf": [RandomForestClassifier, RandomForestRegressor],
+}
+
+if xgboost_avail:
+    ALL_MODELS["xgb"] = [XGBClassifier, XGBRegressor]
+    type AnyModel = LogisticRegression | LinearRegression | RandomForestClassifier | RandomForestRegressor | XGBClassifier | XGBRegressor
+else:
+    type AnyModel = LogisticRegression | LinearRegression | RandomForestClassifier | RandomForestRegressor
 
 
 def get_spells_sigma(
@@ -732,6 +752,57 @@ def regress_against_time(targets: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(base_pred)
 
 
+def compute_all_scores(y_test, y_pred, y_pred_prob) -> Mapping:
+    scores = {}
+    for scorename, scorefunc in ALL_SCORES.items():
+        if scorename in ["roc_auc_score", "brier_score_loss"]:
+            scores[scorename] = scorefunc(y_test, y_pred_prob)
+        else:
+            scores[scorename] = scorefunc(y_test, y_pred)
+    return scores
+    
+    
+def compute_all_importances(model: AnyModel, model_type: str, X: pl.DataFrame, y: pl.DataFrame, compute_shap: bool = False):
+    predictor_names = X.columns
+    names = []
+    corr = pl.concat([X, y.to_frame()], how="horizontal").select(*[pl.corr(predictor, "target") for predictor in predictor_names])
+    corr = corr.to_dicts()[0]
+    names.append("correlation")
+    
+    if model_type in ["rf", "xgb"]:
+        model_imp = model.feature_importances_
+        names.append("impurity")
+    elif model_type == "lr":
+        model_imp = model.coef_.ravel()
+        names.append("coef_")
+    model_imp = dict(zip(predictor_names, model_imp))
+    
+    perm_imp = permutation_importance(
+        model, X.to_pandas(), y, n_repeats=30, random_state=0, n_jobs=1
+    )["importances_mean"]
+    perm_imp = dict(zip(predictor_names, perm_imp))
+    names.append("permutation")
+    
+    if not compute_shap:
+        to_ret = pl.from_dicts([corr, model_imp, perm_imp])
+        to_ret = to_ret.with_columns(importance_type=names)
+        return to_ret
+    
+    shap_explainer = TreeExplainer(model) if model_type == "rf" else Explainer(model)
+    shap_values = shap_explainer(X.to_numpy(), y, check_additivity=False).values
+    
+    mean_shap = shap_values.mean(axis=0)
+    mean_shap = dict(zip(predictor_names, mean_shap))
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    mean_abs_shap = dict(zip(predictor_names, mean_abs_shap))
+    names.extend(("mean_shap", "mean_abs_shap"))
+    
+    to_ret = pl.from_dicts([corr, model_imp, perm_imp, mean_shap, mean_abs_shap])
+    to_ret = to_ret.with_columns(importance_type=pl.Series("importance_type", names))
+
+    return to_ret
+
+
 def predict_all(
     predictors: pl.DataFrame,
     orig_targets: pl.DataFrame,
@@ -773,43 +844,48 @@ def predict_all(
         base_pred = None
     if base_pred is not None:
         targets = orig_targets[*index_columns_targets, "len"].join(base_pred.drop("len"), on=index_columns_targets)
-        targets = targets.with_columns(target=pl.col("len").cast(pl.Float32) - pl.col("pred").cast(pl.Float32)).drop("pred", "len")
+        targets = targets.with_columns(target=pl.col("len").cast(pl.Float32) - pl.col("pred").cast(pl.Float32))
     else:
-        targets = orig_targets[[*index_columns_targets, "len"]].rename({"len": "target"}).cast({"target": pl.Boolean})
+        targets = orig_targets[[*index_columns_targets, "len"]].with_columns(target=pl.col("len").cast(pl.Boolean), pred=0.)
     join_columns = np.intersect1d(index_columns_targets, index_columns_predictors)
     targets = targets.join(predictors.cast({"time": pl.Datetime("us")}), on=join_columns)
     group_by_columns = get_index_columns(targets, ["region", "lag"])
+    Model_class = ALL_MODELS[model_type][int(base_pred is not None)]
+    
     full_pred = []
     scores = []
     feature_importances = []
-    
-    if model_type == "xgb" and "importance_type" not in kwargs:
-        kwargs["importance_type"] = "cover"
-    if "importance_type" in kwargs:
-        importance_type = kwargs["importance_type"]
-    elif model_type == "rf":
-        importance_type = "impurity"
-    else:
-        importance_type = "coefs"
-    feature_importance_types = [
-        "correlation",
-        importance_type,
-        "permutation",
-        "mean_shap",
-        "mean_abs_shap",
-    ]
-    
     for indexer, df in targets.group_by(group_by_columns, maintain_order=True):
-        x = targets["target"]
-        y = targets[predictor_names]
+        X = df[predictor_names]
+        y = df["target"]
+        y_base = df["pred"]
+        y_orig = df["len"] > 0
         indexer_dict = dict(zip(group_by_columns, indexer))
-        for fold in n_folds:
+        for fold in range(n_folds):
             indexer_dict_with_fold = indexer_dict | {"fold": fold}
-            
-            pred = 0
-            
-            this_pred = df.drop(["target", *predictor_names]).with_columns(pred=pred, fold=fold)
+            X_train, X_test, y_train, y_test, _, y_orig_test, _, y_base_test = (
+                train_test_split(X, y, y_orig, y_base, test_size=0.2)
+            )
+            model = Model_class(n_jobs=1, **kwargs).fit(X_train, y_train)
+            if base_pred is None:
+                y_pred_test = model.predict(X_test)
+                y_pred_prob_test = model.predict_proba(X_test)[:, 1]
+                pred = model.predict_proba(X)[:, 1]
+            else:
+                y_pred_prob_test = model.predict(X_test) + y_base_test
+                y_pred_prob_test = np.clip(y_pred_prob_test, 0, 1)
+                y_pred_test = y_pred_prob_test > 0.5
+                pred = model.predict(X) + y_base
+            this_pred = df.drop(["target", "len", "pred", *predictor_names]).with_columns(pred=pred, fold=fold)
             full_pred.append(this_pred)
+            
+            these_scores = compute_all_scores(y_orig_test, y_pred_test, y_pred_prob_test)
+            scores.append(indexer_dict_with_fold | these_scores)
+            
+            these_importances = compute_all_importances(model, model_type, X, y, compute_shap)
+            these_importances = these_importances.with_columns(**indexer_dict_with_fold)
+            feature_importances.append(these_importances)
+    
     full_pred = pl.concat(full_pred)
     scores = pl.from_dicts(scores)
     feature_importances = pl.concat(feature_importances)
@@ -1024,121 +1100,121 @@ class ExtremeExperiment(object):
             **prediction_kwargs,
         )
 
-    def multi_combination_prediction(
-        self,
-        predictors: xr.DataArray,
-        create_target_kwargs: Mapping,
-        type_: Literal["rf", "lr"] = "rf",
-        do_base_pred: bool = True,
-        max_n_predictors: int = 10,
-        prediction_kwargs: Mapping | None = None,
-        winner_according_to: str = "roc_auc_score",
-    ):
-        """
-        Wrappy Wrappy wrap
-        """
-        targets_folder = self.create_targets(**create_target_kwargs, return_folder=True)
-        targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
-        if do_base_pred:
-            path_to_base_pred = targets_folder.joinpath("base_pred.nc")
-            if path_to_base_pred.is_file():
-                base_pred = open_dataarray(path_to_base_pred)
-            else:
-                base_pred = regress_against_time(targets)
-                to_netcdf(base_pred, path_to_base_pred)
-        else:
-            base_pred = None
-            path_to_base_pred = None
-        predictor_names = predictors.predictor.values
-        metadata = {
-            "predictors": predictor_names.tolist(),
-            "type": type_,
-            "base_pred": path_to_base_pred,  # or None
-            "prediction_kwargs": prediction_kwargs,
-        }
-        if prediction_kwargs is None:
-            prediction_kwargs = {}
-        path = targets_folder.joinpath("multi_combination")
-        path.mkdir(mode=0o777, parents=True, exist_ok=True)
-        path = find_spot(path, metadata)
-        best_combinations = multi_combination_prediction(
-            predictors,
-            targets,
-            base_pred,
-            type_,
-            max_n_predictors,
-            save_path=path,
-            **prediction_kwargs,
-        )
-        best_combination = get_best_combination(best_combinations, winner_according_to)
-        best_predictors = {
-            identifier: combination[-1]
-            for identifier, combination in best_combination.items()
-        }
-        save_pickle(best_predictors, path.joinpath("best_predictors.pkl"))
-        return best_combinations, best_combination, path
+    # def multi_combination_prediction(
+    #     self,
+    #     predictors: xr.DataArray,
+    #     create_target_kwargs: Mapping,
+    #     type_: Literal["rf", "lr"] = "rf",
+    #     do_base_pred: bool = True,
+    #     max_n_predictors: int = 10,
+    #     prediction_kwargs: Mapping | None = None,
+    #     winner_according_to: str = "roc_auc_score",
+    # ):
+    #     """
+    #     Wrappy Wrappy wrap
+    #     """
+    #     targets_folder = self.create_targets(**create_target_kwargs, return_folder=True)
+    #     targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
+    #     if do_base_pred:
+    #         path_to_base_pred = targets_folder.joinpath("base_pred.nc")
+    #         if path_to_base_pred.is_file():
+    #             base_pred = open_dataarray(path_to_base_pred)
+    #         else:
+    #             base_pred = regress_against_time(targets)
+    #             to_netcdf(base_pred, path_to_base_pred)
+    #     else:
+    #         base_pred = None
+    #         path_to_base_pred = None
+    #     predictor_names = predictors.predictor.values
+    #     metadata = {
+    #         "predictors": predictor_names.tolist(),
+    #         "type": type_,
+    #         "base_pred": path_to_base_pred,  # or None
+    #         "prediction_kwargs": prediction_kwargs,
+    #     }
+    #     if prediction_kwargs is None:
+    #         prediction_kwargs = {}
+    #     path = targets_folder.joinpath("multi_combination")
+    #     path.mkdir(mode=0o777, parents=True, exist_ok=True)
+    #     path = find_spot(path, metadata)
+    #     best_combinations = multi_combination_prediction(
+    #         predictors,
+    #         targets,
+    #         base_pred,
+    #         type_,
+    #         max_n_predictors,
+    #         save_path=path,
+    #         **prediction_kwargs,
+    #     )
+    #     best_combination = get_best_combination(best_combinations, winner_according_to)
+    #     best_predictors = {
+    #         identifier: combination[-1]
+    #         for identifier, combination in best_combination.items()
+    #     }
+    #     save_pickle(best_predictors, path.joinpath("best_predictors.pkl"))
+    #     return best_combinations, best_combination, path
 
-    def best_combination_prediction(
-        self,
-        predictors: xr.DataArray,
-        path: Path | str,
-        prediction_kwargs: Mapping | None = None,
-    ):
-        targets_folder = path.parent.parent
-        targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
-        metadata = load_pickle(path.joinpath("metadata.pkl"))
-        type_ = metadata["type"]
-        path_to_base_pred = metadata["base_pred"]
-        if prediction_kwargs is None:
-            prediction_kwargs = metadata["prediction_kwargs"]
-        if prediction_kwargs is None:
-            prediction_kwargs = {}
-        if path_to_base_pred is not None:
-            base_pred = open_dataarray(path_to_base_pred)
-        else:
-            base_pred = None
-        best_predictors = load_pickle(path.joinpath("best_predictors.pkl"))
-        combination = {}
-        for identifier, predictor_list in tqdm(best_predictors.items()):
-            thispath = path.joinpath(identifier)
-            full_pred_fn = thispath.joinpath("full_pred_best.nc")
-            feature_importances_fn = thispath.joinpath("feature_importances_best.nc")
-            raw_shap_fn = thispath.joinpath("raw_shap.pkl")
-            if all(
-                [
-                    fn.is_file()
-                    for fn in [full_pred_fn, feature_importances_fn, raw_shap_fn]
-                ]
-            ):
-                full_pred = open_dataarray(full_pred_fn)
-                feature_importances = open_dataarray(feature_importances_fn)
-                raw_shap = load_pickle(raw_shap_fn)
-                combination[identifier] = (full_pred, feature_importances, raw_shap)
-                continue
-            indexer_list = identifier.split("_")
-            indexer = {}
-            for indexer_ in indexer_list:
-                dim, val = indexer_.split("=")
-                try:
-                    val = float(val)
-                except ValueError:
-                    pass
-                indexer[dim] = val
-            if base_pred is None:
-                base_pred_ = None
-            else:
-                base_pred_ = base_pred.loc[indexer].squeeze()
-            targets_ = targets.loc[indexer].squeeze()
-            full_pred, feature_importances, raw_shap = predict_all(
-                predictors.sel(predictor=predictor_list),
-                targets_,
-                base_pred_,
-                type_,
-                True,
-                **prediction_kwargs,
-            )
-            to_netcdf(full_pred, full_pred_fn)
-            to_netcdf(feature_importances, feature_importances_fn)
-            save_pickle(raw_shap, raw_shap_fn)
-            combination[identifier] = (full_pred, feature_importances, raw_shap)
-        return combination
+    # def best_combination_prediction(
+    #     self,
+    #     predictors: xr.DataArray,
+    #     path: Path | str,
+    #     prediction_kwargs: Mapping | None = None,
+    # ):
+    #     targets_folder = path.parent.parent
+    #     targets = open_dataarray(targets_folder.joinpath("length_targets.nc")) > 0
+    #     metadata = load_pickle(path.joinpath("metadata.pkl"))
+    #     type_ = metadata["type"]
+    #     path_to_base_pred = metadata["base_pred"]
+    #     if prediction_kwargs is None:
+    #         prediction_kwargs = metadata["prediction_kwargs"]
+    #     if prediction_kwargs is None:
+    #         prediction_kwargs = {}
+    #     if path_to_base_pred is not None:
+    #         base_pred = open_dataarray(path_to_base_pred)
+    #     else:
+    #         base_pred = None
+    #     best_predictors = load_pickle(path.joinpath("best_predictors.pkl"))
+    #     combination = {}
+    #     for identifier, predictor_list in tqdm(best_predictors.items()):
+    #         thispath = path.joinpath(identifier)
+    #         full_pred_fn = thispath.joinpath("full_pred_best.nc")
+    #         feature_importances_fn = thispath.joinpath("feature_importances_best.nc")
+    #         raw_shap_fn = thispath.joinpath("raw_shap.pkl")
+    #         if all(
+    #             [
+    #                 fn.is_file()
+    #                 for fn in [full_pred_fn, feature_importances_fn, raw_shap_fn]
+    #             ]
+    #         ):
+    #             full_pred = open_dataarray(full_pred_fn)
+    #             feature_importances = open_dataarray(feature_importances_fn)
+    #             raw_shap = load_pickle(raw_shap_fn)
+    #             combination[identifier] = (full_pred, feature_importances, raw_shap)
+    #             continue
+    #         indexer_list = identifier.split("_")
+    #         indexer = {}
+    #         for indexer_ in indexer_list:
+    #             dim, val = indexer_.split("=")
+    #             try:
+    #                 val = float(val)
+    #             except ValueError:
+    #                 pass
+    #             indexer[dim] = val
+    #         if base_pred is None:
+    #             base_pred_ = None
+    #         else:
+    #             base_pred_ = base_pred.loc[indexer].squeeze()
+    #         targets_ = targets.loc[indexer].squeeze()
+    #         full_pred, feature_importances, raw_shap = predict_all(
+    #             predictors.sel(predictor=predictor_list),
+    #             targets_,
+    #             base_pred_,
+    #             type_,
+    #             True,
+    #             **prediction_kwargs,
+    #         )
+    #         to_netcdf(full_pred, full_pred_fn)
+    #         to_netcdf(feature_importances, feature_importances_fn)
+    #         save_pickle(raw_shap, raw_shap_fn)
+    #         combination[identifier] = (full_pred, feature_importances, raw_shap)
+    #     return combination
