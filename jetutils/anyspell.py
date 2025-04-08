@@ -1,20 +1,14 @@
 # coding: utf-8
 from statistics import LinearRegression
-from typing import Tuple, Mapping, Literal, Callable, Sequence
+from typing import Mapping, Literal, Callable, Sequence
 from functools import partial
-from itertools import product
-from multiprocessing import get_context
 from multiprocessing import set_start_method as set_mp_start_method
-from pathlib import Path
-import warnings
 import datetime
 
 import numpy as np
-import pandas as pd
 import polars as pl
 import xarray as xr
 import polars_ds as pds
-from numba import njit
 from tqdm import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree

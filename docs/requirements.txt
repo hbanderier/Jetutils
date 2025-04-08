@@ -4,7 +4,6 @@ colormaps
 contourpy
 dask
 distributed
-fasttreeshap
 intake
 ipython
 matplotlib
@@ -12,6 +11,7 @@ numpy
 pandas
 polars
 polars-ols
+polars-ds
 pyarrow
 scikit-learn
 scipy
