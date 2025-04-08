@@ -799,7 +799,7 @@ def do_rle_fill_hole(
         dt = times[1] - times[0]
         hole_size = int(hole_size / dt)  # I am not responsible for rounding errors
     to_drop = []
-    if group_by is None:
+    if not group_by:
         if "contour" in df.columns:
             group_by = get_index_columns(
                 df, ("member", "time", "cluster", "contour", "spell", "relative_index", "relative_time")
@@ -823,7 +823,7 @@ def do_rle_fill_hole(
                     year=pl.col("time").dt.year(),
                 )
 
-    if len(group_by) == 0:
+    if not group_by:
         df = df.with_columns(dummy=1)
         group_by.append("dummy")
         to_drop.append("dummy")

@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 import xarray as xr
 import polars_ds as pds
+import polars.selectors as cs
 from tqdm import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
@@ -343,6 +344,8 @@ def gb_index(
     name: str = "index",
     dtype: pl.DataType = pl.UInt32,
 ):
+    if not group_by:
+        return df.with_row_index(name=name)
     index_ = {name: pl.int_ranges(pl.col(name), dtype=dtype)}
     count = df.group_by(group_by, maintain_order=True).len().rename({"len": name})
     count = {name: count.with_columns(**index_)[name].explode()}
@@ -382,10 +385,11 @@ def extend_spells(
     return spells
 
 
-def make_daily(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None, data_vars: list[str] | None = None) -> pl.DataFrame:
-    if data_vars is None:
-        data_vars = [col for col in df.columns if col not in ["time", *group_by]]
-    aggs = [pl.mean(data_var) for data_var in data_vars]
+def make_daily(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None) -> pl.DataFrame:
+    aggs = [
+        (~cs.numeric()).first(),
+        cs.numeric().mean(),
+    ]
     return df.group_by_dynamic("time", every="1d", group_by=group_by).agg(*aggs)
 
 
@@ -401,6 +405,8 @@ def get_spells(
 ):
     if isinstance(group_by, str | pl.Expr):
         group_by = [group_by]
+    if group_by is None:
+        group_by = []
     if daily:
         df = make_daily(df, group_by)
     times = df["time"].unique()
@@ -434,9 +440,9 @@ def get_persistent_jet_spells(
     props_as_df = extract_season_from_df(props_as_df, season)
     onejet = props_as_df.filter(pl.col("jet") == jet)
     if metric in ["com_speed", "speed"]:
-        expr = pl.col(metric) < onejet[metric].quantile(1 - q)
+        expr = pl.col(metric) < pl.col(metric).quantile(1 - q)
     else:
-        expr = pl.col(metric) > onejet[metric].quantile(q)
+        expr = pl.col(metric) > pl.col(metric).quantile(q)
     group_by = "member" if ("member" in props_as_df.columns) else None
     return get_spells(onejet, expr, group_by=group_by, **kwargs)
 
