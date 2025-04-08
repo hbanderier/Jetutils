@@ -15,6 +15,7 @@ from polars.exceptions import ColumnNotFoundError
 import xarray as xr
 from contourpy import contour_generator
 from sklearn.mixture import GaussianMixture
+from skimage.filters import sato
 from tqdm import tqdm, trange
 import dask
 
@@ -34,6 +35,33 @@ from .data import (
     open_dataarray,
     to_netcdf
 )
+
+
+def one_sato(ds: xr.Dataset, sigmas: range=range(6, 20, 2)):
+    ds["s_orig"] = ds["s"].copy(deep=True)
+    s = ds["s"]
+    sato_of_s = sato(s.values, black_ridges=False, sigmas=range(6, 20, 2))
+    sato_of_s = sato_of_s / sato_of_s.max()
+    for var in ["u", "v", "s"]:
+        ds[var] = ds[var] * sato_of_s ** 2
+    return ds
+
+
+def preprocess_sato(ds: xr.Dataset, sigmas: range=range(6, 20, 2)):
+    print("preprocess Sato")
+    extra_dims = {dim: coord for dim, coord in ds.coords.items() if dim not in ["lon", "lat"]}
+    iter1 = list(product(*list(extra_dims.values())))
+    iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
+    iter3 = (ds.loc[indexer] for indexer in iter2)
+    ctx = get_context("spawn")
+    ds = map_maybe_parallel(iter3, one_sato, processes=N_WORKERS, chunksize=len(iter1) // N_WORKERS, ctx=ctx, len_=len(iter1))
+    first_dim = list(extra_dims)[0]
+    ds = xr.concat(ds, dim=first_dim)
+    if len(extra_dims) == 1:
+        return ds
+    ds = ds.coarsen(**{first_dim: len(iter1) // len(extra_dims[first_dim])}).construct(**{first_dim: list(extra_dims)})
+    ds = ds.assign_coords({var: (var, np.unique(ds[var])) for var in extra_dims})
+    return ds
 
 
 def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.Expr:
@@ -201,7 +229,7 @@ def central_diff(by: str) -> pl.Expr:
     """
     diff_2 = pl.col(by).diff(2, null_behavior="ignore").slice(2)
     diff_1 = pl.col(by).diff(1, null_behavior="ignore")
-    return diff_1.get(0).append(diff_2).append(diff_1.get(-1))
+    return diff_1.gather(0).append(diff_2).append(diff_1.gather(-1))
 
 
 def diff_maybe_periodic(by: str, periodic: bool = False) -> pl.Expr:
@@ -495,7 +523,7 @@ def separate_jets(
 
 
 def find_all_jets(
-    df: pl.DataFrame,
+    ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
     base_s_thresh: float = 25.0,
     alignment_thresh: float = 0.6,
@@ -508,6 +536,8 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
+    ds = preprocess_sato(ds, sigmas=range(6, 20, 2))
+    df = xarray_to_polars(ds)
     dl = np.radians(df["lon"].max() - df["lon"].min())
     base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
     index_columns = get_index_columns(df)
@@ -550,10 +580,10 @@ def find_all_jets(
 
     # smooth, compute sigma
     x_periodic = has_periodic_x(df)
-    df = coarsen(df, {"lon": 1, "lat": 1})
-    df = smooth_in_space(df, 5)
+    # df = coarsen(df, {"lon": 1, "lat": 1})
+    # df = smooth_in_space(df, 5)
     df = compute_sigma(df)
-    df = smooth_in_space(df, 5)
+    # df = smooth_in_space(df, 5)
     df = df.with_columns(
         lon=round_polars("lon").cast(pl.Float32),
         lat=round_polars("lat").cast(pl.Float32),
