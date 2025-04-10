@@ -740,9 +740,7 @@ def _do_rle(
         )
         .explode("rle")
         .unnest("rle")
-    )
-    conditional = (
-        conditional.group_by(group_by, maintain_order=True)
+        .group_by(group_by, maintain_order=True)
         .agg(
             len=pl.col("len"),
             start=pl.lit(0).append(

@@ -87,53 +87,47 @@ def pl_hessian(
     group_by: list[str | pl.Expr],
     x1: int,
     y1: int,
-    sigma: float | int,
+    sigma: pl.Expr = pl.col("sigma").first(),
 ) -> pl.DataFrame:
     col = pl.col(col)
     images_with_kernels, x2, y2 = add_gaussian_kernels(images, col, group_by, sigma, x1, y1)
     kernels = ["gauss_xx", "gauss_xy", "gauss_yy"]
-    aggs = {kernel: pl_convolve_2d(col, kernel, x1, y1, x2, y2) for kernel in kernels}
-    images_with_kernels = images_with_kernels.group_by(group_by, maintain_order=True).agg(
-        **aggs
+    aggs = {
+        kernel: sigma.pow(2) * pl_convolve_2d(col, kernel, x1, y1, x2, y2) 
+        for kernel in kernels
+    }
+    images_with_kernels = (
+        images_with_kernels
+        .group_by(group_by, maintain_order=True)
+        .agg(**aggs)
     )
     return images_with_kernels
 
 
-def eig2image(Dxx, Dxy, Dyy):
-    Dxx = np.array(Dxx, dtype=float)
-    Dyy = np.array(Dyy, dtype=float)
-    Dxy = np.array(Dxy, dtype=float)
-
-    tmp = np.sqrt((Dxx - Dyy) ** 2 + 4 * Dxy**2)
-
+def pl_eig2image(images: pl.DataFrame, group_by: list[str | pl.Expr], Dxx: pl.Expr, Dxy: pl.Expr, Dyy: pl.Expr) -> pl.DataFrame:
+    tmp = (Dxx - Dyy).pow(2) + 4 * Dxy.pow(2)
     v2x = 2 * Dxy
     v2y = Dyy - Dxx + tmp
-
-    mag = np.sqrt(v2x**2 + v2y**2)
-    i = np.array(mag != 0)
-
-    v2x[i] = v2x[i] / mag[i]
-    v2y[i] = v2y[i] / mag[i]
-
+    mag = (v2x ** 2 + v2y ** 2).sqrt()
+    
+    v2x = pl.when(mag != 0).then(v2x / mag).otherwise(v2x)
+    v2y = pl.when(mag != 0).then(v2y / mag).otherwise(v2y)
     v1x = -v2y
     v1y = v2x
-
     mu1 = 0.5 * (Dxx + Dyy + tmp)
     mu2 = 0.5 * (Dxx + Dyy - tmp)
-
-    check = abs(mu1) > abs(mu2)
-
-    Lambda1 = mu1.copy()
-    Lambda1[check] = mu2[check]
-    Lambda2 = mu2
-    Lambda2[check] = mu1[check]
-
-    Ix = v1x
-    Ix[check] = v2x[check]
-    Iy = v1y
-    Iy[check] = v2y[check]
-
-    return Lambda1, Lambda2, Ix, Iy
+    check = mu1.abs() > mu2.abs()
+    Lambda1 = pl.when(check).then(mu2).otherwise(mu1)
+    Lambda2 = pl.when(check).then(mu1).otherwise(mu2)
+    Ix = pl.when(check).then(v2x).otherwise(v1x)
+    Iy = pl.when(check).then(v2y).otherwise(v1y)
+    aggs = {
+        "Lambda1": Lambda1,
+        "Lambda1": Lambda2,
+        "Ix": Ix,
+        "Iy": Iy,
+    }
+    return images.group_by(group_by, maintain_order=True).agg(**aggs)
 
 
 def FrangiFilter2D(image):

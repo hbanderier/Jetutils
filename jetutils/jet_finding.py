@@ -33,40 +33,51 @@ from .data import (
     DataHandler,
     open_da,
     open_dataarray,
-    to_netcdf
+    to_netcdf,
 )
 
 
-def one_sato(ds: xr.Dataset, sigmas: range=range(6, 20, 2)):
+def one_sato(ds: xr.Dataset, sigmas: range = range(6, 20, 2)):
     ds["s_orig"] = ds["s"].copy(deep=True)
     s = ds["s"]
     sato_of_s = sato(s.values, black_ridges=False, sigmas=range(6, 20, 2))
     sato_of_s = sato_of_s / sato_of_s.max()
     for var in ["u", "v", "s"]:
-        ds[var] = ds[var] * sato_of_s ** 2
+        ds[var] = ds[var] * sato_of_s**2
     return ds
 
 
-def preprocess_sato(ds: xr.Dataset, sigmas: range=range(6, 20, 2)):
+def preprocess_sato(ds: xr.Dataset, sigmas: range = range(6, 20, 2)):
     print("preprocess Sato")
-    extra_dims = {dim: coord for dim, coord in ds.coords.items() if dim not in ["lon", "lat"]}
+    extra_dims = {
+        dim: coord for dim, coord in ds.coords.items() if dim not in ["lon", "lat"]
+    }
     iter1 = list(product(*list(extra_dims.values())))
     iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
     iter3 = (ds.loc[indexer] for indexer in iter2)
     ctx = get_context("spawn")
-    ds = map_maybe_parallel(iter3, one_sato, processes=N_WORKERS, chunksize=len(iter1) // N_WORKERS, ctx=ctx, len_=len(iter1))
+    ds = map_maybe_parallel(
+        iter3,
+        one_sato,
+        processes=N_WORKERS,
+        chunksize=len(iter1) // N_WORKERS,
+        ctx=ctx,
+        len_=len(iter1),
+    )
     first_dim = list(extra_dims)[0]
     ds = xr.concat(ds, dim=first_dim)
     if len(extra_dims) == 1:
         return ds
-    ds = ds.coarsen(**{first_dim: len(iter1) // len(extra_dims[first_dim])}).construct(**{first_dim: list(extra_dims)})
+    ds = ds.coarsen(**{first_dim: len(iter1) // len(extra_dims[first_dim])}).construct(
+        **{first_dim: list(extra_dims)}
+    )
     ds = ds.assign_coords({var: (var, np.unique(ds[var])) for var in extra_dims})
     return ds
 
 
 def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.Expr:
     """
-    Generates a polars Expression to compute the haversine distance, in meters, between points defined with the columns (lon1, lat1) and the points defined with the columns (lon2, lat2). 
+    Generates a polars Expression to compute the haversine distance, in meters, between points defined with the columns (lon1, lat1) and the points defined with the columns (lon2, lat2).
     TODO: support other planets by passing the radius as an argument.
     """
     lon1 = lon1.radians()
@@ -124,7 +135,7 @@ def has_periodic_x(df: pl.DataFrame) -> bool:
     Returns
     -------
     bool
-    """    
+    """
     lon = df["lon"].unique().sort().to_numpy()
     dx = lon[1] - lon[0]
     return (-180 in lon) and ((180 - dx) in lon)
@@ -218,7 +229,7 @@ def coarsen(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
 
 def round_polars(col: str, factor: int = 2) -> pl.Expr:
     """
-    Generates an Expression that rounds the given column to a given base, one over the factor. 
+    Generates an Expression that rounds the given column to a given base, one over the factor.
     """
     return (pl.col(col) * factor).round() / factor
 
@@ -314,9 +325,11 @@ def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
     return np.stack([x_, y_], axis=1)
 
 
-def find_contours_maybe_periodic(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[list, list]:
+def find_contours_maybe_periodic(
+    x: np.ndarray, y: np.ndarray, z: np.ndarray
+) -> Tuple[list, list]:
     """
-    Finds zero-contours on the 2D function defined at `x[i]` and `y[i]` as `z[i]` for all i. Handles the cases where `x` is a periodic longitude and contours can be, e.g. a deformed circle around the pole.  
+    Finds zero-contours on the 2D function defined at `x[i]` and `y[i]` as `z[i]` for all i. Handles the cases where `x` is a periodic longitude and contours can be, e.g. a deformed circle around the pole.
 
     Parameters
     ----------
@@ -325,7 +338,7 @@ def find_contours_maybe_periodic(x: np.ndarray, y: np.ndarray, z: np.ndarray) ->
     y : np.ndarray
         `y` coordinate (e.g. latitude)
     z : np.ndarray
-        Value of the function at `x` and `y`. 
+        Value of the function at `x` and `y`.
 
     Returns
     -------
@@ -333,7 +346,7 @@ def find_contours_maybe_periodic(x: np.ndarray, y: np.ndarray, z: np.ndarray) ->
         all the zero contours of `z`.
     list of bool
         which contours are cyclic (first and last point are close)
-    """    
+    """
     dx = x[1] - x[0]
     if (-180 not in x) or ((180 - dx) not in x):
         contours, types = contour_generator(
@@ -530,9 +543,9 @@ def find_all_jets(
 ):
     """
     Main function to find all jets in a polars DataFrame containing at least the "lon", "lat", "u", "v" and "s" columns. Will group by any potential index columns to compute jets independently for every, timestep, member and / or cluster. Any other non-index column present in `df` (like "theta" or "lev") will be interpolated to the jet cores in the output.
-    
+
     Thresholds passed as a DataArray are wind speed thresholds. This Dataarray needs to have one value per timestep present in `df`. If not passed, `base_s_thresh` is used for all times.
-    
+
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
@@ -541,9 +554,11 @@ def find_all_jets(
     dl = np.radians(df["lon"].max() - df["lon"].min())
     base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
     index_columns = get_index_columns(df)
-    if base_s_thresh <= 1.:
-        thresholds = df.group_by(index_columns).agg(pl.col("s").quantile(base_s_thresh).alias("s_thresh"))
-        base_s_thresh = thresholds["s_thresh"].mean() # disgusting
+    if base_s_thresh <= 1.0:
+        thresholds = df.group_by(index_columns).agg(
+            pl.col("s").quantile(base_s_thresh).alias("s_thresh")
+        )
+        base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
         base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
     elif thresholds is not None:
         thresholds = (
@@ -553,7 +568,9 @@ def find_all_jets(
             .rename({"s": "s_thresh"})
         )
     if thresholds is not None:
-        df = df.join(thresholds, on=[ic for ic in index_columns if ic != "member"]) # ugly
+        df = df.join(
+            thresholds, on=[ic for ic in index_columns if ic != "member"]
+        )  # ugly
         df = df.with_columns(
             int_thresh=base_int_thresh * pl.col("s_thresh") / base_s_thresh
         )
@@ -636,6 +653,7 @@ def find_all_jets(
             "jet ID": jets.group_by(index_columns, maintain_order=True)
             .agg(pl.col("jet ID").rle_id().alias("id2"))
             .explode("id2")["id2"]
+            .rename("jet ID")
         }
     )
     return jets
@@ -727,9 +745,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     return props_as_df
 
 
-def interp_from_other(
-    jets: pl.DataFrame, da_df: pl.DataFrame, varname: str
-):
+def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
     """
     Bilinear interpolation. Values in `da_df[varname]` will be bilinearly interpolated to the jet points' `lon`-`lat` coordinates, resulting in a new column in `jets` with a name constructed as `f"{varname}_interp"`.
     """
@@ -745,8 +761,16 @@ def interp_from_other(
         revert_rename = True
     else:
         revert_rename = False
-    indices_right = lon.search_sorted(jets["normallon"], side="right").clip(1, len(lon) - 1)
-    indices_above = lat.search_sorted(jets["normallat"], side="right").clip(1, len(lat) - 1)
+    indices_right = (
+        lon
+        .search_sorted(jets["normallon"], side="right")
+        .clip(1, len(lon) - 1)
+    )
+    indices_above = (
+        lat
+        .search_sorted(jets["normallat"], side="right")
+        .clip(1, len(lat) - 1)
+    )
     jets = jets.with_columns(
         left=lon[indices_right - 1],
         right=lon[indices_right],
@@ -919,16 +943,21 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
         / pl.col("s").sum()
     }
 
-    jets = jets.group_by([*index_columns, "index", "side"], maintain_order=True).agg(
-        **first_agg_out
+    jets = (
+        jets.lazy()
+        .group_by([*index_columns, "index", "side"], maintain_order=True)
+        .agg(**first_agg_out)
+        .with_columns(half_width=half_width)
+        .drop(["half_width_up", "half_width_down", "side"])
+        .group_by([*index_columns, "index"])
+        .agg(**second_agg_out)
+        .group_by(index_columns)
+        .agg(**third_agg_out)
+        .drop("lon", "lat", "s")
+        .cast({"width": pl.Float32})
+        .sort(index_columns)
     )
-
-    jets = jets.with_columns(half_width=half_width).drop(
-        ["half_width_up", "half_width_down", "side"]
-    )
-    jets = jets.group_by([*index_columns, "index"]).agg(**second_agg_out)
-    jets = jets.group_by(index_columns, maintain_order=True).agg(**third_agg_out)
-    return jets.drop("lon", "lat", "s").cast({"width": pl.Float32}).sort(index_columns)
+    return jets.collect()
 
 
 def map_maybe_parallel(
@@ -1023,9 +1052,17 @@ def create_mappable_iterator(
             iter_dims.append(potential)
     gb = df.group_by(iter_dims, maintain_order=True)
     len_ = len(gb.first())
+
     def _extract_da(da, index):
-        return compute(da.sel({dim: values for dim, values in zip(iter_dims, index) if dim in da.dims}))
-    iterator = ((jets, *[_extract_da(da, index) for da in das], *others) for index, jets in gb)
+        return compute(
+            da.sel(
+                {dim: values for dim, values in zip(iter_dims, index) if dim in da.dims}
+            )
+        )
+
+    iterator = (
+        (jets, *[_extract_da(da, index) for da in das], *others) for index, jets in gb
+    )
     return len_, iterator
 
 
@@ -1052,7 +1089,7 @@ def extract_features(
     season: list | str | tuple | int | None = None,
 ) -> pl.DataFrame:
     """
-    Tiny wrapper to extract columns and subset time from a polars DataFrame. 
+    Tiny wrapper to extract columns and subset time from a polars DataFrame.
     """
     df = extract_season_from_df(df, season)
     if feature_names is None:
@@ -1085,7 +1122,7 @@ def one_gmix(
     -------
     ndarray
         Probabilities of every point on the Gaussian component identified as the eddy-driven jet.
-        
+
     References
     ----------
     https://scikit-learn.org/stable/modules/generated/sklearn.mixture.GaussianMixture.html
@@ -1106,10 +1143,9 @@ def one_gmix(
 def is_polar_gmix(
     df: pl.DataFrame,
     feature_names: list,
-    mode: Literal["all"]
-    | Literal["season"]
-    | Literal["month"]
-    | Literal["week"] = "week",
+    mode: (
+        Literal["all"] | Literal["season"] | Literal["month"] | Literal["week"]
+    ) = "week",
     n_components: int | Sequence = 2,
     n_init: int = 20,
     init_params: str = "random_from_data",
@@ -1131,7 +1167,7 @@ def is_polar_gmix(
         Number of repeated independent training with. Can massively increase run time. By default 20
     init_params : str, optional
         Type of init, by default "random_from_data"
-        
+
     Returns
     -------
     pl.DataFrame
@@ -1197,7 +1233,7 @@ def average_jet_categories(
 ):
     """
     For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
-    
+
     E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
 
     Parameters
@@ -1317,7 +1353,7 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
         Latitudinal mean distance between jets, for each jet pair
     pl.Expr
         Longitudinal overlap, for each jet pair
-    """    
+    """
     x1 = pl.col("lon").flatten()
     y1 = pl.col("lat").flatten()
     x2 = pl.col("lon_right").flatten()
@@ -1336,7 +1372,8 @@ def overlap_vert_dist_polars() -> Tuple[pl.Expr]:
     inter12 = x1.is_in(x2)
     inter21 = x2.is_in(x1)
     vert_dist = (y1.filter(inter12) - y2.filter(inter21)).abs().mean()
-    overlap = inter12.mean()  # new needs to be in old. giving weight to inter21 would let short new jets swallow old big jets, it's weird i think
+    overlap = (inter12.mean())  
+    # new needs to be in old. giving weight to inter21 would let short new jets swallow old big jets, it's weird i think
     return vert_dist.over(row), overlap.over(row)
 
 
@@ -1637,7 +1674,7 @@ def jet_position_as_da(
 
 def get_double_jet_index(props_as_df: pl.DataFrame, jet_pos_da: xr.DataArray):
     """
-    Adds a new columns to props_as_df; `"double_jet_index"`, by checking, for all longitudes, if there are at least two jet core points along the latitude, then averaging this over longitudes above 20° West. 
+    Adds a new columns to props_as_df; `"double_jet_index"`, by checking, for all longitudes, if there are at least two jet core points along the latitude, then averaging this over longitudes above 20° West.
     """
     overlap = (~np.isnan(jet_pos_da)).sum("lat") >= 2
     index_columns = get_index_columns(props_as_df, ["member", "time", "cluster"])
@@ -1692,9 +1729,9 @@ def iterate_over_year_maybe_member(
     da: xr.DataArray | xr.Dataset | None = None,
     several_years: int = 1,
     several_members: int = 1,
-):  
+):
     """
-    Constructs iterators over time and member, for up to a polars DataFrame and a xarray DataArray that have the same indices. 
+    Constructs iterators over time and member, for up to a polars DataFrame and a xarray DataArray that have the same indices.
     """
     if df is None and da is None:
         return 0
@@ -1781,6 +1818,7 @@ class JetFindingExperiment(object):
     time : xr.Dataset
         shortcut to `self.data_handler.get_sample_dims()["time"]`
     """
+
     def __init__(
         self,
         data_handler: DataHandler,
@@ -1854,10 +1892,9 @@ class JetFindingExperiment(object):
         self,
         low_wind: xr.Dataset | xr.DataArray,
         force: int = 0,
-        mode: Literal["year"]
-        | Literal["season"]
-        | Literal["month"]
-        | Literal["week"] = "week",
+        mode: (
+            Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"]
+        ) = "week",
         n_components: int | Sequence = 2,
         n_init: int = 20,
         init_params: str = "random_from_data",
@@ -1868,7 +1905,7 @@ class JetFindingExperiment(object):
         Parameters
         ----------
         low_wind : xr.Dataset | xr.DataArray
-            Wind at lower levels to compute the vertical wind shear 
+            Wind at lower levels to compute the vertical wind shear
         force : int
             to recompute the categorization even if the jets already have a `is_polar` column. With `force > 1`, also re-interpolates `theta` and `ratio` on the jet points. By default 0
         mode : "all", "season", "month" or "week
@@ -1884,7 +1921,7 @@ class JetFindingExperiment(object):
         -------
         pl.DataFrame
             DataFrame of same length as the jets with the same index columns, the `feature_names` columns: "ratio" and "theta", and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
-        """        
+        """
         all_jets_one_df = self.find_jets()
         if "is_polar" in all_jets_one_df.columns and not force:
             if not all_jets_one_df["s_low"].is_null().all():
@@ -1996,7 +2033,7 @@ class JetFindingExperiment(object):
     def track_jets(self) -> Tuple:
         """
         Wraps `track_jets()` for this object's jets
-        """        
+        """
         all_jets_one_df = self.find_jets()
         ofile_ajot = self.path.joinpath("all_jets_over_time.parquet")
         ofile_flags = self.path.joinpath("flags.parquet")
