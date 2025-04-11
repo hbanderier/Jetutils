@@ -21,6 +21,7 @@ import dask
 from .definitions import (
     N_WORKERS,
     RADIUS,
+    coarsen_da,
     compute,
     do_rle_fill_hole,
     xarray_to_polars,
@@ -32,6 +33,7 @@ from .data import (
     DataHandler,
     open_da,
     open_dataarray,
+    smooth,
     to_netcdf,
 )
 
@@ -84,7 +86,7 @@ def jet_integral_haversine(
     return 0.5 * (ds * (s + s.shift())).sum()
 
 
-def has_periodic_x(df: pl.DataFrame) -> bool:
+def has_periodic_x(df: pl.DataFrame | xr.Dataset | xr.DataArray) -> bool:
     """
     Checks if the `lon` column contains both sides of the +-180 line. Only makes sense if data went through `.data.standardize()`.
 
@@ -97,7 +99,10 @@ def has_periodic_x(df: pl.DataFrame) -> bool:
     -------
     bool
     """
-    lon = df["lon"].unique().sort().to_numpy()
+    if isinstance(df, pl.DataFrame):
+        lon = df["lon"].unique().sort().to_numpy()
+    else:
+        lon = np.sort(df["lon"].values)
     dx = lon[1] - lon[0]
     return (-180 in lon) and ((180 - dx) in lon)
 
@@ -181,7 +186,7 @@ def coarsen(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
         *index_columns,
         *[pl.col(col).floordiv(val) for col, val in coarsen_map.items()],
     ]
-    agg = [pl.col(col).mean() for col in other_columns]
+    agg = [pl.col(col).max() for col in other_columns]
     # agg = [*[pl.col(col).alias(f"{col}_").mean() for col, val in coarsen_map.items()], *agg]
     df = df.group_by(by, maintain_order=True).agg(*agg)
     # df = df.drop(list(coarsen_map)).rename({f"{col}_": col for col in coarsen_map})
@@ -239,7 +244,7 @@ def directional_diff(
     )
 
 
-def compute_sigma(df: pl.DataFrame) -> pl.DataFrame:
+def compute_sigma_pl(df: pl.DataFrame) -> pl.DataFrame:
     """
     Computes horizontal normal shear from a polars DataFrame containing at least the following columns: "lon", "lat", "u", "v" and "s". Adds one extra columns to `df` called `"sigma"`.
     """
@@ -262,6 +267,36 @@ def compute_sigma(df: pl.DataFrame) -> pl.DataFrame:
     df = df.sort([*index_columns, "lat", "lon"])
     df = df.drop("x", "y", "dsdx", "dsdy")
     return df
+
+
+def preprocess_ds(ds: xr.Dataset, smooth_s: int | None = 13) -> xr.Dataset:
+    if (ds.lon[1] - ds.lon[0]) <= 0.75:
+        ds.coarsen({"lon": 3, "lat": 3}, boundary="trim", side="left").max()
+    
+    if smooth_s is not None:
+        smooth_map = ("win", smooth_s)
+        smooth_map = {"lon": smooth_map, "lat": smooth_map}
+        ds = ds.rename({var: f"{var}_orig" for var in ["u", "v", "s"]})
+        for var in ["u", "v", "s"]:
+            to_smooth = ds[f"{var}_orig"]
+            ds[var] = to_smooth.copy(data=smooth(to_smooth, smooth_map=smooth_map))
+    ds = ds.assign_coords(
+        {
+            "x": np.radians(ds["lon"]) * RADIUS,
+            "y": RADIUS
+            * np.log(
+                (1 + np.sin(np.radians(ds["lat"])) / np.cos(np.radians(ds["lat"])))
+            ),
+        }
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        ds["sigma"] = (
+            - ds["u"] * ds["s"].differentiate("y") + ds["v"] * ds["s"].differentiate("x")
+        ) / ds["s"]
+    # fft_smoothing = 1.0 if ds["sigma"].min() < -0.0001 else 0.8
+    ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
+    return ds.reset_coords(["x", "y"], drop=True)
 
 
 def nearest_mapping(df1: pl.DataFrame, df2: pl.DataFrame, col: str):
@@ -380,12 +415,10 @@ def inner_compute_contours(args):
     """
     Worker function to compute the zero-sigma-contours in a parallel context
     """
-    indexer, df = args
-    index_columns = get_index_columns(df)
-    lon = df["lon"].unique().sort().to_numpy()
-    lat = df["lat"].unique().sort().to_numpy()
-    indexer = dict(zip(index_columns, [pl.lit(ind) for ind in indexer]))
-    sigma = df["sigma"].to_numpy().reshape(len(lat), len(lon))
+    indexer, ds = args
+    lon = ds["lon"].values
+    lat = ds["lat"].values
+    sigma = ds["sigma"].values
     contours, cyclic = find_contours_maybe_periodic(lon, lat, sigma)
     valid_index = [i for i, contour in enumerate(contours) if len(contour) > 5]
     contours = [
@@ -400,16 +433,17 @@ def inner_compute_contours(args):
     return None
 
 
-def compute_contours(df: pl.DataFrame):
+def compute_contours(ds: xr.Dataset) -> pl.DataFrame:
     """
     Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`.
     """
-    index_columns = get_index_columns(df)
-    iterator = df.group_by(index_columns, maintain_order=True)
-    len_ = iterator.first().shape[0]
+    extra_dims = {dim: coord for dim, coord in ds.coords.items() if dim not in ["lon", "lat"]}
+    iter1 = list(product(*list(extra_dims.values())))
+    iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
+    iter3 = ((indexer, ds.loc[indexer]) for indexer in iter2)
     all_contours = map_maybe_parallel(
-        iterator, inner_compute_contours, len_, processes=1
-    )  # polars-sequential is much faster than 20 cores multiproc
+        iter3, inner_compute_contours, len(iter2), processes=1, 
+    ) 
     all_contours = pl.concat(
         [contour for contour in all_contours if contour is not None]
     )
@@ -499,7 +533,7 @@ def separate_jets(
 def find_all_jets(
     ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
-    base_s_thresh: float = 25.0,
+    base_s_thresh: float = 0.7,
     alignment_thresh: float = 0.6,
 ):
     """
@@ -510,10 +544,14 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
+    ds = preprocess_ds(ds)
     df = xarray_to_polars(ds)
+    x_periodic = has_periodic_x(ds)
+    index_columns = get_index_columns(df)
+    
+    # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
     base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
-    index_columns = get_index_columns(df)
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(index_columns).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
@@ -555,19 +593,8 @@ def find_all_jets(
         condition_expr2 = pl.col("int") > base_int_thresh
         drop = ["contour", "index", "cyclic", "condition", "int"]
 
-    # smooth, compute sigma
-    x_periodic = has_periodic_x(df)
-    df = coarsen(df, {"lon": 1, "lat": 1})
-    df = smooth_in_space(df, 5)
-    df = compute_sigma(df)
-    df = smooth_in_space(df, 5)
-    df = df.with_columns(
-        lon=round_polars("lon").cast(pl.Float32),
-        lat=round_polars("lat").cast(pl.Float32),
-    )
-
     # contours
-    all_contours = compute_contours(df)
+    all_contours = compute_contours(ds)
     all_contours = all_contours.with_columns(
         index=all_contours.group_by([*index_columns, "contour"], maintain_order=True)
         .agg(index=pl.int_range(0, pl.col("lon").len(), dtype=pl.UInt32))
@@ -786,7 +813,14 @@ def gather_normal_da_jets(
     ns_df = pl.Series("n", ns_df).to_frame()
 
     # Expr angle
-    angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
+    if "u" in jets.columns and "v" in jets.columns:
+        angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
+        wind_speed = ["u", "v", "s"]
+    else:
+        angle = pl.arctan2(pl.col("lat").shift() - pl.col("lat"), pl.col("lon").shift() - pl.col("lon")).interpolate("linear") + np.pi / 2
+        angle = angle.fill_null(0)
+        angle = (angle.shift(2, fill_value=0) + angle) / 2
+        wind_speed = []
 
     # Expr normals
     normallon = pl.col("lon") + pl.col("angle").cos() * pl.col("n")
@@ -807,7 +841,7 @@ def gather_normal_da_jets(
         ),
     )
 
-    jets = jets[[*index_columns, "lon", "lat", "u", "v", "s", *is_polar]]
+    jets = jets[[*index_columns, "lon", "lat", *wind_speed, *is_polar]]
 
     jets = jets.with_columns(
         jets.group_by(index_columns, maintain_order=True)
@@ -823,7 +857,7 @@ def gather_normal_da_jets(
             "index",
             "lon",
             "lat",
-            "s",
+            *wind_speed,
             "n",
             "normallon",
             "normallat",
@@ -920,12 +954,88 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     return jets.collect()
 
 
+def expand_jets(jets: pl.DataFrame, max_t: float, dt: float) -> pl.DataFrame:
+    """
+    Expands the jets by appending segments before the start and after the end, following the tangent angle at the start and the end of the original jet, respectively.
+
+    Parameters
+    ----------
+    jets : pl.DataFrame
+        Jets to extend
+    max_t : float
+        Length of the added segments
+    dt : float
+        Spacing of the added segment
+
+    Returns
+    -------
+    pl.DataFrame
+        Jets DataFrame with all the index dimensions kept original, only lon and lat as additional columns (the rest is dropped), and longer jets with added segments.
+    """
+    index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
+    jets = jets.sort(*index_columns, "lon", "lat")
+    angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear")
+    tangent_n = pl.linear_space(0, max_t, int(max_t / dt) + 1)
+
+    tangent_lon_before_start = pl.col("lon").first() - angle.head(5).mean().cos() * tangent_n.reverse()
+    tangent_lat_before_start = pl.col("lat").first() - angle.head(5).mean().sin() * tangent_n.reverse()
+
+    tangent_lon_after_end = pl.col("lon").last() + angle.tail(5).mean().cos() * tangent_n
+    tangent_lat_after_end = pl.col("lat").last() + angle.tail(5).mean().sin() * tangent_n
+
+    bigger_lon = tangent_lon_before_start.append(pl.col("lon")).append(tangent_lon_after_end)
+    bigger_lat = tangent_lat_before_start.append(pl.col("lat")).append(tangent_lat_after_end)
+    
+    jets = (
+        jets
+        .group_by(index_columns, maintain_order=True)
+        .agg(bigger_lon, bigger_lat)
+    ).explode("lon", "lat")
+    return jets
+
+
+def join_wrapper(df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs):
+    """
+    Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        A DataFrame with columns also found in da
+    da : xr.DataArray | xr.Dataset
+        Xarray object whose values to join to the DataFrame
+    suffix : str, optional
+        join suffix, by default "_right"
+    kwargs :
+        keyword arguments passed to ``iterate_over_year_maybe_member``
+
+    Returns
+    -------
+    pl.DataFrame
+        Original DataFrame with one or several extra columns from da.
+    """
+    indexer = iterate_over_year_maybe_member(df, da, **kwargs)
+    df_upd = []
+    dims = da.dims
+    for idx1, idx2 in indexer:
+        these_jets = df.filter(*idx1)
+        with dask.config.set(**{"array.slicing.split_large_chunks": True}):
+            da_ = compute(da.sel(**idx2), progress_flag=False)
+        da_ = xarray_to_polars(da_)
+        these_jets = these_jets.join(
+            da_, on=dims, how="left", suffix=suffix
+        )
+        df_upd.append(these_jets)
+    df = pl.concat(df_upd)
+    return df
+
+
 def map_maybe_parallel(
     iterator: Iterable,
     func: Callable,
     len_: int,
     processes: int = N_WORKERS,
-    chunksize: int = 100,
+    chunksize: int | None = None,
     progress: bool = True,
     pool_kwargs: dict | None = None,
     ctx=None,
@@ -964,6 +1074,8 @@ def map_maybe_parallel(
         return list(map(func, iterator))
     if pool_kwargs is None:
         pool_kwargs = {}
+    if chunksize is None:
+        chunksize = min(int(len_ // processes), 200)
     pool_func = Pool if ctx is None else ctx.Pool
     if not progress:
         with pool_func(processes=processes, **pool_kwargs) as pool:
@@ -1842,8 +1954,7 @@ class JetFindingExperiment(object):
         )
         for indexer in iterator:
             ds_ = compute(self.ds.isel(**indexer), progress_flag=True)
-            df_ds = xarray_to_polars(ds_)
-            all_jets_one_df.append(find_all_jets(df_ds, **kwargs))
+            all_jets_one_df.append(find_all_jets(ds_, **kwargs))
         all_jets_one_df = pl.concat(all_jets_one_df)
         all_jets_one_df.write_parquet(ofile_ajdf)
         return all_jets_one_df
@@ -1903,20 +2014,9 @@ class JetFindingExperiment(object):
             all_jets_one_df = all_jets_one_df.drop("theta")
         if "theta" not in all_jets_one_df.columns:
             theta = self.ds["theta"]
-            indexer = iterate_over_year_maybe_member(all_jets_one_df, theta)
-            for idx1, idx2 in indexer:
-                these_jets = all_jets_one_df.filter(*idx1)
-                with dask.config.set(**{"array.slicing.split_large_chunks": True}):
-                    theta_ = compute(theta.sel(**idx2), progress_flag=False)
-                theta_ = xarray_to_polars(theta_)
-                these_jets = these_jets.join(
-                    theta_, on=["time", "lat", "lon"], how="left"
-                )
-                jets_upd.append(these_jets)
-            all_jets_one_df = pl.concat(jets_upd)
+            all_jets_one_df = join_wrapper(all_jets_one_df, theta)
             all_jets_one_df.write_parquet(ofile_ajdf)
 
-        jets_upd = []
         if (
             "ratio" in all_jets_one_df.columns
             and all_jets_one_df["ratio"].is_null().all()
@@ -1925,20 +2025,10 @@ class JetFindingExperiment(object):
             all_jets_one_df = all_jets_one_df.drop("s_low")
             all_jets_one_df = all_jets_one_df.drop("ratio")
         if "ratio" not in all_jets_one_df.columns:
-            indexer = iterate_over_year_maybe_member(all_jets_one_df, low_wind)
-            for idx1, idx2 in indexer:
-                these_jets = all_jets_one_df.filter(*idx1)
-                with dask.config.set(**{"array.slicing.split_large_chunks": True}):
-                    low_wind_ = compute(low_wind.sel(**idx2), progress_flag=False)
-                low_wind_ = xarray_to_polars(low_wind_)
-                these_jets = these_jets.join(
-                    low_wind_, on=["time", "lat", "lon"], how="left", suffix="_low"
-                )
-                these_jets = these_jets.with_columns(
-                    ratio=pl.col("s_low") / pl.col("s")
-                )
-                jets_upd.append(these_jets)
-            all_jets_one_df = pl.concat(jets_upd)
+            all_jets_one_df = join_wrapper(all_jets_one_df, low_wind, suffix="_low")
+            all_jets_one_df = all_jets_one_df.with_columns(
+                ratio=pl.col("s_low") / pl.col("s")
+            )
             all_jets_one_df.write_parquet(ofile_ajdf)
 
         all_jets_one_df = is_polar_gmix(

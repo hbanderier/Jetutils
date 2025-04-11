@@ -1083,8 +1083,6 @@ def smooth(
     da: same as input
         Smoothed input
     """    
-    import xrft
-
     if smooth_map is None:
         return da
     for dim, value in smooth_map.items():
