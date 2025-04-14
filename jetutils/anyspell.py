@@ -230,6 +230,9 @@ def _get_persistent_spell_times_from_som(
         )
         .with_row_index("spell").explode(["range", "relative_index"])
         .filter(pl.col("range") < len(index), pl.col("range") >= 0)
+    )
+    out = (
+        out
         .with_columns(index[out["range"]])
         .filter(pl.col("len") >= minlen)
         .with_columns(pl.col("spell").rle_id())

@@ -56,7 +56,12 @@ if "DATADIR" not in globals():
         RESULTS = Path.cwd().joinpath("results")
         print("Guessed RESULTS : ", RESULTS)
     if N_WORKERS == "guess":
-        N_WORKERS = os.environ.get("SLURM_NTASKS", os.environ.get("SLURM_CPUS_ON_NODE", os.cpu_count()))
+        if "SLURM_NTASKS" not in os.environ and "SLURM_CPUS_ON_NODE" not in os.environ:
+            N_WORKERS = os.cpu_count()
+        else:
+            guess_1 = os.environ.get("SLURM_NTASKS", 1)
+            guess_2 = os.environ.get("SLURM_CPUS_ON_NODE", 1)
+            N_WORKERS = max(guess_1, guess_2)
         print("Guessed N_WORKERS : ", N_WORKERS)
     N_WORKERS = int(N_WORKERS)
     if MEMORY_LIMIT == "guess":

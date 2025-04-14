@@ -538,8 +538,7 @@ def extract_region(
     da: same as input
         subset `da`
     """    
-    if all([bound is not None for bound in [minlon, maxlon, minlat, maxlat]]):
-        da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+    da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
     return da
 
 

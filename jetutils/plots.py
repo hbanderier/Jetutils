@@ -909,6 +909,7 @@ def plot_trends(
     suffix: str = "",
     numbering: bool = False,
     *,
+    save: bool = False,
     clear: bool = True,
 ):
     fig, axes = plt.subplots(
@@ -973,8 +974,9 @@ def plot_trends(
             if dji:
                 break
         ax.legend(ncol=1, fontsize=10)
-    subtitle = "_std_" if std else "_"
-    fig.savefig(f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png")
+    if save:
+        subtitle = "_std_" if std else "_"
+        fig.savefig(f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png")
     return fig
         
         
@@ -984,9 +986,11 @@ def plot_seasonal(
     data_vars: list,
     nrows: int = 3,
     ncols: int = 4,
-    clear: bool = True,
     suffix: str = "",
     numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
 ):
     fig, axes = plt.subplots(
         nrows,
@@ -1050,7 +1054,8 @@ def plot_seasonal(
         ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
     axes.ravel()[0].legend().set_zorder(102)
-    plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
+    if save:
+        plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
     return fig
 
 @clear
@@ -1060,8 +1065,10 @@ def props_histogram(
     season: str | None = None,
     nrows: int = 3,
     ncols: int = 4,
-    clear: bool = True,
     suffix: str = "",
+    *,
+    save: bool = False,
+    clear: bool = True,
 ):
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True
@@ -1117,7 +1124,8 @@ def props_histogram(
                 color=COLORS[2], labelcolor=COLORS[2], length=12, width=3, pad=pad
             )
             ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
-    fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
+    if save:
+        fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
     return fig
         
 
@@ -1159,7 +1167,10 @@ def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.D
     all_times = jets["time"].unique().clone()
     times = times[["time"]].with_row_index("inside_index").with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
     if "spell" in orig_times.columns: # then block bootstrapping
-        bootstrap_block = int(np.round(boostrap_len / orig_times["spell"].n_unique()))
+        if (boostrap_len % orig_times["spell"].n_unique()) == 0:
+            bootstrap_block = int(boostrap_len // orig_times["spell"].n_unique())
+        else:
+            bootstrap_block = 1
         boostraps = rng.choice(all_times.shape[0] - bootstrap_block, size=(n_bootstraps, boostrap_len // bootstrap_block))
         boostraps = boostraps[..., None] + np.arange(bootstrap_block)[None, None, :]
         boostraps = boostraps.reshape(n_bootstraps, boostrap_len)

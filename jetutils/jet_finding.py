@@ -271,7 +271,7 @@ def compute_sigma_pl(df: pl.DataFrame) -> pl.DataFrame:
 
 def preprocess_ds(ds: xr.Dataset, smooth_s: int | None = 13) -> xr.Dataset:
     if (ds.lon[1] - ds.lon[0]) <= 0.75:
-        ds.coarsen({"lon": 3, "lat": 3}, boundary="trim", side="left").max()
+        ds = ds.coarsen({"lon": 3, "lat": 3}, boundary="trim", side="left").max()
     
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
@@ -544,20 +544,25 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_ds(ds)
-    df = xarray_to_polars(ds)
+    ds = preprocess_ds(ds, smooth_s=5)
+    smoothed_to_remove = ("u", "v", "s")
+    df = xarray_to_polars(
+        ds
+        .drop_vars(smoothed_to_remove)
+        .rename({f"{var}_orig": var for var in smoothed_to_remove})
+    )
     x_periodic = has_periodic_x(ds)
     index_columns = get_index_columns(df)
     
     # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
+    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.5
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(index_columns).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
         )
         base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
-        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) / 3
+        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.5
     elif thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -583,7 +588,6 @@ def find_all_jets(
             "s_thresh",
             "int_thresh",
             "condition",
-            "int",
             "ds",
         ]
     else:
@@ -876,6 +880,8 @@ def gather_normal_da_jets(
                 da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
             da = da.sel(time=jets["time"].unique().sort().to_numpy())
     da_df = xarray_to_polars(da)
+    if "time" in da_df.columns:
+        da_df = da_df.cast({"time": jets.schema["time"]})
 
     jets = jets.filter(
         pl.col("normallon") >= da_df["lon"].min(),
@@ -1809,7 +1815,10 @@ def iterate_over_year_maybe_member(
         return 0
     if da is None and df is not None:
         years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
-        year_lists = np.array_split(years, len(years) // several_years)
+        try:
+            year_lists = np.array_split(years, len(years) // several_years)
+        except ValueError:
+            year_lists = [years]
         indexer_polars = (
             pl.col("time").dt.year().is_in(year_list) for year_list in year_lists
         )
@@ -1824,7 +1833,11 @@ def iterate_over_year_maybe_member(
         return indexer_polars
     elif da is not None and df is None:
         years = np.unique(da["time"].dt.year.values)
-        year_lists = np.array_split(years, len(years) // several_years)
+        try:
+            year_lists = np.array_split(years, len(years) // several_years)
+        except ValueError:
+            # ValueError when too few years. Then a one list should suffice
+            year_lists = [years]
         indexer_xarray = (
             {"time": np.isin(da["time"].dt.year.values, year_list)}
             for year_list in year_lists
@@ -1948,7 +1961,10 @@ class JetFindingExperiment(object):
             print(f"Using thresholds at {qs_path}")
 
         all_jets_one_df = []
-        several_years = 5 if "member" not in self.metadata else 2
+        if "member" in self.metadata or self.ds.nbytes > 2e10:
+            several_years = 1
+        else:
+            several_years = 5
         iterator = iterate_over_year_maybe_member(
             da=self.ds, several_years=several_years
         )
