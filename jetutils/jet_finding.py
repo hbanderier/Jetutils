@@ -16,17 +16,20 @@ import xarray as xr
 from contourpy import contour_generator
 from sklearn.mixture import GaussianMixture
 from tqdm import tqdm, trange
+from numba import njit
+from sklearn.cluster import AgglomerativeClustering
 import dask
 
 from .definitions import (
     N_WORKERS,
     RADIUS,
-    coarsen_da,
     compute,
-    do_rle_fill_hole,
+    do_rle,
     xarray_to_polars,
     get_index_columns,
     extract_season_from_df,
+    explode_rle,
+    labels_to_mask
 )
 from .data import (
     compute_extreme_climatology,
@@ -35,6 +38,7 @@ from .data import (
     open_dataarray,
     smooth,
     to_netcdf,
+    coarsen_da,
 )
 
 
@@ -107,74 +111,7 @@ def has_periodic_x(df: pl.DataFrame | xr.Dataset | xr.DataArray) -> bool:
     return (-180 in lon) and ((180 - dx) in lon)
 
 
-def smooth_in_space(
-    df: pl.DataFrame, winsize: int, to_smooth: str | Sequence = "all"
-) -> pl.DataFrame:
-    """
-    Window smoothing for polars DataFrame
-    """
-    index_columns = get_index_columns(df)
-    other_columns = [
-        col for col in df.columns if col not in [*index_columns, "lat", "lon"]
-    ]
-
-    if to_smooth == "all":
-        to_smooth = other_columns
-        other_columns = []
-    else:
-        if isinstance(to_smooth, str):
-            to_smooth = [to_smooth]
-        other_columns = [col for col in other_columns if col not in to_smooth]
-    keep = [pl.col(col) for col in other_columns]
-    means = [
-        pl.col(col).rolling_mean(winsize, min_periods=1, center=True)
-        for col in to_smooth
-    ]
-
-    df = df.sort([*index_columns, "lat", "lon"])
-    if has_periodic_x(df):
-        # df = df.cast({dim: pl.Int32})
-        halfwinsize = winsize // 2
-        len_ = [df[col].unique().len() for col in [*index_columns, "lat"]]
-        len_ = np.prod(len_)
-        df = df.sort(["lon", *index_columns, "lat"])
-        offset_along_dim = df[-1, "lon"] - df[0, "lon"] + 1
-        df = pl.concat(
-            [
-                df.tail(halfwinsize * len_).with_columns(
-                    pl.col("lon") - offset_along_dim
-                ),
-                df,
-                df.head(halfwinsize * len_).with_columns(
-                    pl.col("lon") + offset_along_dim
-                ),
-            ]
-        )
-        df = (
-            df.group_by([*index_columns, "lat"], maintain_order=True)
-            .agg(pl.col("lon"), *keep, *means)
-            .explode(["lon", *other_columns, *to_smooth])
-        )
-        df = df.sort(["lon", *index_columns, "lat"])
-        df = df.slice(halfwinsize * len_, df.shape[0] - 2 * len_ * halfwinsize)
-    else:
-        df = (
-            df.group_by([*index_columns, "lat"], maintain_order=True)
-            .agg(pl.col("lon"), *keep, *means)
-            .explode(["lon", *other_columns, *to_smooth])
-        )
-
-    df = df.sort([*index_columns, "lon", "lat"])
-    df = (
-        df.group_by([*index_columns, "lon"], maintain_order=True)
-        .agg(pl.col("lat"), *keep, *means)
-        .explode(["lat", *other_columns, *to_smooth])
-    )
-    df = df.sort([*index_columns, "lat", "lon"])
-    return df
-
-
-def coarsen(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
+def coarsen_pl(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
     """
     Coarsening for polars DataFrame
     """
@@ -244,34 +181,9 @@ def directional_diff(
     )
 
 
-def compute_sigma_pl(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Computes horizontal normal shear from a polars DataFrame containing at least the following columns: "lon", "lat", "u", "v" and "s". Adds one extra columns to `df` called `"sigma"`.
-    """
-    df = df.filter(pl.col("lat").is_in([-90.0, 90.0]).not_())
-    index_columns = get_index_columns(
-        df, ("member", "time", "cluster", "spell", "relative_index")
-    )
-    periodic_x = has_periodic_x(df)
-    x = pl.col("lon").radians() * RADIUS
-    y = (
-        (1 + pl.col("lat").radians().sin()) / pl.col("lat").radians().cos()
-    ).log() * RADIUS
-    df = df.with_columns(x=x, y=y)
-    df = df.join(
-        directional_diff(df, "s", "x", periodic_x), on=[*index_columns, "x", "y"]
-    )
-    df = df.join(directional_diff(df, "s", "y"), on=[*index_columns, "x", "y"])
-    sigma = (pl.col("v") * pl.col("dsdx") - pl.col("u") * pl.col("dsdy")) / pl.col("s")
-    df = df.with_columns(sigma=sigma)
-    df = df.sort([*index_columns, "lat", "lon"])
-    df = df.drop("x", "y", "dsdx", "dsdy")
-    return df
-
-
-def preprocess_ds(ds: xr.Dataset, smooth_s: int | None = 13) -> xr.Dataset:
+def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13) -> xr.Dataset:
     if (ds.lon[1] - ds.lon[0]) <= 0.75:
-        ds = ds.coarsen({"lon": 3, "lat": 3}, boundary="trim", side="left").max()
+        ds = coarsen_da(ds, n_coarsen=n_coarsen)
     
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
@@ -321,93 +233,41 @@ def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
     return np.stack([x_, y_], axis=1)
 
 
-def find_contours_maybe_periodic(
-    x: np.ndarray, y: np.ndarray, z: np.ndarray
-) -> Tuple[list, list]:
-    """
-    Finds zero-contours on the 2D function defined at `x[i]` and `y[i]` as `z[i]` for all i. Handles the cases where `x` is a periodic longitude and contours can be, e.g. a deformed circle around the pole.
+@njit
+def distance(x1: float, x2: np.ndarray, y1: float, y2: np.ndarray) -> float:
+    dx = x2 - x1
+    if np.abs(dx) >= 180:
+        dx = 360 - np.abs(dx)  # sign is irrelevant
+    dy = y2 - y1
+    return np.sqrt(dx**2 + np.sum(dy**2))
 
-    Parameters
-    ----------
-    x : np.ndarray
-        Potentially periodic `x` coordinate (e.g. longitude)
-    y : np.ndarray
-        `y` coordinate (e.g. latitude)
-    z : np.ndarray
-        Value of the function at `x` and `y`.
 
-    Returns
-    -------
-    list of np.ndarray
-        all the zero contours of `z`.
-    list of bool
-        which contours are cyclic (first and last point are close)
-    """
-    dx = x[1] - x[0]
-    if (-180 not in x) or ((180 - dx) not in x):
-        contours, types = contour_generator(
-            x=x, y=y, z=z, line_type="SeparateCode", quad_as_tri=False
-        ).lines(0.0)
-        contours = [round_contour(contour, x, y) for contour in contours]
-        cyclic = [79 in types_ for types_ in types]
-        return contours, cyclic
+@njit()
+def my_pairwise(X1: np.ndarray, X2: np.ndarray | None = None) -> np.ndarray:
+    x1 = X1[:, 0]
+    y1 = X1[:, 1:]
+    half = False
+    if X2 is None:
+        X2 = X1
+        half = True
+    x2 = X2[:, 0]
+    y2 = X2[:, 1:]
+    output = np.zeros((len(X1), len(X2)))
+    for i in range(X1.shape[0] - int(half)):
+        if half:
+            for j in range(i + 1, X1.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
+                output[j, i] = output[i, j]
+        else:
+            for j in range(X2.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
+    return output
 
-    xind = np.append(np.arange(len(x)), np.arange(len(x)))
-    fake_x = np.append(x, x + 360)
-    z_prime = z[:, xind]
-    all_contours, all_types = contour_generator(
-        x=fake_x, y=y, z=z_prime, line_type="SeparateCode", quad_as_tri=False
-    ).lines(0.0)
-    all_cyclic = [int(79 in types_) for types_ in all_types]
-    all_lens = [len(contour) for contour in all_contours]
 
-    sorted_order = np.argsort(all_lens)[::-1]
-    all_contours = [all_contours[i] for i in sorted_order]
-    all_cyclic = [all_cyclic[i] for i in sorted_order]
-
-    periodics = []
-    contours = []
-    per_cyclic = []
-    cyclic = []
-
-    for i, contour in enumerate(all_contours):
-        if len(contour) < 20:
-            continue
-        if all(contour[:, 0] < 180):
-            contours.append(round_contour(contour, x, y))
-            cyclic.append(all_cyclic[i])
-        if all(contour[:, 0] >= 180):
-            continue
-        x_real = (contour[:, 0] + 180) % 360 - 180
-        max_jump = np.abs(np.diff(x_real)).max()
-        if max_jump > 180:
-            contour = np.stack([x_real, contour[:, 1]], axis=-1)
-            _, index, counts = np.unique(
-                contour, return_counts=True, return_index=True, axis=0
-            )
-            contour = contour[np.sort(index)]
-            contour = round_contour(contour, x, y)
-            this_cyclic = int(np.mean(counts) > 1.7) + all_cyclic[i]
-            do_append = True
-            for j, other_per in enumerate(periodics):
-                overlap = (contour == other_per[:, None, :]).all(axis=-1).any(axis=-1)
-                if np.mean(overlap) > 0.1:
-                    do_append = False
-            if do_append:
-                per_cyclic.append(this_cyclic)
-                periodics.append(contour)
-    to_del = []
-    for i, periodic_contour in enumerate(periodics):
-        for j, contour in enumerate(contours):
-            overlap = (
-                (periodic_contour == contour[:, None, :]).all(axis=-1).any(axis=-1)
-            )
-            if np.mean(overlap) > 0.1:
-                to_del.append(j)
-    contours = [contour for i, contour in enumerate(contours) if i not in to_del]
-    cyclic = [cyclic_ for i, cyclic_ in enumerate(cyclic) if i not in to_del]
-    contours.extend(periodics)
-    cyclic.extend(per_cyclic)
+def find_contours_agg(x, y, z):
+    contours, types = contour_generator(x, y, (z > 0).astype(np.uint8), line_type="SeparateCode", quad_as_tri=False).lines(0)
+    cyclic = np.asarray([79 in types_ for types_ in types])
+    contours = [round_contour(contour, x, y) for contour in contours]
     return contours, cyclic
 
 
@@ -419,7 +279,7 @@ def inner_compute_contours(args):
     lon = ds["lon"].values
     lat = ds["lat"].values
     sigma = ds["sigma"].values
-    contours, cyclic = find_contours_maybe_periodic(lon, lat, sigma)
+    contours, cyclic = find_contours_agg(lon, lat, sigma)
     valid_index = [i for i, contour in enumerate(contours) if len(contour) > 5]
     contours = [
         pl.DataFrame(contours[i], schema={"lon": pl.Float32, "lat": pl.Float32})
@@ -473,68 +333,12 @@ def compute_alignment(
     return all_contours.with_columns(alignment=alignment["alignment"])
 
 
-def separate_jets(
-    jets: pl.DataFrame, ds_thresh: float = 5, periodic: bool = False
-) -> pl.DataFrame:
-    """
-    This function extracts jets out of zero-sigma-contours. One contour can host several jets in edge conditions.
-    """
-    index_columns = get_index_columns(jets)
-    dx = diff_maybe_periodic("lon", periodic)
-    dy = diff_maybe_periodic("lat", False)
-    diffs = (dx.pow(2) + dy.pow(2)).sqrt()
-    cont_lens = jets.group_by([*index_columns, "contour"], maintain_order=True).len()
-    cont_lens = cont_lens.filter(pl.col("len") > 3)
-    jets = cont_lens.join(jets, on=[*index_columns, "contour"]).drop("len")
-    jets = jets.with_columns(
-        jets.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(ds=diffs.fill_null(0.0))
-        .explode("ds")
-    )
-    other_columns = [
-        col for col in jets.columns if col not in [*index_columns, "contour"]
-    ]
-
-    def shifter(col):
-        argmax = pl.col("ds").arg_max()
-        len_ = pl.col("ds").len()
-        cond1 = pl.col("cyclic").get(0) >= 2
-        cond2 = (pl.col("ds") > ds_thresh).any()
-        argmax = argmax * (cond1 & cond2).cast(pl.Int32)
-        shift = pl.col(col).gather(pl.int_range(argmax, argmax + len_) % len_)
-        return shift
-
-    jets = (
-        jets.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(
-            *[shifter(col) for col in other_columns],
-            index_2=pl.int_range(0, pl.col("ds").len()),
-        )
-        .explode(*other_columns, "index_2")
-    )
-    separate_jets_expr = pl.col("ds") > ds_thresh
-    separate_jets_expr = separate_jets_expr.fill_null(True)
-    separate_jets_expr = (
-        separate_jets_expr
-        | (pl.col("index_2") == pl.col("index_2").min())
-        | (pl.col("index_2") >= pl.col("index_2").max())
-    )
-    jets = jets.with_columns(
-        condition=jets.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(condition=separate_jets_expr.cum_sum())["condition"]
-        .explode()
-    )
-    jets = jets.with_columns(
-        **{"jet ID": (pl.col("condition") / 100 + pl.col("contour").rle_id()).rle_id()}
-    ).drop("index_2")
-    return jets
-
-
 def find_all_jets(
     ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
     base_s_thresh: float = 0.7,
     alignment_thresh: float = 0.6,
+    hole_size: int = 4,
 ):
     """
     Main function to find all jets in a polars DataFrame containing at least the "lon", "lat", "u", "v" and "s" columns. Will group by any potential index columns to compute jets independently for every, timestep, member and / or cluster. Any other non-index column present in `df` (like "theta" or "lev") will be interpolated to the jet cores in the output.
@@ -545,6 +349,9 @@ def find_all_jets(
     """
     # process input
     ds = preprocess_ds(ds, smooth_s=5)
+    dx = (ds["lon"][1] - ds["lon"][0]).item()
+    dy = (ds["lat"][1] - ds["lat"][0]).item()
+    dX = 2 * np.sqrt(dx ** 2 + dy ** 2)
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds
@@ -556,13 +363,13 @@ def find_all_jets(
     
     # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.5
+    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.8
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(index_columns).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
         )
         base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
-        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.5
+        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.8
     elif thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -581,15 +388,6 @@ def find_all_jets(
             pl.col("alignment") > alignment_thresh
         )
         condition_expr2 = pl.col("int") > pl.col("int_thresh")
-        drop = [
-            "contour",
-            "index",
-            "cyclic",
-            "s_thresh",
-            "int_thresh",
-            "condition",
-            "ds",
-        ]
     else:
         condition_expr = (pl.col("s") > base_s_thresh) & (
             pl.col("alignment") > alignment_thresh
@@ -614,39 +412,45 @@ def find_all_jets(
 
     # jets from contours
     ## consecutive runs of contour points respecting both point wise conditions, allowing holes of size up to three
-    conditional = do_rle_fill_hole(all_contours, condition_expr, None, 3, unwrap=True)
-    jets = conditional.join(all_contours, on=[*index_columns, "contour", "index"])
-    ## jets from valid contour points
-    jets = separate_jets(jets, 4, x_periodic)
-    ## wrapping up with some filtering (jet integral threshold, length)
-    jets = jets.with_columns(
-        len=jets.group_by([*index_columns, "jet ID"], maintain_order=True)
-        .agg(pl.col("jet ID").len().repeat_by(pl.col("jet ID").len()).alias("len"))[
-            "len"
-        ]
-        .list.explode()
-        .list.explode()
-    )
-    jets = jets.filter(pl.col("len") >= 5).drop("len")
-    jets = jets.with_columns(
-        jets.group_by([*index_columns, "jet ID"], maintain_order=True)
-        .agg(
-            jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s"))
-            .alias("int")
-            .repeat_by(pl.col("jet ID").len())
+    valids = (
+        explode_rle(
+            do_rle(
+                all_contours
+                .with_columns(condition=condition_expr), [*index_columns, "contour"]
+            )
+            .with_columns(value=pl.col("value").fill_null(False))
+            .filter((pl.col("value").not_() & (pl.col("len") < hole_size)) | pl.col("value"))
         )
-        .explode("int")
-        .explode("int")["int"]
+        .drop("value", "len", "start")
+        .group_by([*index_columns, "contour"], maintain_order=True)
+        .agg(
+            pl.col("index"), 
+            len=pl.col("index").len()
+        )
+        .filter(pl.col("len") > 5)
+        .explode("index")
     )
-    jets = jets.filter(condition_expr2).drop(drop)
-    jets = jets.with_columns(
-        **{
-            "jet ID": jets.group_by(index_columns, maintain_order=True)
-            .agg(pl.col("jet ID").rle_id().alias("id2"))
-            .explode("id2")["id2"]
-            .rename("jet ID")
-        }
+    jets = valids.join(all_contours, on=[*index_columns, "contour", "index"])
+    jets = jets.drop("contour", "cyclic", "len", "index")
+    jets_upd = []
+    for _, jet in jets.group_by("time"):
+        X = jet.select(pl.col("lon"), pl.col("lat")).to_numpy()
+        dists = my_pairwise(X)
+        agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="precomputed").fit(dists)
+        jet = jet.with_columns(**{"jet ID": agg.labels_})
+        jets_upd.append(jet)
+        
+    jets = (
+        pl.concat(jets_upd)
+        .sort([*index_columns, "jet ID"])
+        .with_columns(len=pl.col("s").len().over([*index_columns, "jet ID"]))
+        .filter(pl.col("len") > 15)
+        .drop("len")
+        .with_columns(int=jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s")).over([*index_columns, "jet ID"]))
+        .filter(condition_expr2).drop("int")
+        .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
     )
+
     return jets
 
 
@@ -1647,7 +1451,7 @@ def track_jets(all_jets_one_df: pl.DataFrame, processes: int = N_WORKERS):
     )
     levels = all_jets_one_df.columns[:index_indices]
     outer = [level for level in levels if level not in inner]
-    all_jets_one_df = coarsen(all_jets_one_df, {"lon": 1, "lat": 1})
+    all_jets_one_df = coarsen_pl(all_jets_one_df, {"lon": 1, "lat": 1})
     if len(outer) == 0:
         return _track_jets(all_jets_one_df)
     len_, iterator = create_mappable_iterator(all_jets_one_df, potentials=tuple(outer))

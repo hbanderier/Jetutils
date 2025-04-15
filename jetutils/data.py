@@ -1099,6 +1099,24 @@ def smooth(
     return da
 
 
+def coarsen_da(
+    da: xr.Dataset | xr.DataArray, n_coarsen: float
+) -> xr.Dataset | xr.DataArray:
+    """
+    Thin wrapper around `da.coarsen()` that possibly pad wraps over lon. Disgusting func but it works.
+    """
+    undo_pad = False
+    if pad_wrap(da, "lon"):
+        ds = ds.pad({"lon": n_coarsen // 2}, mode="wrap")
+        undo_pad = True
+    
+    da = da.coarsen({"lon": n_coarsen, "lat": n_coarsen}, boundary="pad", coord_func="first").max()
+    if not undo_pad:
+        return da
+    return da.isel(lon=slice(None, -1)).assign_coords(lon=da.lon[:-1] + (180 - da.lon[0].item()))
+    # da = da.isel(lon=slice(n_coarsen, -n_coarsen))
+
+
 def compute_hourofyear(da: xr.DataArray | xr.Dataset) -> xr.DataArray:
     """
     An extension of dayofyear for every unique hour of the year, from 1st of January midnight to 31st of December 23:00.

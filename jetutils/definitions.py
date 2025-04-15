@@ -714,18 +714,7 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
     return idxs
 
 
-def coarsen_da(
-    da: xr.Dataset | xr.DataArray, target_dx: float
-) -> xr.Dataset | xr.DataArray:
-    """
-    Thin wrapper around `da.coarsen()` to coarsen as close as possible to a target *dx*
-    """
-    dx = (da.lon[1] - da.lon[0]).item()
-    coarsening = int(np.round(target_dx / dx))
-    return da.coarsen({"lon": coarsening, "lat": coarsening}, boundary="trim").mean()
-
-
-def _explode_rle(df):
+def explode_rle(df):
     return df.with_columns(
         index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(
             pl.List(pl.UInt32)
@@ -733,7 +722,7 @@ def _explode_rle(df):
     ).explode("index")
 
 
-def _do_rle(
+def do_rle(
     df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr
 ) -> pl.DataFrame:
     if isinstance(group_by, str | pl.Expr):
@@ -838,12 +827,12 @@ def do_rle_fill_hole(
         )
         .explode("condition", "index")
     )
-    holes_to_fill = _do_rle(df, group_by=group_by)
+    holes_to_fill = do_rle(df, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
         pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
     )
     holes_to_fill = (
-        _explode_rle(holes_to_fill)
+        explode_rle(holes_to_fill)
         .with_columns(condition=pl.lit(True))
         .drop("len", "start", "value")
     )
@@ -853,7 +842,7 @@ def do_rle_fill_hole(
         .then(pl.col("condition_right"))
         .otherwise(pl.col("condition"))
     ).drop("condition_right", "index")
-    df = _do_rle(df, group_by=group_by)
+    df = do_rle(df, group_by=group_by)
 
     if not unwrap and "year" not in group_by:
         return df.drop(*to_drop)
@@ -881,7 +870,7 @@ def do_rle_fill_hole(
 
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
-    df = _explode_rle(df)
+    df = explode_rle(df)
     if "year" not in group_by:
         return df.drop(to_drop)
     orig_time = (
