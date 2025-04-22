@@ -228,6 +228,15 @@ if "DATADIR" not in globals():
         "November",
         "December",
     ]
+    
+    DUNCANS_REGIONS_NAMES = [
+        "Iberian",
+        "West.",
+        "South.",
+        "North.",
+        "Scand.",
+        "N-E.",
+    ]
 
     RADIUS = 6.371e6  # m
     OMEGA = 7.2921e-5  # rad.s-1

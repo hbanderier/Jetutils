@@ -2,7 +2,7 @@
 import warnings
 from os.path import commonpath
 
-from typing import Optional, Mapping, Sequence, Tuple, Literal
+from typing import Optional, Mapping, Sequence, Tuple, Literal, Callable
 from itertools import product
 from pathlib import Path
 
@@ -1100,7 +1100,7 @@ def smooth(
 
 
 def coarsen_da(
-    da: xr.Dataset | xr.DataArray, n_coarsen: float
+    da: xr.Dataset | xr.DataArray, n_coarsen: float, reduce_func: Callable = np.amax
 ) -> xr.Dataset | xr.DataArray:
     """
     Thin wrapper around `da.coarsen()` that possibly pad wraps over lon. Disgusting func but it works.
@@ -1109,8 +1109,9 @@ def coarsen_da(
     if pad_wrap(da, "lon"):
         ds = ds.pad({"lon": n_coarsen // 2}, mode="wrap")
         undo_pad = True
-    
-    da = da.coarsen({"lon": n_coarsen, "lat": n_coarsen}, boundary="pad", coord_func="first").max()
+    coord_func = "first" if undo_pad else "mean"
+    boundary = "pad" if undo_pad else "trim"
+    da = da.coarsen({"lon": n_coarsen, "lat": n_coarsen}, boundary=boundary, coord_func=coord_func).reduce(reduce_func)
     if not undo_pad:
         return da
     return da.isel(lon=slice(None, -1)).assign_coords(lon=da.lon[:-1] + (180 - da.lon[0].item()))

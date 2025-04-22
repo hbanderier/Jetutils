@@ -297,7 +297,7 @@ def compute_contours(ds: xr.Dataset) -> pl.DataFrame:
     """
     Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`.
     """
-    extra_dims = {dim: coord for dim, coord in ds.coords.items() if dim not in ["lon", "lat"]}
+    extra_dims = {dim: ds[dim] for dim in ds.dims if dim not in ["lon", "lat"]}
     iter1 = list(product(*list(extra_dims.values())))
     iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
     iter3 = ((indexer, ds.loc[indexer]) for indexer in iter2)
@@ -359,7 +359,7 @@ def find_all_jets(
         .rename({f"{var}_orig": var for var in smoothed_to_remove})
     )
     x_periodic = has_periodic_x(ds)
-    index_columns = get_index_columns(df)
+    index_columns = get_index_columns(df, ("member", "time", "cluster", "jet ID", "spell", "relative_index", "sample_index", "inside_index"))
     
     # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
@@ -433,7 +433,7 @@ def find_all_jets(
     jets = valids.join(all_contours, on=[*index_columns, "contour", "index"])
     jets = jets.drop("contour", "cyclic", "len", "index")
     jets_upd = []
-    for _, jet in jets.group_by("time"):
+    for _, jet in jets.group_by(index_columns):
         X = jet.select(pl.col("lon"), pl.col("lat")).to_numpy()
         dists = my_pairwise(X)
         agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="precomputed").fit(dists)
@@ -827,7 +827,7 @@ def join_wrapper(df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = 
     indexer = iterate_over_year_maybe_member(df, da, **kwargs)
     df_upd = []
     dims = da.dims
-    for idx1, idx2 in indexer:
+    for idx1, idx2 in tqdm(list(indexer)):
         these_jets = df.filter(*idx1)
         with dask.config.set(**{"array.slicing.split_large_chunks": True}):
             da_ = compute(da.sel(**idx2), progress_flag=False)
@@ -1765,10 +1765,10 @@ class JetFindingExperiment(object):
             print(f"Using thresholds at {qs_path}")
 
         all_jets_one_df = []
-        if "member" in self.metadata or self.ds.nbytes > 2e10:
+        if "member" in self.metadata or self.ds.nbytes > 8e10:
             several_years = 1
         else:
-            several_years = 5
+            several_years = 3
         iterator = iterate_over_year_maybe_member(
             da=self.ds, several_years=several_years
         )
@@ -1900,7 +1900,7 @@ class JetFindingExperiment(object):
         props_as_df.write_parquet(jet_props_incomplete_path)
         return props_as_df
 
-    def track_jets(self) -> Tuple:
+    def track_jets(self, force: bool=False) -> Tuple:
         """
         Wraps `track_jets()` for this object's jets
         """
@@ -1908,7 +1908,7 @@ class JetFindingExperiment(object):
         ofile_ajot = self.path.joinpath("all_jets_over_time.parquet")
         ofile_flags = self.path.joinpath("flags.parquet")
 
-        if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]):
+        if all([ofile.is_file() for ofile in (ofile_ajot, ofile_flags)]) and not force:
             all_jets_over_time = pl.read_parquet(ofile_ajot)
             flags = pl.read_parquet(ofile_flags)
 
