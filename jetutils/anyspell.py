@@ -434,7 +434,7 @@ def get_persistent_jet_spells(
     props_as_df,
     metric: str,
     q: float = 0.9,
-    jet: str | None = None,
+    jet: str = "EDJ",
     season: list | str | None = None,
     **kwargs,
 ):

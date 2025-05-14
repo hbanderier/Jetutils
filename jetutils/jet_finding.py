@@ -10,7 +10,7 @@ from multiprocessing import Pool, current_process, get_context
 
 import numpy as np
 import polars as pl
-import polars_ols
+import polars_ds as pds
 from polars.exceptions import ColumnNotFoundError
 import xarray as xr
 from contourpy import contour_generator
@@ -477,17 +477,12 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
         ],
         *[dl(col).alias(f"{col}_ext") for col in ["lon", "lat"]],
         (
-            pl.col("lat")
-            .least_squares.ols(pl.col("lon"), mode="coefficients", add_intercept=True)
-            .struct.field("lon")
-            .alias("tilt")
+            pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
+            .struct.field("beta").first().alias("tilt")
         ),
         (
-            pl.col("lat")
-            .least_squares.ols(pl.col("lon"), mode="residuals", add_intercept=True)
-            .pow(2)
-            .sum()
-            / dl("lon")
+            1 - pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
+            .struct.field("r2").first()
         ).alias("waviness1"),
         (pl.col("lat") - pl.col("lat").mean()).pow(2).sum().alias("waviness2"),
         (
