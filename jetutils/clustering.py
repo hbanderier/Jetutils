@@ -16,7 +16,6 @@ from sklearn.cluster import KMeans
 from simpsom_dask.simpsom import Simpsom
 
 from .definitions import (
-    coarsen_da,
     save_pickle,
     load_pickle,
     degcos,
@@ -28,6 +27,7 @@ from .definitions import (
 
 from .stats import compute_autocorrs
 from .data import (
+    coarsen_da,
     DataHandler,
     determine_feature_dims,
     open_dataarray,
@@ -766,7 +766,7 @@ class Experiment(object):
             X = self.pca_transform(X, n_pcas)
         else:
             if (da_weighted.lon[1] - da_weighted.lon[0]).item() < 1:
-                da_weighted = coarsen_da(da_weighted, 1.5)
+                da_weighted = coarsen_da(da_weighted, 3)
                 X = da_weighted.data.reshape(self.data_handler.get_flat_shape()[0], -1)
             X, meanX, stX = normalize(X)
         if not force and output_path_weights.is_file():
@@ -850,7 +850,7 @@ class Experiment(object):
             X = self.pca_transform(X, n_pcas)
         else:
             if (da_weighted.lon[1] - da_weighted.lon[0]).item() < 1:
-                da_weighted = coarsen_da(da_weighted, 1.5)
+                da_weighted = coarsen_da(da_weighted, 3)
                 X = da_weighted.data.reshape(self.data_handler.get_flat_shape()[0], -1)
             X, meanX, stX = normalize(X)
 

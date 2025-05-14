@@ -377,9 +377,10 @@ def extend_spells(
         )
         - pl.col("time").first(),
     }
+    other_columns = {col: pl.col(col).first() for col in spells.columns if col not in [*index_columns, *list(exprs), "time"]}
     spells = (
         spells.group_by(index_columns, maintain_order=True)
-        .agg(**exprs)
+        .agg(**exprs, **other_columns)
         .explode(list(exprs)[1:])
         .with_columns(relative_index=(pl.col("relative_time") / dt).cast(pl.Int32))
     )

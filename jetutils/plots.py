@@ -12,7 +12,7 @@ import polars as pl
 from contourpy import contour_generator
 from tqdm import tqdm, trange
 from string import ascii_lowercase
-        
+
 import matplotlib as mpl
 from matplotlib import path as mpath
 from matplotlib import pyplot as plt
@@ -47,7 +47,7 @@ from .definitions import (
     get_index_columns,
     infer_direction,
     polars_to_xarray,
-    xarray_to_polars
+    xarray_to_polars,
 )
 from .jet_finding import gather_normal_da_jets
 from .stats import field_significance
@@ -90,7 +90,14 @@ COLORS10 = [  # https://coolors.co/palette/f94144-f3722c-f8961e-f9844a-f9c74f-90
     "#277DA1",  # Night Blue
 ]
 
-COLORS = np.asarray([colormaps.cet_l_bmw(0.47)[:3], to_rgb("#7a1cfe"), to_rgb("#ff2ec0"), to_rgb("#CE1C66")])
+COLORS = np.asarray(
+    [
+        colormaps.cet_l_bmw(0.47)[:3],
+        to_rgb("#7a1cfe"),
+        to_rgb("#ff2ec0"),
+        to_rgb("#CE1C66"),
+    ]
+)
 # COLORS = np.append(colormaps.cet_l_bmw([0.2, 0.47])[:, :3], np.asarray([to_rgb("#ff2ec0"), to_rgb("#CE1C66")]), axis=0)
 # Dark Blue
 # Purple
@@ -99,20 +106,32 @@ COLORS = np.asarray([colormaps.cet_l_bmw(0.47)[:3], to_rgb("#7a1cfe"), to_rgb("#
 COLORS_EXT = np.repeat(COLORS, 3, axis=0)
 for i in range(len(COLORS)):
     for sign in [1, -1]:
-        newcol_hsv = rgb_to_hsv(COLORS[i][:3]) * (1 + sign * np.asarray([0.0, 0.4, -0.4]))
+        newcol_hsv = rgb_to_hsv(COLORS[i][:3]) * (
+            1 + sign * np.asarray([0.0, 0.4, -0.4])
+        )
         newcol_hsv[1] = np.clip(newcol_hsv[1], 0, 1)
         newcol_hsv[2] = np.clip(newcol_hsv[2], 0, 1)
         COLORS_EXT[3 * i + 1 + sign, :3] = hsv_to_rgb(newcol_hsv)
-        
+
 COLORS = [to_hex(c) for c in COLORS]
 COLORS_EXT = [to_hex(c) for c in COLORS_EXT]
 
-MYBLUES = LinearSegmentedColormap.from_list("myblues", ["#f2f2f2", COLORS[0], COLORS_EXT[2]])
-MYPURPLES = LinearSegmentedColormap.from_list("mypurples", ["#f2f2f2", COLORS[1], COLORS_EXT[5]])
-MYPINKS = LinearSegmentedColormap.from_list("mypinks", ["#f2f2f2", COLORS[2], COLORS_EXT[8]])
-MYREDS = LinearSegmentedColormap.from_list("myreds", ["#f2f2f2", COLORS[3], COLORS_EXT[11]])
+MYBLUES = LinearSegmentedColormap.from_list(
+    "myblues", ["#f2f2f2", COLORS[0], COLORS_EXT[2]]
+)
+MYPURPLES = LinearSegmentedColormap.from_list(
+    "mypurples", ["#f2f2f2", COLORS[1], COLORS_EXT[5]]
+)
+MYPINKS = LinearSegmentedColormap.from_list(
+    "mypinks", ["#f2f2f2", COLORS[2], COLORS_EXT[8]]
+)
+MYREDS = LinearSegmentedColormap.from_list(
+    "myreds", ["#f2f2f2", COLORS[3], COLORS_EXT[11]]
+)
 PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[1]])
-BLUEWHITERED = LinearSegmentedColormap.from_list("bluewhitered", [COLORS_EXT[11], COLORS[3], "#f2f2f2", COLORS[0], COLORS_EXT[2]])
+BLUEWHITERED = LinearSegmentedColormap.from_list(
+    "bluewhitered", [COLORS_EXT[11], COLORS[3], "#f2f2f2", COLORS[0], COLORS_EXT[2]]
+)
 
 
 COASTLINE = feat.NaturalEarthFeature(
@@ -137,15 +156,16 @@ def num2tex(x: float, force: bool = False, ncomma: int = 1) -> str:
         return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
     else:
         return float_str
-    
 
-def p_to_tex(c1: float, c0: float, no_intercept: bool=True) -> str:
+
+def p_to_tex(c1: float, c0: float, no_intercept: bool = True) -> str:
     coef1 = num2tex(c1)
     if no_intercept:
         return rf"$y\sim {coef1}\cdot x$"
     coef0 = num2tex(c0)
     sign = "+" if np.sign(c0) else "-"
     return rf"$y={coef1}\cdot x {sign} {coef0}$"
+
 
 def make_boundary_path(
     minlon: float, maxlon: float, minlat: float, maxlat: float, n: int = 50
@@ -207,7 +227,12 @@ def figtitle(
 
 
 def honeycomb_panel(
-    nrow, ncol, ratio: float = 1.4, subplot_kw: dict = None, hspace: float = 0., wspace: float = 0.
+    nrow,
+    ncol,
+    ratio: float = 1.4,
+    subplot_kw: dict = None,
+    hspace: float = 0.0,
+    wspace: float = 0.0,
 ) -> Tuple[Figure, np.ndarray]:
     fig = plt.figure(figsize=(4.5 * nrow, 4.5 * ratio * nrow))
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=hspace, wspace=wspace)
@@ -221,7 +246,6 @@ def honeycomb_panel(
             slice_x = slice(2 * i + 1, 2 * i + 2 + 1)
         axes[j, i] = fig.add_subplot(gs[j, slice_x], **subplot_kw)
     return fig, axes
-
 
 
 def make_transparent(
@@ -254,7 +278,7 @@ def create_levels(
     to_plot: list, levels: int | Sequence | None = None, q: float = 0.99
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
-        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), 'neither', 1
+        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
     extend = {-1: "min", 0: "both", 1: "max"}
     direction = infer_direction(to_plot)
     extend = extend[direction] if q < 1 else "neither"
@@ -265,20 +289,22 @@ def create_levels(
         else:
             levelscf = levelsc
         return levelsc, levelscf, extend, direction
-    
+
     if levels is None:
         levels = 7 if direction is None else 4
-        
+
     lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
     lowbound = 0 if direction == 1 else lowbound
     highbound = 0 if direction == -1 else highbound
-    levelsc = MaxNLocator(levels, symmetric=(direction==0)).tick_values(lowbound, highbound)
+    levelsc = MaxNLocator(levels, symmetric=(direction == 0)).tick_values(
+        lowbound, highbound
+    )
     if direction == 0:
         levelscf = np.delete(levelsc, len(levelsc) // 2)
     else:
         levelscf = levelsc
     return levelsc, levelscf, extend, direction
-    
+
 
 def doubleit(thing: list | str | None, length: int, default: str) -> list:
     if isinstance(thing, str):
@@ -379,7 +405,7 @@ class Clusterplot:
                     [self.minlon, self.maxlon, self.minlat, self.maxlat],
                     crs=ccrs.PlateCarree(),
                 )
-            if coastline:    
+            if coastline:
                 ax.add_feature(COASTLINE)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
         if numbering:
@@ -391,7 +417,21 @@ class Clusterplot:
                     j = str(numbering[i])
                 else:
                     j = str(i + 1)
-                ax.annotate(j, (2.2, 4), xycoords='axes points', ha="left", va="baseline", fontweight="demi", fontsize=12, bbox={"boxstyle": "square, pad=0.1", "edgecolor": "none", "facecolor": "white"}, usetex=False)            
+                ax.annotate(
+                    j,
+                    (2.2, 4),
+                    xycoords="axes points",
+                    ha="left",
+                    va="baseline",
+                    fontweight="demi",
+                    fontsize=12,
+                    bbox={
+                        "boxstyle": "square, pad=0.1",
+                        "edgecolor": "none",
+                        "facecolor": "white",
+                    },
+                    usetex=False,
+                )
 
     def _add_gridlines(self, step: int | tuple = None) -> None:
         for ax in self.axes:
@@ -431,10 +471,10 @@ class Clusterplot:
             if isinstance(title, float):
                 title = f"{title:.2f}"
             ax.set_title(title, fontsize=16)
-            
+
     def resize_relative(self, ratios=Sequence[float]):
         self.fig.set_size_inches(self.fig.get_size_inches() * np.asarray(ratios))
-        
+
     def resize_absolute(self, size=Sequence[float]):
         self.fig.set_size_inches(np.asarray(size))
 
@@ -449,7 +489,7 @@ class Clusterplot:
         titles: Iterable = None,
         colors: list | str = None,
         linestyles: list | str = None,
-        q: float=0.99,
+        q: float = 0.99,
         **kwargs,
     ) -> None:
         lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
@@ -467,8 +507,8 @@ class Clusterplot:
             colors = "black"
         if direction != 0 and linestyles is None:
             linestyles = "solid"
-        if 'cmap' in kwargs and kwargs['cmap'] is not None:
-            colors=None
+        if "cmap" in kwargs and kwargs["cmap"] is not None:
+            colors = None
 
         for ax, toplt in zip(self.axes, to_plot):
             cs = ax.contour(
@@ -507,7 +547,7 @@ class Clusterplot:
         clabels: Union[bool, list] = None,
         cbar_label: str = None,
         cbar_kwargs: Mapping = None,
-        q: float=0.99,
+        q: float = 0.99,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
         levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q)
@@ -517,11 +557,17 @@ class Clusterplot:
         if transparify:
             if isinstance(transparify, int):
                 cmap = make_transparent(
-                    cmap, nlev=len(levelscf), n_transparent=transparify, direction=direction
+                    cmap,
+                    nlev=len(levelscf),
+                    n_transparent=transparify,
+                    direction=direction,
                 )
             elif isinstance(transparify, float):
                 cmap = make_transparent(
-                    cmap, nlev=len(levelscf), alpha_others=transparify, direction=direction
+                    cmap,
+                    nlev=len(levelscf),
+                    alpha_others=transparify,
+                    direction=direction,
                 )
             else:
                 cmap = make_transparent(cmap, nlev=len(levelscf), direction=direction)
@@ -567,7 +613,7 @@ class Clusterplot:
         cbar_label: str = None,
         titles: Iterable = None,
         cbar_kwargs: Mapping = None,
-        q: float=0.99,
+        q: float = 0.99,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
         lon, lat = setup_lon_lat(to_plot, lon, lat)
@@ -664,7 +710,7 @@ class Clusterplot:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
                 continue
             to_plot.append(da.isel({time_name: mas}).mean(dim=time_name))
-            
+
         if type == "contourf":
             im = self.add_contourf(
                 to_plot,
@@ -818,28 +864,36 @@ def trends_and_pvalues(
 
     def agg_func(col):
         return pl.col(col).std() if std else pl.col(col).mean()
-    
+
     aggs = [agg_func(col) for col in data_vars]
-    props_as_df = props_as_df.group_by(pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True).agg(*aggs)
-        
+    props_as_df = props_as_df.group_by(
+        pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
+    ).agg(*aggs)
+
     x = props_as_df["year"].unique()
     n = len(x)
     num_blocks = n // bootstrap_len
 
     rng = np.random.default_rng()
 
-    sample_indices = rng.choice(n - bootstrap_len, size=(n_boostraps, n // bootstrap_len))
+    sample_indices = rng.choice(
+        n - bootstrap_len, size=(n_boostraps, n // bootstrap_len)
+    )
     sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
     sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
-    sample_indices = np.append(sample_indices, np.arange(sample_indices.shape[1])[None, :], axis=0)
+    sample_indices = np.append(
+        sample_indices, np.arange(sample_indices.shape[1])[None, :], axis=0
+    )
     sample_indices = ncat * np.repeat(sample_indices.flatten(), ncat)
     for k in range(ncat):
         sample_indices[k::ncat] = sample_indices[k::ncat] + k
 
     ts_bootstrapped = props_as_df[sample_indices]
     ts_bootstrapped = ts_bootstrapped.with_columns(
-        sample_index=np.arange(len(ts_bootstrapped)) // (ncat * num_blocks * bootstrap_len),
-        inside_index=np.arange(len(ts_bootstrapped)) % (ncat * num_blocks * bootstrap_len),
+        sample_index=np.arange(len(ts_bootstrapped))
+        // (ncat * num_blocks * bootstrap_len),
+        inside_index=np.arange(len(ts_bootstrapped))
+        % (ncat * num_blocks * bootstrap_len),
     )
 
     slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
@@ -893,6 +947,7 @@ def clear(func):
             clear_output()
             return
         return fig
+
     return wrapper
 
 
@@ -920,14 +975,14 @@ def plot_trends(
         sharex="all",
     )
     axes = axes.flatten()
-    
+
     x, y, slopes, constants, pvals = trends_and_pvalues(
         props_as_df=props_as_df,
         data_vars=data_vars,
         season=season,
         std=std,
         bootstrap_len=bootstrap_len,
-        n_boostraps=n_boostraps
+        n_boostraps=n_boostraps,
     )
     ncat = props_as_df["jet"].n_unique()
 
@@ -976,10 +1031,12 @@ def plot_trends(
         ax.legend(ncol=1, fontsize=10)
     if save:
         subtitle = "_std_" if std else "_"
-        fig.savefig(f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png")
+        fig.savefig(
+            f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png"
+        )
     return fig
-        
-        
+
+
 @clear
 def plot_seasonal(
     props_as_df: pl.DataFrame,
@@ -1003,7 +1060,8 @@ def plot_seasonal(
     jets = props_as_df["jet"].unique().to_numpy()
     njets = len(jets)
     gb = props_as_df.group_by(
-        [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")], maintain_order=True
+        [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
+        maintain_order=True,
     )
     means = gb.agg([pl.col(col).mean() for col in data_vars])
     means = periodic_rolling_pl(means, 15, data_vars)
@@ -1057,6 +1115,7 @@ def plot_seasonal(
     if save:
         plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
     return fig
+
 
 @clear
 def props_histogram(
@@ -1127,21 +1186,36 @@ def props_histogram(
     if save:
         fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
     return fig
-        
 
-def interp_jets_to_zero_one(jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 30):
+
+def interp_jets_to_zero_one(
+    jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 30
+):
     if isinstance(varnames, str):
         varnames = [varnames]
     index_columns = get_index_columns(jets)
     if "relative_index" in index_columns and "time" in index_columns:
         index_columns.remove("time")
         varnames.append("time")
-    jets = jets.with_columns(norm_index=jets.group_by(index_columns, maintain_order=True).agg(pl.col("index") / pl.col("index").max())["index"].explode())
-    jets = jets.group_by([*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"], maintain_order=True).agg([pl.col(varname).mean() for varname in varnames])
+    jets = jets.with_columns(
+        norm_index=jets.group_by(index_columns, maintain_order=True)
+        .agg(pl.col("index") / pl.col("index").max())["index"]
+        .explode()
+    )
+    jets = jets.group_by(
+        [*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"],
+        maintain_order=True,
+    ).agg([pl.col(varname).mean() for varname in varnames])
     return jets
 
 
-def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: xr.DataArray, n_interp: int = 30, clim: xr.DataArray | None = None):
+def _gather_normal_da_jets_wrapper(
+    jets: pl.DataFrame,
+    times: pl.DataFrame,
+    da: xr.DataArray,
+    n_interp: int = 30,
+    clim: xr.DataArray | None = None,
+):
     jets = times.join(jets, on="time", how="left")
     jets = gather_normal_da_jets(jets, da, half_length=20, dn=1)
     varname = da.name + "_interp"
@@ -1150,45 +1224,96 @@ def _gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.DataFrame, da: 
     if clim is None:
         return jets
     clim = xarray_to_polars(clim)
-    jets = jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar") > 0.5).cast({"n": pl.Float64})
-    jets = jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"]).with_columns(pl.col(varname) - pl.col(f"{varname}_right")).drop(f"{varname}_right", "dayofyear")
+    jets = jets.with_columns(
+        dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar") > 0.5
+    ).cast({"n": pl.Float64})
+    jets = (
+        jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
+        .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
+        .drop(f"{varname}_right", "dayofyear")
+    )
     return jets
 
 
-def gather_normal_da_jets_wrapper(jets: pl.DataFrame, times: pl.Series, da: xr.DataArray, n_interp: int = 30, n_bootstraps: int = 0, clim: xr.DataArray | None = None):
+def gather_normal_da_jets_wrapper(
+    jets: pl.DataFrame,
+    times: pl.Series,
+    da: xr.DataArray,
+    n_interp: int = 30,
+    n_bootstraps: int = 0,
+    clim: xr.DataArray | None = None,
+):
     varname = da.name + "_interp"
     if not n_bootstraps:
         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim)
-        jets = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).mean())
+        jets = jets.group_by(
+            [pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True
+        ).agg(pl.col(varname).mean())
         return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
     rng = np.random.default_rng()
     orig_times = times.clone()
     boostrap_len = orig_times["time"].n_unique()
     all_times = jets["time"].unique().clone()
-    times = times[["time"]].with_row_index("inside_index").with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
-    if "spell" in orig_times.columns: # then block bootstrapping
+    times = (
+        times[["time"]]
+        .with_row_index("inside_index")
+        .with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
+    )
+    if "spell" in orig_times.columns:  # then block bootstrapping
         if (boostrap_len % orig_times["spell"].n_unique()) == 0:
             bootstrap_block = int(boostrap_len // orig_times["spell"].n_unique())
         else:
             bootstrap_block = 1
-        boostraps = rng.choice(all_times.shape[0] - bootstrap_block, size=(n_bootstraps, boostrap_len // bootstrap_block))
+        boostraps = rng.choice(
+            all_times.shape[0] - bootstrap_block,
+            size=(n_bootstraps, boostrap_len // bootstrap_block),
+        )
         boostraps = boostraps[..., None] + np.arange(bootstrap_block)[None, None, :]
         boostraps = boostraps.reshape(n_bootstraps, boostrap_len)
     else:
         boostraps = rng.choice(all_times.shape[0], size=(n_bootstraps, boostrap_len))
     ts_bootstrapped = all_times[boostraps.flatten()].to_frame()
     ts_bootstrapped = ts_bootstrapped.with_columns(
-        sample_index=pl.Series(values=np.arange(len(ts_bootstrapped)) // boostrap_len, dtype=pl.UInt32),
-        inside_index=pl.Series(values=np.arange(len(ts_bootstrapped)) % boostrap_len, dtype=pl.UInt32),
+        sample_index=pl.Series(
+            values=np.arange(len(ts_bootstrapped)) // boostrap_len, dtype=pl.UInt32
+        ),
+        inside_index=pl.Series(
+            values=np.arange(len(ts_bootstrapped)) % boostrap_len, dtype=pl.UInt32
+        ),
     )
     columns = ["sample_index", "inside_index", "time"]
-    ts_bootstrapped = pl.concat([
-        ts_bootstrapped[columns],
-        times[columns],
-    ])
-    jets = _gather_normal_da_jets_wrapper(jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim)
-    jets = jets.group_by(["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"]).agg(pl.col(varname).mean()).sort("sample_index", "is_polar", "norm_index", "n")
-    pvals = jets.group_by([pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True).agg(pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)) / n_bootstraps)
+    ts_bootstrapped = pl.concat(
+        [
+            ts_bootstrapped[columns],
+            times[columns],
+        ]
+    )
+    jets = _gather_normal_da_jets_wrapper(
+        jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim
+    )
+    jets = (
+        jets.group_by(
+            ["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"],
+            maintain_order=True,
+        )
+        .agg(pl.col(varname).mean())
+        .sort("sample_index", "is_polar", "norm_index", "n")
+    )
+    jets = (
+        jets[["sample_index"]]
+        .unique()
+        .join(jets[["is_polar"]].unique(), how="cross")
+        .join(jets[["norm_index"]].unique(), how="cross")
+        .join(jets[["n"]].unique(), how="cross")
+        .sort("sample_index", "is_polar", "norm_index", "n")
+        .join(jets, on=["sample_index", "is_polar", "norm_index", "n"], how="left")
+    )
+    pvals = jets.group_by(
+        [pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True
+    ).agg(
+        pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1))
+        / n_bootstraps
+    )
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
     jets = jets.with_columns(pvals=pvals[varname])
     return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
