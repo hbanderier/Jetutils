@@ -23,7 +23,7 @@ It can do:
 
 **Predictor importance studies**: Which jet metrics are important for predicting heat waves in France at a 10 day lag?
 
-**And more**: see [the documentation](https://jet-stream.readthedocs.io/en/latest/index.html). It is about half complete right now. 
+**And more**: see [the documentation](https://jet-stream.readthedocs.io/en/latest/index.html).
 
 ## Configuration
 
@@ -52,6 +52,6 @@ MEMORY_LIMIT = 8GiB
 ```
 
 ## Citation
-If any of this is useful to you please consider citing 
+If any of this is useful to you, please cite:
 
 Banderier, H., Tuel, A., Woollings, T., and Martius, O.: Trends and seasonal signals in Atlantic feature-based jet stream characteristics and in weather types, EGUsphere [preprint], https://doi.org/10.5194/egusphere-2024-3029, 2024. 
