@@ -2,7 +2,7 @@
 import warnings
 from os.path import commonpath
 
-from typing import Optional, Mapping, Sequence, Tuple, Literal, Callable
+from typing import Optional, Mapping, Tuple, Literal, Callable
 from itertools import product
 from pathlib import Path
 
@@ -1082,12 +1082,17 @@ def smooth(
     da: same as input
         Smoothed input
     """    
+    def detrend(da):
+        p = da.polyfit(dim="time", deg=1)
+        fit = xr.polyval("time", p.polyfit_coefficients)
+        return da - fit
+
     if smooth_map is None:
         return da
     for dim, value in smooth_map.items():
         if dim == "detrended":
             if value:
-                da = da.map_blocks(xrft.detrend, template=da, args=["time", "linear"])
+                da = da.map_blocks(detrend, template=da, args=["time", "linear"])
             continue
         smooth_type, winsize = value
         if smooth_type.lower() in ["lowpass", "fft", "fft_smoothing"]:
@@ -1107,7 +1112,7 @@ def coarsen_da(
     """
     undo_pad = False
     if pad_wrap(da, "lon"):
-        ds = ds.pad({"lon": n_coarsen // 2}, mode="wrap")
+        da = da.pad({"lon": n_coarsen // 2}, mode="wrap")
         undo_pad = True
     coord_func = "first" if undo_pad else "mean"
     boundary = "pad" if undo_pad else "trim"

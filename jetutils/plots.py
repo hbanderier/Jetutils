@@ -67,7 +67,8 @@ mpl.rcParams["figure.dpi"] = 100
 mpl.rcParams["savefig.dpi"] = 300
 mpl.rcParams["savefig.bbox"] = "tight"
 mpl.rcParams["text.usetex"] = False
-mpl.rcParams["animation.ffmpeg_path"] = r"~/mambaforge/envs/env11/bin/ffmpeg"
+mpl.rcParams["animation.ffmpeg_path"] = r"~/miniforge3/envs/env12/bin/ffmpeg"
+
 
 COLORS5 = [
     "#167e1b",

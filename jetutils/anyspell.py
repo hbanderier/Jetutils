@@ -10,7 +10,6 @@ import polars as pl
 import xarray as xr
 import polars_ds as pds
 import polars.selectors as cs
-from tqdm import tqdm, trange
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, cut_tree
 from sklearn.metrics import pairwise_distances
