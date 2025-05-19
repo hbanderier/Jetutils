@@ -9,6 +9,7 @@ from scipy.interpolate import LinearNDInterpolator
 import xarray as xr
 from xarray import DataArray
 import polars as pl
+import polars_ds as pds
 from contourpy import contour_generator
 from tqdm import tqdm, trange
 from string import ascii_lowercase
@@ -899,22 +900,22 @@ def trends_and_pvalues(
 
     slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
         **{
-            data_var: pl.col(data_var)
-            .least_squares.ols(
-                pl.int_range(0, pl.col("year").len()).alias("year"),
-                mode="coefficients",
-                add_intercept=True,
-            )
-            .struct.field("year")
+            data_var: pds.lin_reg_report(
+                    pl.int_range(0, pl.col("year").len()).alias("year"), 
+                    target=pl.col(data_var), 
+                    add_bias=True
+                ).struct.field("beta").first()
             for data_var in data_vars
         }
     )
 
     constants = props_as_df.group_by("jet", maintain_order=True).agg(
         **{
-            data_var: pl.col(data_var)
-            .least_squares.ols(pl.col("year"), mode="coefficients", add_intercept=True)
-            .struct.field("const")
+            data_var: pds.lin_reg_report(
+                pl.col("year"), 
+                target=pl.col(data_var), 
+                add_bias=True
+            ).struct.field("beta").last()
             for data_var in data_vars
         }
     )
@@ -924,7 +925,7 @@ def trends_and_pvalues(
             data_var: pl.col(data_var)
             .head(n_boostraps)
             .sort()
-            .search_sorted(pl.col(data_var).get(-1))
+            .search_sorted(pl.col(data_var).get(-1)).first()
             / n_boostraps
             for data_var in data_vars
         }
@@ -936,8 +937,6 @@ def clear(func):
     def wrapper(*args, **kwargs):
         clear = kwargs.get("clear", True)
         if clear:
-            plt.ioff()
-        else:
             plt.ion()
             plt.show()
             clear_output()
@@ -947,6 +946,8 @@ def clear(func):
             plt.close()
             clear_output()
             return
+        else:
+            plt.show()
         return fig
 
     return wrapper

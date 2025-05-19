@@ -235,19 +235,16 @@ def _get_persistent_spell_times_from_som(
         .with_columns(index[out["range"]])
         .filter(pl.col("len") >= minlen)
         .with_columns(pl.col("spell").rle_id())
-        .group_by("spell", maintain_order=True)
-        .agg(
-            [
+        .with_columns(
+            *[
                 pl.col(col).filter(
-                    pl.col("time").dt.year()
-                    == pl.col("time")
-                    .dt.year()
-                    .get(pl.arg_where(pl.col("relative_index") == 0).first())
-                )
+                    pl.col("year")
+                    == pl.col("year")
+                    .gather(pl.arg_where(pl.col("relative_index") == 0).first())
+                ).over("spell")
                 for col in ["time", "relative_index", "value", "len"]
             ]
         )
-        .explode(["time", "relative_index", "value", "len"])
     )
     if nojune:
         june_filter = out.group_by("spell", maintain_order=True).agg(
@@ -256,12 +253,7 @@ def _get_persistent_spell_times_from_som(
         out = out.filter(pl.col("spell").is_in(june_filter.not_().arg_true()))
         out = out.with_columns(pl.col("spell").rle_id())
     out = out.with_columns(
-        out.group_by("spell", maintain_order=True)
-        .agg(
-            relative_time=pl.col("time")
-            - pl.col("time").get(pl.arg_where(pl.col("relative_index") == 0).first())
-        )
-        .explode("relative_time")
+        relative_time=(pl.col("time") - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0).first())).over("spell")
     )
     if "member" in labels_df.columns:
         out = out.with_columns(member=pl.lit(labels_df["member"].first()))
@@ -464,9 +456,10 @@ def mask_from_spells_pl(
     time_after: datetime.timedelta = datetime.timedelta(0),
 ):
     spells = extend_spells(spells, time_before=time_before, time_after=time_after)
-    unique_times_spells = spells["time"].unique().to_numpy()
-    unique_times_to_mask = np.unique(to_mask["time"].to_numpy())
-    unique_times = np.intersect1d(unique_times_spells, unique_times_to_mask)
+    index_columns = get_index_columns(spells, ("member", "time"))
+    unique_index_spells = spells.select(index_columns).unique()
+    unique_times_to_mask = pl.Series(np.unique(to_mask[index_columns].to_numpy()))
+    unique_times = np.intersect1d(unique_index_spells, unique_times_to_mask)
     if isinstance(to_mask, xr.DataArray | xr.Dataset):
         to_mask = compute(to_mask.sel(time=unique_times), progress=True)
         to_mask = xarray_to_polars(to_mask)
