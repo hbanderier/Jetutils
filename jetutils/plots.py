@@ -38,6 +38,7 @@ import colormaps
 import cartopy.crs as ccrs
 import cartopy.feature as feat
 from IPython.display import clear_output
+import datetime
 
 from .definitions import (
     FIGURES,
@@ -53,6 +54,7 @@ from .definitions import (
 from .jet_finding import gather_normal_da_jets
 from .stats import field_significance
 from .data import periodic_rolling_pl
+from .anyspell import extend_spells
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 
@@ -1244,7 +1246,10 @@ def gather_normal_da_jets_wrapper(
     n_interp: int = 30,
     n_bootstraps: int = 0,
     clim: xr.DataArray | None = None,
+    time_before: datetime.timedelta = datetime.timedelta(0),
+    time_after: datetime.timedelta = datetime.timedelta(0),
 ):
+    times = extend_spells(times, time_before=time_before, time_after=time_after)
     varname = da.name + "_interp"
     if not n_bootstraps:
         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim)
