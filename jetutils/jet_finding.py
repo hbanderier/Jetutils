@@ -183,8 +183,7 @@ def directional_diff(
 
 
 def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13) -> xr.Dataset:
-    if (ds.lon[1] - ds.lon[0]) <= 0.75:
-        ds = coarsen_da(ds, n_coarsen=n_coarsen)
+    ds = coarsen_da(ds, n_coarsen=n_coarsen)
     
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
@@ -339,6 +338,7 @@ def find_all_jets(
     thresholds: xr.DataArray | None = None,
     base_s_thresh: float = 0.7,
     alignment_thresh: float = 0.6,
+    int_thresh_factor: float = 0.8,
     hole_size: int = 4,
 ):
     """
@@ -349,7 +349,7 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_ds(ds, smooth_s=5)
+    ds = preprocess_ds(ds, n_coarsen=2, smooth_s=5)
     dx = (ds["lon"][1] - ds["lon"][0]).item()
     dy = (ds["lat"][1] - ds["lat"][0]).item()
     dX = 2 * np.sqrt(dx ** 2 + dy ** 2)
@@ -364,13 +364,13 @@ def find_all_jets(
     
     # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.8
+    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(index_columns).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
         )
         base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
-        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * 0.8
+        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
     elif thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -628,6 +628,7 @@ def gather_normal_da_jets(
 
     # Expr normals
     normallon = pl.col("lon") + pl.col("angle").cos() * pl.col("n")
+    normallon = (normallon + 180) % 360 - 180
     normallat = pl.col("lat") + pl.col("angle").sin() * pl.col("n")
 
     index_columns = get_index_columns(
