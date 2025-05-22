@@ -23,17 +23,19 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
 try:
     from xgboost import XGBClassifier, XGBRegressor
+
     xgboost_avail = True
 except ModuleNotFoundError:
     xgboost_avail = False
-    
+
 try:
     from fasttreeshap import TreeExplainer, Explainer
 except ModuleNotFoundError:
     from shap import TreeExplainer, Explainer
-    
+
 
 from .definitions import (
     DEFAULT_VALUES,
@@ -144,6 +146,7 @@ def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
         y_true, y_proba, sample_weight=sample_weight, pos_label=pos_label
     )
 
+
 ALL_SCORES = {
     func.__name__.split("loss")[0]: func
     for func in (
@@ -225,23 +228,26 @@ def _get_persistent_spell_times_from_som(
             ),
             relative_index=pl.int_ranges(
                 -nt_before, pl.col("len") + nt_after, dtype=pl.Int16
-            ) 
+            ),
         )
-        .with_row_index("spell").explode(["range", "relative_index"])
+        .with_row_index("spell")
+        .explode(["range", "relative_index"])
         .filter(pl.col("range") < len(index), pl.col("range") >= 0)
     )
     out = (
-        out
-        .with_columns(index[out["range"]])
+        out.with_columns(index[out["range"]])
         .filter(pl.col("len") >= minlen)
         .with_columns(pl.col("spell").rle_id())
         .with_columns(
             *[
-                pl.col(col).filter(
+                pl.col(col)
+                .filter(
                     pl.col("year")
-                    == pl.col("year")
-                    .gather(pl.arg_where(pl.col("relative_index") == 0).first())
-                ).over("spell")
+                    == pl.col("year").gather(
+                        pl.arg_where(pl.col("relative_index") == 0).first()
+                    )
+                )
+                .over("spell")
                 for col in ["time", "relative_index", "value", "len"]
             ]
         )
@@ -253,7 +259,10 @@ def _get_persistent_spell_times_from_som(
         out = out.filter(pl.col("spell").is_in(june_filter.not_().arg_true()))
         out = out.with_columns(pl.col("spell").rle_id())
     out = out.with_columns(
-        relative_time=(pl.col("time") - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0).first())).over("spell")
+        relative_time=(
+            pl.col("time")
+            - pl.col("time").gather(pl.arg_where(pl.col("relative_index") == 0).first())
+        ).over("spell")
     )
     if "member" in labels_df.columns:
         out = out.with_columns(member=pl.lit(labels_df["member"].first()))
@@ -368,7 +377,11 @@ def extend_spells(
         )
         - pl.col("time").first(),
     }
-    other_columns = {col: pl.col(col).first() for col in spells.columns if col not in [*index_columns, *list(exprs), "time"]}
+    other_columns = {
+        col: pl.col(col).first()
+        for col in spells.columns
+        if col not in [*index_columns, *list(exprs), "time"]
+    }
     spells = (
         spells.group_by(index_columns, maintain_order=True)
         .agg(**exprs, **other_columns)
@@ -378,7 +391,10 @@ def extend_spells(
     return spells
 
 
-def make_daily(df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None) -> pl.DataFrame:
+def make_daily(
+    df: pl.DataFrame,
+    group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None,
+) -> pl.DataFrame:
     aggs = [
         (~cs.numeric()).first(),
         cs.numeric().mean(),
@@ -457,8 +473,12 @@ def mask_from_spells_pl(
 ):
     spells = extend_spells(spells, time_before=time_before, time_after=time_after)
     index_columns = get_index_columns(spells, ("member", "time"))
-    unique_index_spells = spells.select(index_columns).unique()
-    unique_times_to_mask = pl.Series(np.unique(to_mask[index_columns].to_numpy()))
+    unique_index_spells = spells.select(index_columns).unique(index_columns)
+    unique_times_to_mask = [
+        pl.Series(index_column, to_mask[index_column].to_numpy())
+        for index_column in index_columns
+    ]
+    unique_times_to_mask = pl.DataFrame(unique_times_to_mask).unique(index_columns)
     unique_times = np.intersect1d(unique_index_spells, unique_times_to_mask)
     if isinstance(to_mask, xr.DataArray | xr.Dataset):
         to_mask = compute(to_mask.sel(time=unique_times), progress=True)
@@ -545,7 +565,9 @@ def spatial_pairwise_jaccard(
 def handle_nan_predictors(
     predictors: pl.DataFrame,
     index_columns_no_time: list[str],
-    nan_method: Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"] = "fill",
+    nan_method: (
+        Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"]
+    ) = "fill",
 ) -> pl.DataFrame:
     data_vars = [
         col for col in predictors.columns if col not in [*index_columns_no_time, "time"]
@@ -598,10 +620,14 @@ def detrend_pl(
         col for col in df.columns if col not in [*index_columns_no_time, "time"]
     ]
     aggs = {"time": pl.col("time")}
-    aggs = aggs | {data_var: pds.detrend(pl.col(data_var), "linear") for data_var in data_vars}
-    df = df.group_by(index_columns_no_time, maintain_order=True).agg(
-        **aggs
-    ).explode(list(aggs))
+    aggs = aggs | {
+        data_var: pds.detrend(pl.col(data_var), "linear") for data_var in data_vars
+    }
+    df = (
+        df.group_by(index_columns_no_time, maintain_order=True)
+        .agg(**aggs)
+        .explode(list(aggs))
+    )
     return df
 
 
@@ -613,8 +639,7 @@ def add_timescales_no_gb(
     out = []
     for timescale in timescales:
         aggs = {
-            col: (pl.mean(col).rolling("time", period=timescale))
-            for col in data_vars
+            col: (pl.mean(col).rolling("time", period=timescale)) for col in data_vars
         }
         out_ = df.with_columns(timescale=timescale, time=pl.col("time"), **aggs)
         out.append(out_)
@@ -626,16 +651,12 @@ def add_timescales(
     index_columns: list[str],
     timescales: list[datetime.timedelta] | None = None,
 ) -> pl.DataFrame:
-    data_vars = [
-        col for col in df.columns if col not in [*index_columns, "time"]
-    ]
+    data_vars = [col for col in df.columns if col not in [*index_columns, "time"]]
     if not index_columns:
         return add_timescales_no_gb(df, data_vars, timescales)
     out = []
     for _, predictors_ in df.group_by(index_columns):
-        predictors_ = add_timescales_no_gb(
-            predictors_, data_vars, timescales
-        )
+        predictors_ = add_timescales_no_gb(predictors_, data_vars, timescales)
         out.append(predictors_)
     return pl.concat(df)
 
@@ -650,6 +671,7 @@ def add_lags(
     ilags = (np.asarray(lags) / dt).astype(int)
     jump_times = unique_times.filter((unique_times.diff() > dt).fill_null(True))
     data_vars = [col for col in df.columns if col not in [*index_columns, "time"]]
+
     def _aggs_add_lags(
         lag: datetime.timedelta,
         ilag: int,
@@ -659,18 +681,24 @@ def add_lags(
             .group_by("time", maintain_order=True)
             .agg(
                 pl.datetime_range(
-                    pl.col("time"), pl.col("time") + lag, interval=dt, closed="both" if ilag != 0 else "none"
+                    pl.col("time"),
+                    pl.col("time") + lag,
+                    interval=dt,
+                    closed="both" if ilag != 0 else "none",
                 ).alias("times")
             )["times"]
             .explode()
         )
         aggs = {
             data_var: (
-                pl.when(pl.col("time").is_in(flagged_times)).then(None).otherwise(pl.col(data_var).shift(ilag))   
+                pl.when(pl.col("time").is_in(flagged_times))
+                .then(None)
+                .otherwise(pl.col(data_var).shift(ilag))
             )
             for data_var in data_vars
         }
         return aggs
+
     out = []
     for lag, ilag in zip(lags, ilags):
         aggs = _aggs_add_lags(lag, ilag)
@@ -689,7 +717,9 @@ def prepare_predictors(
     standardize: bool = False,
     detrend: bool = False,
     to_daily: bool = False,
-    nan_method: Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"] = "fill",
+    nan_method: (
+        Literal["fill"] | Literal["fill_mean"] | Literal["linear"] | Literal["nearest"]
+    ) = "fill",
     season: str | list | None = None,
     timescales: list[datetime.timedelta] | None = None,
     lags: list[datetime.timedelta] | None = None,
@@ -707,7 +737,9 @@ def prepare_predictors(
         )
         if nan_method == "fill":
             nan_method = "fill_mean"
-    predictors = handle_nan_predictors(predictors, index_columns_no_time, nan_method=nan_method)
+    predictors = handle_nan_predictors(
+        predictors, index_columns_no_time, nan_method=nan_method
+    )
     if detrend:
         predictors = detrend_pl(predictors, index_columns_no_time)
     if to_daily:
@@ -717,9 +749,7 @@ def prepare_predictors(
         index_columns = [col for col in index_columns if col != "jet"]
         index_columns_no_time = [col for col in index_columns_no_time if col != "jet"]
     if timescales:
-        predictors = add_timescales(
-            predictors, index_columns_no_time, timescales
-        )
+        predictors = add_timescales(predictors, index_columns_no_time, timescales)
         predictors = predictors.with_columns(pl.col("timescale").dt.to_string())
         predictors = predictors.pivot("timescale", index=index_columns)
     if lags:
@@ -754,15 +784,23 @@ def compute_all_scores(y_test, y_pred, y_pred_prob) -> Mapping:
         else:
             scores[scorename] = scorefunc(y_test, y_pred)
     return scores
-    
-    
-def compute_all_importances(model: AnyModel, model_type: str, X: pl.DataFrame, y: pl.DataFrame, compute_shap: bool = False):
+
+
+def compute_all_importances(
+    model: AnyModel,
+    model_type: str,
+    X: pl.DataFrame,
+    y: pl.DataFrame,
+    compute_shap: bool = False,
+):
     predictor_names = X.columns
     names = []
-    corr = pl.concat([X, y.to_frame()], how="horizontal").select(*[pl.corr(predictor, "target") for predictor in predictor_names])
+    corr = pl.concat([X, y.to_frame()], how="horizontal").select(
+        *[pl.corr(predictor, "target") for predictor in predictor_names]
+    )
     corr = corr.to_dicts()[0]
     names.append("correlation")
-    
+
     if model_type in ["rf", "xgb"]:
         model_imp = model.feature_importances_
         names.append("impurity")
@@ -770,27 +808,27 @@ def compute_all_importances(model: AnyModel, model_type: str, X: pl.DataFrame, y
         model_imp = model.coef_.ravel()
         names.append("coef_")
     model_imp = dict(zip(predictor_names, model_imp))
-    
+
     perm_imp = permutation_importance(
         model, X.to_pandas(), y, n_repeats=30, random_state=0, n_jobs=1
     )["importances_mean"]
     perm_imp = dict(zip(predictor_names, perm_imp))
     names.append("permutation")
-    
+
     if not compute_shap:
         to_ret = pl.from_dicts([corr, model_imp, perm_imp])
         to_ret = to_ret.with_columns(importance_type=names)
         return to_ret
-    
+
     shap_explainer = TreeExplainer(model) if model_type == "rf" else Explainer(model)
     shap_values = shap_explainer(X.to_numpy(), y, check_additivity=False).values
-    
+
     mean_shap = shap_values.mean(axis=0)
     mean_shap = dict(zip(predictor_names, mean_shap))
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
     mean_abs_shap = dict(zip(predictor_names, mean_abs_shap))
     names.extend(("mean_shap", "mean_abs_shap"))
-    
+
     to_ret = pl.from_dicts([corr, model_imp, perm_imp, mean_shap, mean_abs_shap])
     to_ret = to_ret.with_columns(importance_type=pl.Series("importance_type", names))
 
@@ -829,23 +867,35 @@ def predict_all(
     _type_
         _description_
     """
-    index_columns_targets = get_index_columns(orig_targets, ["region", "member", "time"])
+    index_columns_targets = get_index_columns(
+        orig_targets, ["region", "member", "time"]
+    )
     index_columns_predictors = get_index_columns(predictors, ["member", "time", "lag"])
-    predictor_names = [col for col in predictors.columns if col not in index_columns_predictors]
+    predictor_names = [
+        col for col in predictors.columns if col not in index_columns_predictors
+    ]
     # Handle base_pred
     if model_type == "lr" and base_pred is not None:
         print(f"Base pred is incompatible with {model_type}, ignoring")
         base_pred = None
     if base_pred is not None:
-        targets = orig_targets[*index_columns_targets, "len"].join(base_pred.drop("len"), on=index_columns_targets)
-        targets = targets.with_columns(target=pl.col("len").cast(pl.Float32) - pl.col("pred").cast(pl.Float32))
+        targets = orig_targets[*index_columns_targets, "len"].join(
+            base_pred.drop("len"), on=index_columns_targets
+        )
+        targets = targets.with_columns(
+            target=pl.col("len").cast(pl.Float32) - pl.col("pred").cast(pl.Float32)
+        )
     else:
-        targets = orig_targets[[*index_columns_targets, "len"]].with_columns(target=pl.col("len").cast(pl.Boolean), pred=0.)
+        targets = orig_targets[[*index_columns_targets, "len"]].with_columns(
+            target=pl.col("len").cast(pl.Boolean), pred=0.0
+        )
     join_columns = np.intersect1d(index_columns_targets, index_columns_predictors)
-    targets = targets.join(predictors.cast({"time": pl.Datetime("us")}), on=join_columns)
+    targets = targets.join(
+        predictors.cast({"time": pl.Datetime("us")}), on=join_columns
+    )
     group_by_columns = get_index_columns(targets, ["region", "lag"])
     Model_class = ALL_MODELS[model_type][int(base_pred is not None)]
-    
+
     full_pred = []
     scores = []
     feature_importances = []
@@ -870,22 +920,27 @@ def predict_all(
                 y_pred_prob_test = np.clip(y_pred_prob_test, 0, 1)
                 y_pred_test = y_pred_prob_test > 0.5
                 pred = model.predict(X) + y_base
-            this_pred = df.drop(["target", "len", "pred", *predictor_names]).with_columns(pred=pred, fold=fold)
+            this_pred = df.drop(
+                ["target", "len", "pred", *predictor_names]
+            ).with_columns(pred=pred, fold=fold)
             full_pred.append(this_pred)
-            
-            these_scores = compute_all_scores(y_orig_test, y_pred_test, y_pred_prob_test)
+
+            these_scores = compute_all_scores(
+                y_orig_test, y_pred_test, y_pred_prob_test
+            )
             scores.append(indexer_dict_with_fold | these_scores)
-            
-            these_importances = compute_all_importances(model, model_type, X, y, compute_shap)
+
+            these_importances = compute_all_importances(
+                model, model_type, X, y, compute_shap
+            )
             these_importances = these_importances.with_columns(**indexer_dict_with_fold)
             feature_importances.append(these_importances)
-    
+
     full_pred = pl.concat(full_pred)
     scores = pl.from_dicts(scores)
     feature_importances = pl.concat(feature_importances)
     return full_pred, scores, feature_importances
-    
-    
+
 
 class ExtremeExperiment(object):
     def __init__(
