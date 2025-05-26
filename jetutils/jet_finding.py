@@ -4,9 +4,8 @@ This probably too big module contains all the utilities relative to jet extracti
 """
 import warnings
 from itertools import product
-from datetime import timedelta
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
-from multiprocessing import Pool, current_process, get_context
+from multiprocessing import Pool
 
 import numpy as np
 import polars as pl
@@ -30,7 +29,6 @@ from .definitions import (
     get_index_columns,
     extract_season_from_df,
     explode_rle,
-    labels_to_mask
 )
 from .data import (
     compute_extreme_climatology,
@@ -1681,7 +1679,6 @@ class JetFindingExperiment(object):
                 / pl.col("dt")
             )
             .cast(pl.Float32())
-            .fill_null(0.0)
         )
         props_as_df = props_as_df.with_columns(com_speed=diffs["com_speed"])
         return props_as_df

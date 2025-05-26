@@ -723,6 +723,20 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
     return idxs
 
 
+def gb_index(
+    df: pl.DataFrame,
+    group_by: list | tuple,
+    name: str = "index",
+    dtype: pl.DataType = pl.UInt32,
+):
+    if not group_by:
+        return df.with_row_index(name=name)
+    index_ = {name: pl.int_ranges(pl.col(name), dtype=dtype)}
+    count = df.group_by(group_by, maintain_order=True).len().rename({"len": name})
+    count = {name: count.with_columns(**index_)[name].explode()}
+    return df.sort(group_by).with_columns(**count)
+
+
 def explode_rle(df):
     return df.with_columns(
         index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(
@@ -734,7 +748,7 @@ def explode_rle(df):
 def do_rle(
     df: pl.DataFrame, group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr
 ) -> pl.DataFrame:
-    if isinstance(group_by, str | pl.Expr):
+    if isinstance(group_by, pl.Expr | str):
         group_by = [group_by]
     conditional = (
         df.group_by(group_by, maintain_order=True)
@@ -793,58 +807,39 @@ def do_rle_fill_hole(
     """
     if isinstance(group_by, str | pl.Expr):
         group_by = [group_by]
-    if isinstance(hole_size, datetime.timedelta):
-        if "time" not in df.columns or (group_by is not None and "time" in group_by):
-            raise ValueError
-        times = df["time"].unique().bottom_k(2).sort()
-        dt = times[1] - times[0]
-        hole_size = int(hole_size / dt)  # I am not responsible for rounding errors
     to_drop = []
     if not group_by:
-        if "contour" in df.columns:
-            group_by = get_index_columns(
-                df, ("member", "time", "cluster", "contour", "spell", "relative_index", "relative_time")
-            )
-        else:
-            group_by = []
-            group_by.extend(get_index_columns(df, ["member", "cluster"]))
-            if "time" in df.columns:
-                unique_months = df["time"].dt.month().unique().sort()
-                n_months = unique_months.shape[0]
-                if n_months < 12:
-                    index_jump = (unique_months.diff().fill_null(1) > 1).arg_max()
-                    indices = (np.arange(n_months) + index_jump) % n_months
-                    dmonth = 13 - unique_months[int(indices[0])]
-                    dmonth = dmonth if index_jump != 0 else 0
-                    df = df.with_columns(pl.col("time").dt.offset_by(f"{dmonth}mo"))
-                    df = df.with_columns(year=pl.col("time").dt.year())
-                    group_by.append("year")
-                orig_time = df[["time", *group_by]].clone()
-                orig_time = orig_time.with_columns(
-                    year=pl.col("time").dt.year(),
-                )
+        group_by = []
+        group_by.extend(get_index_columns(df, ["member", "cluster"]))
 
     if not group_by:
         df = df.with_columns(dummy=1)
         group_by.append("dummy")
         to_drop.append("dummy")
-    df = (
-        df.group_by(group_by, maintain_order=True)
-        .agg(
-            condition_expr.alias("condition"),
-            index=pl.int_range(0, condition_expr.len()).cast(pl.UInt32),
-        )
-        .explode("condition", "index")
+    condition_expr_fill_holes = condition_expr.not_()
+    if isinstance(hole_size, datetime.timedelta):
+        if "time" not in df.columns or (group_by is not None and "time" in group_by):
+            raise ValueError
+        times = df["time"].unique().bottom_k(2).sort()
+        dt = times[1] - times[0]
+        hole_size = int(hole_size / dt)
+        no_time_jump_expr = (pl.col("time").diff() <= pl.col("time").diff().mode()).fill_null(True)
+        condition_expr_fill_holes = condition_expr_fill_holes & no_time_jump_expr
+        condition_expr = condition_expr & no_time_jump_expr
+    df = df.with_columns(
+        condition_expr_fill_holes.alias("condition").over(group_by),
+        index=pl.int_range(0, condition_expr.len()).cast(pl.UInt32).over(group_by)
     )
     holes_to_fill = do_rle(df, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
-        pl.col("len") <= hole_size, pl.col("value").not_(), pl.col("start") > 0
+        pl.col("len") <= hole_size, pl.col("value"), pl.col("start") > 0
     )
     holes_to_fill = (
         explode_rle(holes_to_fill)
         .with_columns(condition=pl.lit(True))
         .drop("len", "start", "value")
     )
+    df = df.with_columns(condition=condition_expr.alias("condition").over(group_by))
     df = df.join(holes_to_fill, on=[*group_by, "index"], how="left")
     df = df.with_columns(
         condition=pl.when(pl.col("condition_right").is_not_null())
@@ -853,44 +848,13 @@ def do_rle_fill_hole(
     ).drop("condition_right", "index")
     df = do_rle(df, group_by=group_by)
 
-    if not unwrap and "year" not in group_by:
+    if not unwrap:
         return df.drop(*to_drop)
-
-    if not unwrap and "year" in group_by:
-        start_idx = orig_time.group_by(*group_by, maintain_order=True).len("start_idx")
-        group_by.remove("year")
-        if len(group_by) == 0:
-            start_idx = start_idx.with_columns(
-                pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0)
-            )
-        else:
-            start_idx = start_idx.with_columns(
-                start_idx.group_by(group_by, maintain_order=True)
-                .agg(pl.col("start_idx").cum_sum() - pl.col("start_idx").get(0))[
-                    "start_idx"
-                ]
-                .explode()
-            )
-        df = df.join(start_idx, on=["year", *group_by])
-        df = df.with_columns(start=pl.col("start") + pl.col("start_idx")).drop(
-            "year", "start_idx"
-        )
-        return df
 
     df = df.filter("value")
     to_drop.extend(["len", "start", "value"])
     df = explode_rle(df)
-    if "year" not in group_by:
-        return df.drop(to_drop)
-    orig_time = (
-        orig_time.group_by("year")
-        .agg(
-            pl.col("time").dt.offset_by(f"{-dmonth}mo"),
-            index=pl.int_range(0, pl.col("time").len()).cast(pl.UInt32),
-        )
-        .explode("time", "index")
-    )
-    return df.join(orig_time, on=["year", "index"]).sort(*group_by)
+    return df.drop(to_drop)
 
 
 # Obsolete

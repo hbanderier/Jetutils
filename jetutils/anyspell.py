@@ -50,6 +50,7 @@ from .definitions import (
     polars_to_xarray,
     get_index_columns,
     extract_season_from_df,
+    gb_index,
 )
 from .data import (
     compute_anomalies_pl,
@@ -237,20 +238,14 @@ def _get_persistent_spell_times_from_som(
     out = (
         out.with_columns(index[out["range"]])
         .filter(pl.col("len") >= minlen)
-        .with_columns(pl.col("spell").rle_id())
         .with_columns(
-            *[
-                pl.col(col)
-                .filter(
-                    pl.col("year")
-                    == pl.col("year").gather(
-                        pl.arg_where(pl.col("relative_index") == 0).first()
-                    )
-                )
-                .over("spell")
-                for col in ["time", "relative_index", "value", "len"]
-            ]
+            pl.col("spell").rle_id(),
+            filter_=(pl.col("time").dt.year() == pl.col("time").dt.year().gather(
+                pl.arg_where(pl.col("relative_index") == 0).first()
+            )).over("spell")
         )
+        .filter(pl.col("filter_"))
+        .drop("filter_")
     )
     if nojune:
         june_filter = out.group_by("spell", maintain_order=True).agg(
@@ -337,20 +332,6 @@ def get_persistent_spell_times_from_som(
         .collect()
     )
     return spells
-
-
-def gb_index(
-    df: pl.DataFrame,
-    group_by: list | tuple,
-    name: str = "index",
-    dtype: pl.DataType = pl.UInt32,
-):
-    if not group_by:
-        return df.with_row_index(name=name)
-    index_ = {name: pl.int_ranges(pl.col(name), dtype=dtype)}
-    count = df.group_by(group_by, maintain_order=True).len().rename({"len": name})
-    count = {name: count.with_columns(**index_)[name].explode()}
-    return df.sort(group_by).with_columns(**count)
 
 
 def extend_spells(

@@ -237,8 +237,9 @@ def honeycomb_panel(
     subplot_kw: dict = None,
     hspace: float = 0.0,
     wspace: float = 0.0,
+    row_height: float = 2.0,
 ) -> Tuple[Figure, np.ndarray]:
-    fig = plt.figure(figsize=(4.5 * nrow, 4.5 * ratio * nrow))
+    fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=hspace, wspace=wspace)
     axes = np.empty((nrow, ncol), dtype=object)
     if subplot_kw is None:
@@ -1193,7 +1194,7 @@ def props_histogram(
 
 
 def interp_jets_to_zero_one(
-    jets: pl.DataFrame, varnames: Sequence[str] | str, n_interp: int = 30
+    jets: pl.DataFrame, varnames: list[str] | str, n_interp: int = 30
 ):
     if isinstance(varnames, str):
         varnames = [varnames]
@@ -1243,7 +1244,7 @@ def _gather_normal_da_jets_wrapper(
 
 def gather_normal_da_jets_wrapper(
     jets: pl.DataFrame,
-    times: pl.Series,
+    times: pl.DataFrame,
     da: xr.DataArray,
     n_interp: int = 30,
     n_bootstraps: int = 0,
