@@ -6,6 +6,7 @@ from multiprocessing import set_start_method as set_mp_start_method
 import datetime
 
 import numpy as np
+from outcome import Value
 import polars as pl
 import xarray as xr
 import polars_ds as pds
@@ -171,14 +172,18 @@ else:
 
 
 def _get_spells_sigma(
-    df: pl.DataFrame, dists: np.ndarray, sigma: int = 1
+    df: pl.DataFrame, dists: np.ndarray | None = None, sigma: int = 1
 ) -> pl.DataFrame:
     start = 0
     spells = []
+    next_distance_cond = np.zeros(1, dtype=bool)
     while True:
-        start_lab = df[int(start), "labels"]
-        next_distance_cond = dists[start_lab, df[start:, "labels"]] > sigma
-        if not any(next_distance_cond):
+        start_lab: int = df[int(start), "labels"]
+        if dists is not None:
+            next_distance_cond: np.ndarray = dists[start_lab, df[start:, "labels"].to_numpy()] > sigma
+        else:
+            next_distance_cond: np.ndarray = df[start:, "labels"].to_numpy() != start_lab
+        if not np.any(next_distance_cond):
             spells.append(
                 {
                     "rel_start": start,
@@ -187,7 +192,7 @@ def _get_spells_sigma(
                 }
             )
             break
-        to_next = np.argmax(next_distance_cond)
+        to_next = np.argmax(next_distance_cond).item()
         val = df[int(start) : int(start + to_next), ["labels"]].with_columns(
             pl.col("labels").drop_nulls().mode().first().alias("mode")
         )[0, "mode"]
@@ -198,7 +203,7 @@ def _get_spells_sigma(
 
 def _get_persistent_spell_times_from_som(
     labels_df: pl.DataFrame,
-    dists: np.ndarray,
+    dists: np.ndarray | None = None,
     sigma: int = 0,
     minlen: int = 4,
     nt_before: int = 0,
@@ -206,6 +211,9 @@ def _get_persistent_spell_times_from_som(
     nojune: bool = True,
     daily: bool = False,
 ):
+    if dists is None and sigma > 0:
+        print("sigma > 0 needs a distance matrix")
+        raise ValueError
     index_columns = get_index_columns(labels_df)
     index = labels_df[index_columns].unique(maintain_order=True)
 
@@ -284,7 +292,7 @@ def _get_persistent_spell_times_from_som(
 
 def get_persistent_spell_times_from_som(
     labels,
-    dists: np.ndarray,
+    dists: np.ndarray | None = None,
     sigma: float = 0.0,
     minlen: int = 4,
     nt_before: int = 0,
