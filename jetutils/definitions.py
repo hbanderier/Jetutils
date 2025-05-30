@@ -816,6 +816,11 @@ def do_rle_fill_hole(
         df = df.with_columns(dummy=1)
         group_by.append("dummy")
         to_drop.append("dummy")
+    df = df.with_columns(
+        index=pl.int_range(0, pl.col(group_by[0]).len()).cast(pl.UInt32).over(group_by)
+    )
+    df1 = df.with_columns(condition=condition_expr.not_().over(group_by))
+    df = df.with_columns(condition=condition_expr.over(group_by))
     condition_expr_fill_holes = condition_expr.not_()
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or (group_by is not None and "time" in group_by):
@@ -824,13 +829,10 @@ def do_rle_fill_hole(
         dt = times[1] - times[0]
         hole_size = int(hole_size / dt)
         no_time_jump_expr = (pl.col("time").diff() <= pl.col("time").diff().mode()).fill_null(True)
-        condition_expr_fill_holes = condition_expr_fill_holes & no_time_jump_expr
-        condition_expr = condition_expr & no_time_jump_expr
-    df = df.with_columns(
-        condition_expr_fill_holes.alias("condition").over(group_by),
-        index=pl.int_range(0, condition_expr.len()).cast(pl.UInt32).over(group_by)
-    )
-    holes_to_fill = do_rle(df, group_by=group_by)
+        df = df.with_columns(condition=pl.col("condition") & no_time_jump_expr)
+        df1 = df1.with_columns(condition=pl.col("condition") & no_time_jump_expr)
+
+    holes_to_fill = do_rle(df1, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
         pl.col("len") <= hole_size, pl.col("value"), pl.col("start") > 0
     )
@@ -839,7 +841,6 @@ def do_rle_fill_hole(
         .with_columns(condition=pl.lit(True))
         .drop("len", "start", "value")
     )
-    df = df.with_columns(condition=condition_expr.alias("condition").over(group_by))
     df = df.join(holes_to_fill, on=[*group_by, "index"], how="left")
     df = df.with_columns(
         condition=pl.when(pl.col("condition_right").is_not_null())

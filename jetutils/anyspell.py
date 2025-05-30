@@ -551,6 +551,26 @@ def spatial_pairwise_jaccard(
     return pairwise_distances(to_cluster_flat.T, metric=metric, n_jobs=N_WORKERS)
 
 
+
+def regionalize(da: xr.DataArray, clusters: xr.DataArray, sample_dims: list[str]):
+    df = xarray_to_polars(da)
+    
+    clusters = (
+        xarray_to_polars(clusters)
+        .drop_nulls("lsm")
+        .rename({"lsm": "region"})
+        .cast({"region": pl.UInt16})
+    )
+
+    targets = (
+        df.join(clusters, on=["lon", "lat"])
+        .group_by([*sample_dims, "region"], maintain_order=True)
+        .agg(pl.col(da.name).mean())
+    )
+    targets = targets.cast({"time": pl.Datetime("us")})
+    return targets
+
+
 def handle_nan_predictors(
     predictors: pl.DataFrame,
     index_columns_no_time: list[str],
@@ -1044,20 +1064,7 @@ class ExtremeExperiment(object):
                 to_ret.append(pl.read_parquet(ofile))
             return tuple(to_ret)
         clusters = self.spatial_clusters_as_da(n_clu)
-        clusters = (
-            xarray_to_polars(clusters)
-            .drop_nulls("lsm")
-            .rename({"lsm": "region"})
-            .cast({"region": pl.UInt16})
-        )
-        df = xarray_to_polars(self.da)
-
-        targets = (
-            df.join(clusters, on=["lon", "lat"])
-            .group_by([*sample_dims, "region"], maintain_order=True)
-            .agg(pl.col(self.da.name).mean())
-        )
-        targets = targets.cast({"time": pl.Datetime("us")})
+        targets = regionalize(self.da, clusters, sample_dims)
 
         targets = extract_season_from_df(targets, self.season)
         expr = pl.col(self.da.name)
