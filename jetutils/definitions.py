@@ -732,7 +732,7 @@ def gb_index(
     if not group_by:
         return df.with_row_index(name=name)
     index_ = {name: pl.int_ranges(pl.col(name), dtype=dtype)}
-    count = df.group_by(group_by, maintain_order=True).len().rename({"len": name})
+    count = df.group_by(group_by).len().rename({"len": name}).sort(group_by)
     count = {name: count.with_columns(**index_)[name].explode()}
     return df.sort(group_by).with_columns(**count)
 
@@ -821,14 +821,13 @@ def do_rle_fill_hole(
     )
     df1 = df.with_columns(condition=condition_expr.not_().over(group_by))
     df = df.with_columns(condition=condition_expr.over(group_by))
-    condition_expr_fill_holes = condition_expr.not_()
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or (group_by is not None and "time" in group_by):
             raise ValueError
         times = df["time"].unique().bottom_k(2).sort()
         dt = times[1] - times[0]
         hole_size = int(hole_size / dt)
-        no_time_jump_expr = (pl.col("time").diff() <= pl.col("time").diff().mode()).fill_null(True)
+        no_time_jump_expr = (pl.col("time").diff() <= dt).fill_null(True)
         df = df.with_columns(condition=pl.col("condition") & no_time_jump_expr)
         df1 = df1.with_columns(condition=pl.col("condition") & no_time_jump_expr)
 

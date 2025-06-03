@@ -6,7 +6,6 @@ from multiprocessing import set_start_method as set_mp_start_method
 import datetime
 
 import numpy as np
-from outcome import Value
 import polars as pl
 import xarray as xr
 import polars_ds as pds
@@ -554,11 +553,12 @@ def spatial_pairwise_jaccard(
 
 def regionalize(da: xr.DataArray, clusters: xr.DataArray, sample_dims: list[str]):
     df = xarray_to_polars(da)
+    name = clusters.name
     
     clusters = (
         xarray_to_polars(clusters)
-        .drop_nulls("lsm")
-        .rename({"lsm": "region"})
+        .drop_nulls(name)
+        .rename({name: "region"})
         .cast({"region": pl.UInt16})
     )
 
@@ -567,7 +567,7 @@ def regionalize(da: xr.DataArray, clusters: xr.DataArray, sample_dims: list[str]
         .group_by([*sample_dims, "region"], maintain_order=True)
         .agg(pl.col(da.name).mean())
     )
-    targets = targets.cast({"time": pl.Datetime("us")})
+    targets = targets.cast({"time": pl.Datetime("ms")})
     return targets
 
 
