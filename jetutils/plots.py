@@ -365,12 +365,13 @@ class Clusterplot:
         honeycomb: bool = False,
         numbering: bool | Callable | Sequence = False,
         coastline: bool = True,
+        row_height: float = 3,
     ) -> None:
         self.nrow = nrow
         self.ncol = ncol
         self.lambert_projection = lambert_projection
         if region is None:
-            region = (-60, 70, 20, 80)  # Default region ?
+            region = (-80, 20, 15, 80)  # Default region ?
         self.region = region
         self.minlon, self.maxlon, self.minlat, self.maxlat = region
         if self.lambert_projection:
@@ -391,13 +392,13 @@ class Clusterplot:
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
-                self.nrow, self.ncol, ratio, subplot_kw={"projection": projection}
+                self.nrow, self.ncol, ratio, subplot_kw={"projection": projection}, row_height=row_height
             )
         else:
             self.fig, self.axes = plt.subplots(
                 self.nrow,
                 self.ncol,
-                figsize=(6.5 * self.ncol, 6.5 * self.ncol * ratio),
+                figsize=(row_height * self.ncol, row_height * self.ncol * ratio),
                 constrained_layout=not lambert_projection,
                 subplot_kw={"projection": projection},
             )
