@@ -234,10 +234,10 @@ def honeycomb_panel(
     nrow,
     ncol,
     ratio: float = 1.4,
-    subplot_kw: dict = None,
     hspace: float = 0.0,
     wspace: float = 0.0,
     row_height: float = 2.0,
+    **subplot_kw,
 ) -> Tuple[Figure, np.ndarray]:
     fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=hspace, wspace=wspace)
@@ -392,7 +392,7 @@ class Clusterplot:
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
-                self.nrow, self.ncol, ratio, subplot_kw={"projection": projection}, row_height=row_height
+                self.nrow, self.ncol, ratio, row_height=row_height, projection=projection
             )
         else:
             self.fig, self.axes = plt.subplots(
@@ -707,6 +707,7 @@ class Clusterplot:
         mask: np.ndarray,
         type: str = "contourf",
         stippling: bool | str = False,
+        reduction_function: Callable = np.mean,
         **kwargs,
     ) -> ScalarMappable | None:
         to_plot = []
@@ -715,7 +716,7 @@ class Clusterplot:
             if np.sum(mas) < 1:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
                 continue
-            to_plot.append(da.isel({time_name: mas}).mean(dim=time_name))
+            to_plot.append(da.isel({time_name: mas}).reduce(reduction_function, dim=time_name))
 
         if type == "contourf":
             im = self.add_contourf(
