@@ -598,16 +598,12 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
     return jets
 
 
-def gather_normal_da_jets(
+def add_normals(
     jets: pl.DataFrame,
-    da: xr.DataArray,
     half_length: float = 12.0,
     dn: float = 1.0,
     delete_middle: bool = False,
 ) -> pl.DataFrame:
-    """
-    Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
-    """
     is_polar = ["is_polar"] if "is_polar" in jets.columns else []
     ns_df = np.arange(-half_length, half_length + dn, dn)
     if delete_middle:
@@ -667,6 +663,34 @@ def gather_normal_da_jets(
             *is_polar,
         ]
     ]
+    return jets
+
+
+def gather_normal_da_jets(
+    jets: pl.DataFrame,
+    da: xr.DataArray,
+    half_length: float = 12.0,
+    dn: float = 1.0,
+    delete_middle: bool = False,
+) -> pl.DataFrame:
+    """
+    Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
+    """
+    index_columns = get_index_columns(
+        jets,
+        (
+            "member",
+            "time",
+            "cluster",
+            "spell",
+            "relative_index",
+            "relative_time",
+            "jet ID",
+            "sample_index",
+            "inside_index",
+        ),
+    )
+    jets = add_normals(jets, half_length, dn, delete_middle)
 
     da = da.sel(
         lon=slice(jets["normallon"].min(), jets["normallon"].max()),
