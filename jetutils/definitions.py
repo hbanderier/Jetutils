@@ -126,6 +126,7 @@ if "DATADIR" not in globals():
         "int_ratio": "Ratio low / high ints",
         "com_speed": "COM speed",
         "double_jet_index": "Double jet index",
+        "ratio": "Baroclinicity proxy",
     }
 
     UNITS = {
@@ -152,6 +153,7 @@ if "DATADIR" not in globals():
         "njets": r"$~$",
         "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
         "double_jet_index": "$~$",
+        "ratio": "$~$",
     }
 
     DEFAULT_VALUES = {
@@ -182,6 +184,7 @@ if "DATADIR" not in globals():
         "is_polar": True,
         "n_jets": 0,
         "flag": 0,
+        "ratio": 0.3,
     }
 
     LATEXY_VARNAME = {
@@ -205,6 +208,7 @@ if "DATADIR" not in globals():
         "int_low": r"$\int_{700\text{ hPa}} s \mathrm{d}\lambda$",
         "int_over_europe": r"$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$",
         "persistence": r"$\Delta t$",
+        "ratio": r"$\frac{s^*}{s_{500}}$",
     }
 
     SEASONS = {
