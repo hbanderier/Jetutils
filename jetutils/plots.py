@@ -1068,15 +1068,14 @@ def plot_seasonal(
     njets = len(jets)
     gb = props_as_df.group_by(
         [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
-        maintain_order=True,
     )
-    means = gb.agg([pl.col(col).mean() for col in data_vars])
+    means = gb.agg([pl.col(col).mean() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
     means = periodic_rolling_pl(means, 15, data_vars)
     x = means["dayofyear"].unique()
-    medians = gb.agg([pl.col(col).median() for col in data_vars])
+    medians = gb.agg([pl.col(col).median() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
     medians = periodic_rolling_pl(medians, 15, data_vars)
-    q025 = gb.quantile(0.25)
-    q075 = gb.quantile(0.75)
+    q025 = gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True])
+    q075 = gb.quantile(0.75).sort("dayofyear", "jet", descending=[False, True])
     if njets == 3:
         color_order = [2, 3, 1]
     else:

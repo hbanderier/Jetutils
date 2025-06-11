@@ -1328,7 +1328,39 @@ def compute_all_smoothed_anomalies(
             anom = smooth(anom, smoothing)
             anom = compute(anom.astype(np.float32))
         to_netcdf(anom, dest)
-
+        
+        
+def compute_all_dailymeans(
+    dataset: str,
+    level_type: Literal["plev"]
+    | Literal["thetalev"]
+    | Literal["surf"]
+    | Literal["2PVU"]
+    | None = None,
+    varname: str | None = None,
+    reduction_function: Callable = np.mean
+):
+    path = Path(DATADIR, dataset, level_type, varname)
+    path_from = path.joinpath("6H")
+    path_to = path.joinpath(f"daily{reduction_function.__name__}")
+    path_to.mkdir(exist_ok=True)
+    sources = [
+        source
+        for source in path_from.iterdir()
+        if source.suffix == ".nc"
+    ]
+    dests = [
+        path_to.joinpath(fn.name) 
+        for fn in sources
+    ]
+    for source, dest in zip(sources, tqdm(dests)):
+        if dest.is_file():
+            continue
+        da = standardize(open_dataarray(source)).chunk("auto")
+        da = da.resample(time="1d").reduce(reduction_function)  
+        da = compute(da, progress=True)  
+        da.to_netcdf(dest)
+    
 
 def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
     """

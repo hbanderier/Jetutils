@@ -1244,6 +1244,65 @@ def average_jet_categories(
     return props_as_df_cat
 
 
+def add_com_speed(
+    props_as_df: pl.DataFrame,
+    lon_is_zero: bool = False,
+    lat_is_zero: bool = False,
+    smooth: bool = False
+) -> pl.DataFrame:
+    """
+    Computes the jets' center of mass (COM) speed as a new property in `props_as_df`.
+
+    Parameters
+    ----------
+    props_as_df : pl.DataFrame
+        categorized jet properties
+
+    Returns
+    -------
+    pl.DataFrame
+        `props_as_df` with a new column: `com_speed`.
+    """
+    member = ["member"] if "member" in props_as_df.columns else []
+    desc_member = [False] if "member" in props_as_df.columns else []
+    lon = pl.lit(0) if lon_is_zero else pl.col("mean_lon")
+    lat = pl.lit(0) if lat_is_zero else pl.col("mean_lat")
+    diffs = (
+        props_as_df[[*member, "jet", "time", "mean_lon", "mean_lat"]]
+        .group_by([*member, "jet"])
+        .agg(
+            pl.col("time"),
+            cs.numeric().diff().abs(),
+            (
+                pl.col("time").diff().cast(pl.Float32())
+                / pl.duration(
+                    seconds=1, time_unit=props_as_df["time"].dtype.time_unit
+                ).cast(pl.Float32())
+            ).alias("dt"),
+            pl.col("mean_lat").alias("actual_lat"),
+        )
+        .explode(cs.all().exclude([*member, "jet"]))
+        .sort([*member, "time", "jet"], descending=[*desc_member, False, True])
+        .with_columns(
+            com_speed=(
+                haversine_from_dl(pl.col("actual_lat"), lon, lat)
+                / pl.col("dt")
+            )
+            .cast(pl.Float32())
+        )
+    )   
+    if smooth:
+        diffs = (
+            diffs
+            .rolling("time", period="2d", offset="-1d", group_by=[*member, "jet"])
+            .agg(pl.col("com_speed").mean())
+        )
+    if "com_speed" in props_as_df.columns:
+        props_as_df = props_as_df.drop("com_speed")
+    props_as_df = props_as_df.join(diffs[[*member, "time", "jet", "com_speed"]], on=[*member, "time", "jet"])
+    return props_as_df.sort([*member, "time", "jet"])
+
+
 def jet_position_as_da(
     all_jets_one_df: pl.DataFrame,
 ) -> xr.DataArray:
@@ -1659,53 +1718,6 @@ class JetFindingExperiment(object):
             all_props_over_time.write_parquet(out_path)
         return all_props_over_time
 
-    def add_com_speed(
-        self,
-        props_as_df: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """
-        Computes the jets' center of mass (COM) speed as a new property in `props_as_df`.
-
-        Parameters
-        ----------
-        all_jets_over_time : pl.DataFrame
-            the first output of `track_jets()`
-        props_as_df : pl.DataFrame
-            jet properties
-        force : bool, optional
-            whether to recompute even if `com_speed` is already a column in `props_as_df`, by default False
-
-        Returns
-        -------
-        pl.DataFrame
-            `props_as_df` with a new column: `com_speed`.
-        """
-        diffs = (
-            props_as_df[["jet", "time", "mean_lon", "mean_lat"]]
-            .group_by("jet")
-            .agg(
-                pl.col("time"),
-                cs.numeric().diff().abs(),
-                (
-                    pl.col("time").diff().cast(pl.Float32())
-                    / pl.duration(
-                        seconds=1, time_unit=props_as_df["time"].dtype.time_unit
-                    ).cast(pl.Float32())
-                ).alias("dt"),
-                pl.col("mean_lat").alias("actual_lat"),
-            )
-            .explode(cs.all().exclude("jet"))
-            .sort("time", "jet", descending=[False, True])
-        )
-        diffs = diffs.with_columns(
-            com_speed=(
-                haversine_from_dl(pl.col("actual_lat"), pl.col("mean_lon"), pl.col("mean_lat"))
-                / pl.col("dt")
-            )
-            .cast(pl.Float32())
-        )
-        props_as_df = props_as_df.with_columns(com_speed=diffs["com_speed"])
-        return props_as_df
 
     def jet_position_as_da(self, force: bool = False):
         """
