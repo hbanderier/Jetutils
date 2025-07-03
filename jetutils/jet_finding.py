@@ -6,6 +6,7 @@ import warnings
 from itertools import product
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
 from multiprocessing import Pool
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -1127,6 +1128,81 @@ def is_polar_gmix(
     return pl.concat(to_concat).sort(index_columns)
 
 
+def add_feature_for_cat(
+    jets: pl.DataFrame,
+    feature: str,
+    ds: xr.Dataset | None = None,
+    ds_low: xr.Dataset | None = None,
+    ofile_ajdf: Path | None = None,
+    force: bool = False,
+):
+    if ((feature in jets.columns) and not force):
+        return jets
+    if feature in jets.columns:
+        jets = jets.drop(feature)
+    if feature == "ratio":
+        da = ds_low["s"]
+        jets.drop("s_low")
+        jets = join_wrapper(jets, da, suffix="_low")
+        jets = jet.with_columns(
+            ratio=pl.col("s_low") / pl.col("s")
+        )
+    else:
+        da = ds[feature]
+        jets = join_wrapper(jets, da)
+    if ofile_ajdf is not None:
+        jets.write_parquet(ofile_ajdf)
+    return jets
+
+
+def categorize_jets(
+    jets: pl.DataFrame,
+    ds: xr.Dataset | None = None,
+    low_wind: xr.Dataset | xr.DataArray | None = None,
+    feature_names: tuple | None = None,
+    force: int = 0,
+    mode: (
+        Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"]
+    ) = "week",
+    n_components: int | Sequence = 2,
+    n_init: int = 20,
+    init_params: str = "random_from_data",
+):
+    if feature_names is None:
+        feature_names = ("ratio", "theta")
+    if "ratio" in feature_names and low_wind is None:
+        print("you need to provide low wind")
+        raise ValueError
+    if "is_polar" in jets.columns and not force:
+        return jets
+    
+    if isinstance(low_wind, xr.Dataset):
+        low_wind = low_wind[["s"]]
+
+    lon = jets["lon"].unique().sort().to_numpy()
+    lat = jets["lat"].unique().sort().to_numpy()
+    if low_wind is not None:
+        low_wind = low_wind.interp(lon=lon, lat=lat)
+    for feat in feature_names:
+        add_feature_for_cat(
+            jets,
+            feat,
+            ds,
+            low_wind,
+            force=force > 1,
+        )
+
+    jets = is_polar_gmix(
+        jets,
+        feature_names=feature_names,
+        mode=mode,
+        n_components=n_components,
+        n_init=n_init,
+        init_params=init_params,
+    )
+    return jets
+
+
 def average_jet_categories(
     props_as_df: pl.DataFrame,
     polar_cutoff: float | None = None,
@@ -1518,7 +1594,8 @@ class JetFindingExperiment(object):
 
     def categorize_jets(
         self,
-        low_wind: xr.Dataset | xr.DataArray,
+        low_wind: xr.Dataset | xr.DataArray | None = None,
+        feature_names: tuple | None = None,
         force: int = 0,
         mode: (
             Literal["year"] | Literal["season"] | Literal["month"] | Literal["week"]
@@ -1550,53 +1627,22 @@ class JetFindingExperiment(object):
         pl.DataFrame
             DataFrame of same length as the jets with the same index columns, the `feature_names` columns: "ratio" and "theta", and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
         """
-        all_jets_one_df = self.find_jets()
-        if "is_polar" in all_jets_one_df.columns and not force:
-            if not all_jets_one_df["s_low"].is_null().all():
-                return all_jets_one_df
+        jets = self.find_jets()
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
-
-        if isinstance(low_wind, xr.Dataset):
-            low_wind = low_wind["s"]
-
-        lon = all_jets_one_df["lon"].unique().sort().to_numpy()
-        lat = all_jets_one_df["lat"].unique().sort().to_numpy()
-        low_wind = low_wind.interp(lon=lon, lat=lat)
-        if (
-            "theta" in all_jets_one_df.columns
-            and all_jets_one_df["theta"].is_null().all()
-            or force == 2
-        ):
-            all_jets_one_df = all_jets_one_df.drop("theta")
-        if "theta" not in all_jets_one_df.columns:
-            theta = self.ds["theta"]
-            all_jets_one_df = join_wrapper(all_jets_one_df, theta)
-            all_jets_one_df.write_parquet(ofile_ajdf)
-
-        if (
-            "ratio" in all_jets_one_df.columns
-            and all_jets_one_df["ratio"].is_null().all()
-            or force == 2
-        ):
-            all_jets_one_df = all_jets_one_df.drop("s_low")
-            all_jets_one_df = all_jets_one_df.drop("ratio")
-        if "ratio" not in all_jets_one_df.columns:
-            all_jets_one_df = join_wrapper(all_jets_one_df, low_wind, suffix="_low")
-            all_jets_one_df = all_jets_one_df.with_columns(
-                ratio=pl.col("s_low") / pl.col("s")
-            )
-            all_jets_one_df.write_parquet(ofile_ajdf)
-
-        all_jets_one_df = is_polar_gmix(
-            all_jets_one_df,
-            ("ratio", "theta"),
-            mode=mode,
-            n_components=n_components,
-            n_init=n_init,
+        jets = categorize_jets(
+            jets=jets, 
+            ds=self.ds, 
+            low_wind=low_wind, 
+            feature_names=feature_names, 
+            force=force, 
+            mode=mode, 
+            n_components=n_components, 
+            n_init=n_init, 
             init_params=init_params,
         )
-        all_jets_one_df.write_parquet(ofile_ajdf)
-        return all_jets_one_df
+        jets.write_parquet(ofile_ajdf)
+        return jets
+    
 
     def compute_jet_props(
         self,
