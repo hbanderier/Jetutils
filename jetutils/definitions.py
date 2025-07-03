@@ -262,7 +262,7 @@ def degcos(x: float) -> float:
     float
         Cosine result
     """
-    return np.cos(x / 180 * np.pi)
+    return np.cos(np.radians(x))
 
 
 def degsin(x: float) -> float:
@@ -279,7 +279,28 @@ def degsin(x: float) -> float:
     float
         Sine results
     """
-    return np.sin(x / 180 * np.pi)
+    return np.sin(np.radians(x))
+
+
+def maybe_circular_mean(x: float) -> float:
+    """
+    Circular mean of a number already converted to radians
+
+    Parameters
+    ----------
+    x : float
+        Angle in degrees
+
+    Returns
+    -------
+    float
+        Circular mean
+    """
+    dx = np.unique(x)
+    dx = dx[1] - dx[0]
+    if np.all(np.diff(x) < 2 * dx):
+        return np.mean(x)
+    return np.atan2(np.mean(np.sin(x)), np.mean(np.cos(x)))
 
 
 def save_pickle(to_save: Any, filename: str | Path) -> None:

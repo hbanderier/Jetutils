@@ -46,6 +46,7 @@ from .definitions import (
     UNITS,
     SEASONS,
     JJADOYS,
+    maybe_circular_mean,
     get_index_columns,
     infer_direction,
     polars_to_xarray,
@@ -189,7 +190,11 @@ def make_boundary_path(
 
     boundary_path = []
     # North (E->W)
-    edge = [np.linspace(minlon, maxlon, n), np.full(n, maxlat)]
+    if maxlon > minlon:
+        linspace =         np.linspace(minlon, maxlon, n)
+    else:
+        linspace = (180 + np.linspace(minlon % 360, maxlon % 360, n)) % 360 - 180
+    edge = [linspace, np.full(n, maxlat)]
     boundary_path += [[i, j] for i, j in zip(*edge)]
 
     # West (N->S)
@@ -197,7 +202,7 @@ def make_boundary_path(
     boundary_path += [[i, j] for i, j in zip(*edge)]
 
     # South (W->E)
-    edge = [np.linspace(maxlon, minlon, n), np.full(n, minlat)]
+    edge = [linspace[::-1], np.full(n, minlat)]
     boundary_path += [[i, j] for i, j in zip(*edge)]
 
     # East (S->N)
@@ -329,7 +334,7 @@ def doubleit(thing: list | str | None, length: int, default: str) -> list:
 
 
 def setup_lon_lat(
-    to_plot: list,
+    to_plot: list[xr.DataArray],
     lon: np.ndarray | None,
     lat: np.ndarray | None,
 ):
@@ -340,7 +345,15 @@ def setup_lon_lat(
         except AttributeError:
             print("Either provide lon / lat or make to_plot items dataArrays")
             raise
-    return lon, lat
+    lon = np.sort(lon)
+    lon_ = np.unique(lon)
+    dl = lon_[1] - lon_[0]
+    if np.all(np.diff(lon) < 2 * dl):
+        return to_plot, lon - maybe_circular_mean(to_plot[0].lon.values), lat
+    to_plot_ = []
+    for tplt in to_plot:
+        to_plot_.append(tplt.assign_coords(lon=tplt.lon.values % 360))
+    return to_plot_, to_plot_[0].lon.values - maybe_circular_mean(to_plot_[0].lon.values), lat
 
 
 def to_prettier_order(n: int | np.ndarray, width: int = 6, height: int = 4):
@@ -374,18 +387,23 @@ class Clusterplot:
             region = (-80, 20, 15, 80)  # Default region ?
         self.region = region
         self.minlon, self.maxlon, self.minlat, self.maxlat = region
+        if self.maxlon > self.minlon:
+            lon = np.linspace(self.minlon, self.maxlon)
+        else:
+            lon = (180 + np.linspace(self.maxlon % 360, self.minlon % 360)) % 360 - 180
+        self.central_longitude = np.degrees(maybe_circular_mean(np.radians(lon)))
+        self.central_longitude = np.round(self.central_longitude)
         if self.lambert_projection:
-            self.central_longitude = (self.minlon + self.maxlon) / 2
             projection = ccrs.LambertConformal(
-                central_longitude=self.central_longitude,
+                central_longitude=self.central_longitude
             )
             ratio = 0.6 * self.nrow / (self.ncol + (0.5 if honeycomb else 0))
             self.boundary = make_boundary_path(*region)
         else:
-            projection = ccrs.PlateCarree()
+            projection = ccrs.PlateCarree(central_longitude=self.central_longitude)
             ratio = (
                 (self.maxlat - self.minlat)
-                / (self.maxlon - self.minlon)
+                / np.abs(self.maxlon - self.minlon)
                 * self.nrow
                 / (self.ncol + (0.5 if honeycomb else 0))
                 * (0.8 if honeycomb else 1)
@@ -404,15 +422,13 @@ class Clusterplot:
             )
         self.axes = np.atleast_1d(self.axes).flatten()
         for ax in self.axes:
-            if self.lambert_projection:
-                ax.set_boundary(self.boundary, transform=ccrs.PlateCarree())
-            else:
-                ax.set_extent(
-                    [self.minlon, self.maxlon, self.minlat, self.maxlat],
-                    crs=ccrs.PlateCarree(),
-                )
             if coastline:
                 ax.add_feature(COASTLINE)
+            ax.set_extent(
+                [self.minlon, self.maxlon, self.minlat, self.maxlat],
+            )
+            if self.lambert_projection:
+                ax.set_boundary(self.boundary)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
         if numbering:
             plt.draw()
@@ -498,7 +514,7 @@ class Clusterplot:
         q: float = 0.99,
         **kwargs,
     ) -> None:
-        lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
+        to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
 
         levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q)
 
@@ -592,7 +608,7 @@ class Clusterplot:
 
         return (
             dict(
-                transform=ccrs.PlateCarree(),
+                transform=ccrs.PlateCarree(central_longitude=self.central_longitude),
                 levels=levelscf,
                 cmap=cmap,
                 norm=norm,
@@ -622,7 +638,7 @@ class Clusterplot:
         q: float = 0.99,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
-        lon, lat = setup_lon_lat(to_plot, lon, lat)
+        to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat) 
 
         kwargs, cbar_kwargs, im, levelsc = self.setup_contourf(
             to_plot,
@@ -645,7 +661,7 @@ class Clusterplot:
             ax.contourf(lon, lat, toplt, **kwargs)
 
             if self.lambert_projection and self.boundary is not None:
-                ax.set_boundary(self.boundary, transform=ccrs.PlateCarree())
+                ax.set_boundary(self.boundary, transform=ccrs.PlateCarree(central_longitude=self.central_longitude))
 
         if titles is not None:
             self._add_titles(titles)
@@ -679,6 +695,7 @@ class Clusterplot:
 
         lon = da.lon.values
         lat = da.lat.values
+        lon = lon - self.central_longitude
         significances = []
         da_ = da.values
         # da = np.sort(da, axis=0)
