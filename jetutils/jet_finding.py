@@ -692,9 +692,10 @@ def gather_normal_da_jets(
         ),
     )
     jets = add_normals(jets, half_length, dn, delete_middle)
-
+    dlon = (ds.lon[1] - ds.lon[0]).item()
+    lonslice = ((jets["normallon"] / dlon).round() * dlon).unique()
     da = da.sel(
-        lon=slice(jets["normallon"].min(), jets["normallon"].max()),
+        lon=lonslice,
         lat=slice(jets["normallat"].min(), jets["normallat"].max()),
     )
     with warnings.catch_warnings():
@@ -707,12 +708,6 @@ def gather_normal_da_jets(
     if "time" in da_df.columns:
         da_df = da_df.cast({"time": jets.schema["time"]})
 
-    jets = jets.filter(
-        pl.col("normallon") >= da_df["lon"].min(),
-        pl.col("normallon") <= da_df["lon"].max(),
-        pl.col("normallat") >= da_df["lat"].min(),
-        pl.col("normallat") <= da_df["lat"].max(),
-    )
     varname = da.name
     jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
