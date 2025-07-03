@@ -666,9 +666,9 @@ class Clusterplot:
         self,
         da: DataArray,
         mask: np.ndarray,
-        FDR: bool = True,
-        color: str | list = "black",
-        hatch: str = "..",
+        FDR: bool = False,
+        color: str = "black",
+        hatch: str = "////////////",
     ) -> None:
         to_test = []
         for mas in mask.T:
@@ -680,26 +680,25 @@ class Clusterplot:
         lon = da.lon.values
         lat = da.lat.values
         significances = []
-        da = da.values
+        da_ = da.values
         # da = np.sort(da, axis=0)
         for i in trange(mask.shape[1]):
             significances.append(
-                field_significance(to_test[i], da, 100, q=0.01)[int(FDR)]
+                field_significance(to_test[i], da_, 200, q=0.1)[int(FDR)]
             )
 
         for ax, signif in zip(self.axes, significances):
+            print(signif.sum())
             cs = ax.contourf(
                 lon,
                 lat,
-                signif,
-                levels=3,
-                hatches=["", hatch],
-                colors="none",
+                da[0].where(signif),
+                hatches=hatch,
+                alpha=0.,
             )
 
-            for col in cs.collections:
-                col.set_edgecolor(color)
-                col.set_linewidth(0.0)
+            # cs.set_edgecolor(color)
+            # cs.set_linewidth(0.0)
 
     def add_any_contour_from_mask(
         self,
