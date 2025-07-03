@@ -611,20 +611,24 @@ def get_region(da: xr.DataArray | xr.Dataset) -> tuple:
     maxlat: float
         maximum latitude
     """
-    try:
+    lon = np.sort(da.lon.values)
+    minlon: float = lon[0].item()
+    maxlon: float = lon[-1].item()
+    dlon = np.abs(lon[1] - lon[0]).item()
+    if np.all(np.diff(lon) < 2 * dlon):
         return (
-            da.lon.min().item(),
-            da.lon.max().item(),
+            minlon,
+            maxlon,
             da.lat.min().item(),
             da.lat.max().item(),
         )
-    except AttributeError:
-        return (
-            da.longitude.min().item(),
-            da.longitude.max().item(),
-            da.latitude.min().item(),
-            da.latitude.max().item(),
-        )
+    lon = np.roll(lon, - np.diff(lon).argmax() - 1)
+    return (
+        lon[0].item(),
+        lon[-1].item(),
+        da.lat.min().item(),
+        da.lat.max().item(),
+    )
 
 
 def slice_1d(da: xr.DataArray | xr.Dataset, indexers: dict, dim: str = "points"):
