@@ -13,6 +13,7 @@ import polars as pl
 from polars.exceptions import ColumnNotFoundError
 import polars.selectors as cs
 import polars_ds as pds
+from scipy.linalg import sqrtm
 import xarray as xr
 from contourpy import contour_generator
 from sklearn.mixture import GaussianMixture
@@ -20,6 +21,7 @@ from tqdm import tqdm, trange
 from numba import njit
 from sklearn.cluster import AgglomerativeClustering
 import dask
+import rustworkx as rx
 
 from .definitions import (
     N_WORKERS,
@@ -324,12 +326,12 @@ def compute_alignment(
     align_x = pl.col("u") / pl.col("s") * dlon / ds
     align_y = pl.col("v") / pl.col("s") * dlat / ds
     alignment = align_x + align_y
-    alignment = (
-        all_contours.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(alignment=alignment)
-        .explode("alignment")
-    )
-    return all_contours.with_columns(alignment=alignment["alignment"])
+    # alignment = (
+    #     all_contours.group_by([*index_columns, "contour"], maintain_order=True)
+    #     .agg(alignment=alignment)
+    #     .explode("alignment")
+    # )
+    return all_contours.with_columns(alignment=alignment.over([*index_columns, "contour"]))
 
 
 def find_all_jets(
@@ -398,9 +400,7 @@ def find_all_jets(
     # contours
     all_contours = compute_contours(ds)
     all_contours = all_contours.with_columns(
-        index=all_contours.group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(index=pl.int_range(0, pl.col("lon").len(), dtype=pl.UInt32))
-        .explode("index")["index"]
+        index=pl.int_range(0, pl.col("lon").len(), dtype=pl.UInt32).over([*index_columns, "contour"])
     )
     for index_column in index_columns:
         try:
@@ -439,10 +439,30 @@ def find_all_jets(
         agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="precomputed").fit(dists)
         jet = jet.with_columns(**{"jet ID": agg.labels_})
         jets_upd.append(jet)
-        
+    jets = pl.concat(jets_upd)
+    
+    jets = jets.unique(["time", "jet ID", "lon", "lat"], maintain_order=False).with_columns(index=pl.int_range(0, pl.col("lon").len()).over("time", "jet ID")).with_columns(nn=pds.query_knn_ptwise("lon", "lat", index="index", k=2, dist="sql2").over("time", "jet ID"))
+
+    jets_upd = []
+    n_unique = jets[[*index_columns, "jet ID"]].n_unique()
+    for _, jet in tqdm(jets.group_by([*index_columns, "jet ID"]), total=n_unique):
+        G: PyDiGraph[int, Any] = rx.PyDiGraph(multigraph=False)
+        nodes = list(range(len(jet)))
+        G.add_nodes_from(nodes)
+        edges = ([(i, k, None) for i in nodes for k in jet["nn"][i][1:]])
+        G.add_edges_from(edges)
+        predecs = [rx.bfs_predecessors(G, i) for i in nodes]
+        finish = np.argmax([len(predec) for predec in predecs])
+        try:
+            start = predecs[finish][-1][-1][0]
+            sort_ = list(rx.digraph_dijkstra_shortest_paths(G, start, finish)[finish])
+        except IndexError:
+            continue
+        jets_upd.append(jet[sort_].drop("index", "nn").with_row_index())
+            
     jets = (
         pl.concat(jets_upd)
-        .sort([*index_columns, "jet ID"])
+        .sort([*index_columns, "jet ID", "index"])
         .with_columns(len=pl.col("s").len().over([*index_columns, "jet ID"]))
         .filter(pl.col("len") > 15)
         .drop("len")
@@ -1037,6 +1057,55 @@ def one_gmix(
     return 1 - model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
 
 
+def one_gmix_v2(
+    X,
+    n_components=2,
+    n_init=20,
+    init_params="random_from_data",
+):
+    """
+    Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
+
+    Parameters
+    ----------
+    X : pl.DataFrame
+        Input data
+    n_components : int
+        Number of Gaussian components, by default 2
+    n_init : int
+        Number of repeated independent training with. Can massively increase run time. By default 20
+    init_params : str, optional
+        Type of init, by default "random_from_data"
+
+    Returns
+    -------
+    ndarray
+        Probabilities of every point on the Gaussian component identified as the eddy-driven jet.
+
+    References
+    ----------
+    https://scikit-learn.org/stable/modules/generated/sklearn.mixture.GaussianMixture.html
+    """
+    model = GaussianMixture(
+        n_components=n_components, init_params=init_params, n_init=n_init
+    )
+    if "ratio" in X.columns:
+        X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
+    model = model.fit(X)
+    scores = []
+    for mean, covar in zip(model.means_, model.covariances_):
+        covar = sqrtm(np.linalg.inv(covar))
+        x = X.to_numpy() - mean[None, :]
+        score = np.linalg.norm(np.einsum("jk,ik->ij", covar, x), axis=1)
+        scores.append(score)
+    if X.columns[1] == "theta":
+        order = np.argsort(model.means_[:, 1])
+    else:
+        order = np.argsort(model.means_[:, 1])[::-1]
+    otherscores = np.sum([scores[k] for k in order[:-1]], axis=0)
+    return 1 / (1 + otherscores / scores[order[-1]])
+
+
 def is_polar_gmix(
     df: pl.DataFrame,
     feature_names: list,
@@ -1046,6 +1115,7 @@ def is_polar_gmix(
     n_components: int | Sequence = 2,
     n_init: int = 20,
     init_params: str = "random_from_data",
+    v2: bool = True,
 ) -> pl.DataFrame:
     """
     Trains one or several Gaussian Mixture model independently, depending on the `mode` argument.
@@ -1072,12 +1142,13 @@ def is_polar_gmix(
     """
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
     kwargs = dict(n_init=n_init, init_params=init_params)
+    gmix_fn = one_gmix_v2 if v2 else one_gmix
     if "time" not in df.columns:
         mode = "all"
     if mode == "all":
         X = extract_features(df, feature_names, None)
         kwargs["n_components"] = n_components
-        probas = one_gmix(X, **kwargs)
+        probas = gmix_fn(X, **kwargs)
         return df.with_columns(is_polar=probas)
     index_columns = get_index_columns(df)
     to_concat = []
@@ -1091,7 +1162,7 @@ def is_polar_gmix(
         ):
             X = extract_features(df, feature_names, season)
             kwargs["n_components"] = n_components_
-            probas = one_gmix(X, **kwargs)
+            probas = gmix_fn(X, **kwargs)
             to_concat.append(
                 extract_season_from_df(df, season).with_columns(is_polar=probas)
             )
@@ -1103,7 +1174,7 @@ def is_polar_gmix(
         for month, n_components_ in zip(trange(1, 13), n_components):
             X = extract_features(df, feature_names, month)
             kwargs["n_components"] = n_components_
-            probas = one_gmix(X, **kwargs)
+            probas = gmix_fn(X, **kwargs)
             to_concat.append(
                 extract_season_from_df(df, month).with_columns(is_polar=probas)
             )
@@ -1117,7 +1188,7 @@ def is_polar_gmix(
             X = df.filter(pl.col("time").dt.week() == week)
             X_ = extract_features(X, feature_names)
             kwargs["n_components"] = n_components_
-            probas = one_gmix(X_, **kwargs)
+            probas = gmix_fn(X_, **kwargs)
             to_concat.append(X.with_columns(is_polar=probas))
 
     return pl.concat(to_concat).sort(index_columns)
@@ -1162,6 +1233,7 @@ def categorize_jets(
     n_components: int | Sequence = 2,
     n_init: int = 20,
     init_params: str = "random_from_data",
+    v2: bool = True,
 ):
     if feature_names is None:
         feature_names = ("ratio", "theta")
@@ -1194,6 +1266,7 @@ def categorize_jets(
         n_components=n_components,
         n_init=n_init,
         init_params=init_params,
+        v2=v2,
     )
     return jets
 
@@ -1598,6 +1671,7 @@ class JetFindingExperiment(object):
         n_components: int | Sequence = 2,
         n_init: int = 20,
         init_params: str = "random_from_data",
+        v2: bool = True,
     ):
         """
         Makes sure the necessary columns are present in `jets`, then wraps `is_polar_gmix()` and and stores the output.
@@ -1634,6 +1708,7 @@ class JetFindingExperiment(object):
             n_components=n_components, 
             n_init=n_init, 
             init_params=init_params,
+            v2=v2,
         )
         jets.write_parquet(ofile_ajdf)
         return jets
