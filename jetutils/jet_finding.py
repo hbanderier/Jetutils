@@ -16,10 +16,12 @@ import polars_ds as pds
 from scipy.linalg import sqrtm
 import xarray as xr
 from contourpy import contour_generator
-from sklearn.mixture import GaussianMixture
 from tqdm import tqdm, trange
 from numba import njit
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import pairwise_distances
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.neighbors import NearestNeighbors
 import dask
 import rustworkx as rx
 
@@ -353,7 +355,7 @@ def find_all_jets(
     ds = preprocess_ds(ds, n_coarsen=2, smooth_s=5)
     dx = (ds["lon"][1] - ds["lon"][0]).item()
     dy = (ds["lat"][1] - ds["lat"][0]).item()
-    dX = 2 * np.sqrt(dx ** 2 + dy ** 2)
+    dX = 2 * np.radians(np.sqrt(dx ** 2 + dy ** 2))
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds
@@ -434,18 +436,34 @@ def find_all_jets(
     jets = jets.drop("contour", "cyclic", "len", "index")
     jets_upd = []
     for _, jet in jets.group_by(index_columns):
-        X = jet.select(pl.col("lon"), pl.col("lat")).to_numpy()
-        dists = my_pairwise(X)
-        agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="precomputed").fit(dists)
+        X = jet.select(pl.col("lat"), pl.col("lon")).to_numpy()
+        # dists = pairwise_distances(np.radians(X), None, "haversine")
+        agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="haversine").fit(np.radians(X))
         jet = jet.with_columns(**{"jet ID": agg.labels_})
         jets_upd.append(jet)
     jets = pl.concat(jets_upd)
+    # return jets
     
-    jets = jets.unique(["time", "jet ID", "lon", "lat"], maintain_order=False).with_columns(index=pl.int_range(0, pl.col("lon").len()).over("time", "jet ID")).with_columns(nn=pds.query_knn_ptwise("lon", "lat", index="index", k=2, dist="sql2").over("time", "jet ID"))
+    # if -180 not in jets["lon"] and (jets["lon"] < 178).all():
+    #     """
+    #     I cannot use polars_ds in the other case because it cannot handle haversine distance in their KDTree / BallTree impl (see https://github.com/abstractqqq/polars_ds_extension/issues/237)
+    #     I'm doing it in the loop with sklearn instead, making it a bit slower
+    #     """
+    #     print("Using polars-ds",  180 - dx, jets["lon"].max())
+        # jets = jets.unique(["time", "jet ID", "lon", "lat"], maintain_order=False).with_columns(index=pl.int_range(0, pl.col("lon").len()).over("time", "jet ID")).with_columns(nn=pds.query_knn_ptwise("lon", "lat", index="index", k=2, dist="sql2").over("time", "jet ID"))
+        
 
     jets_upd = []
     n_unique = jets[[*index_columns, "jet ID"]].n_unique()
     for _, jet in tqdm(jets.group_by([*index_columns, "jet ID"]), total=n_unique):
+        if len(jet) < 5:
+            continue
+        if "nn" not in jet.columns:
+            jet = jet.with_row_index()
+            jet_: Unknown = np.radians(jet[["lat", "lon"]].to_numpy())
+            model = NearestNeighbors(n_neighbors=5, metric="haversine", radius=1000).fit(jet_)
+            dist, nn = model.kneighbors(jet_, 5)
+            jet = jet.with_columns(nn=nn)
         G: PyDiGraph[int, Any] = rx.PyDiGraph(multigraph=False)
         nodes = list(range(len(jet)))
         G.add_nodes_from(nodes)
@@ -458,11 +476,16 @@ def find_all_jets(
             sort_ = list(rx.digraph_dijkstra_shortest_paths(G, start, finish)[finish])
         except IndexError:
             continue
-        jets_upd.append(jet[sort_].drop("index", "nn").with_row_index())
+        jet = jet[sort_].drop("index", "nn").with_row_index()
+        if jet["lon"].diff().fill_null(0.).sign().mode()[0] < 0:
+            jet = jet.reverse().drop("index").with_row_index()
+        # if backwards (mean diff lon < 0) then swap order once
+        jets_upd.append(jet)
+    jets = pl.concat(jets_upd).sort([*index_columns, "jet ID", "index"])
+
             
     jets = (
-        pl.concat(jets_upd)
-        .sort([*index_columns, "jet ID", "index"])
+        jets
         .with_columns(len=pl.col("s").len().over([*index_columns, "jet ID"]))
         .filter(pl.col("len") > 15)
         .drop("len")
