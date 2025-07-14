@@ -19,11 +19,7 @@ from contourpy import contour_generator
 from tqdm import tqdm, trange
 from numba import njit
 from sklearn.mixture import GaussianMixture
-from sklearn.metrics import pairwise_distances
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.neighbors import NearestNeighbors
 import dask
-import rustworkx as rx
 
 from .definitions import (
     N_WORKERS,
@@ -34,6 +30,7 @@ from .definitions import (
     get_index_columns,
     extract_season_from_df,
     explode_rle,
+    Timer,
 )
 from .data import (
     compute_extreme_climatology,
@@ -352,10 +349,10 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_ds(ds, n_coarsen=2, smooth_s=5)
+    ds = preprocess_ds(ds, n_coarsen=3, smooth_s=5)
     dx = (ds["lon"][1] - ds["lon"][0]).item()
     dy = (ds["lat"][1] - ds["lat"][0]).item()
-    dX = 2 * np.radians(np.sqrt(dx ** 2 + dy ** 2))
+    dX = 1.5 * np.sqrt(dx ** 2 + dy ** 2)
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds
@@ -401,9 +398,27 @@ def find_all_jets(
 
     # contours
     all_contours = compute_contours(ds)
-    all_contours = all_contours.with_columns(
-        index=pl.int_range(0, pl.col("lon").len(), dtype=pl.UInt32).over([*index_columns, "contour"])
+    
+    diff_exp = pl.col("lon").diff()
+    diff_exp = pl.when(diff_exp > 180).then(180 - diff_exp).otherwise(diff_exp)
+    diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(5.0)
+    newindex = (
+        pl.col("index").cast(pl.Int32())
+        - diff_exp.arg_max()
+    ) % pl.col("index").max()
+    
+    all_contours = (
+        all_contours
+        .with_columns(len=pl.len().over([*index_columns, "contour"]))
+        .filter(pl.col("len") > 6)
+        .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "contour"]))
+        .unique([*index_columns, "contour", "index"])
+        .sort([*index_columns, "contour", "index"])
+        .with_columns(newindex.over([*index_columns, "contour"]))
+        .unique([*index_columns, "contour", "index"])
+        .sort([*index_columns, "contour", "index"])
     )
+    
     for index_column in index_columns:
         try:
             all_contours = all_contours.cast({index_column: df[index_column].dtype})
@@ -433,65 +448,36 @@ def find_all_jets(
         .explode("index")
     )
     jets = valids.join(all_contours, on=[*index_columns, "contour", "index"])
-    jets = jets.drop("contour", "cyclic", "len", "index")
-    jets_upd = []
-    for _, jet in jets.group_by(index_columns):
-        X = jet.select(pl.col("lat"), pl.col("lon")).to_numpy()
-        # dists = pairwise_distances(np.radians(X), None, "haversine")
-        agg = AgglomerativeClustering(None, linkage="single", distance_threshold=dX, metric="haversine").fit(np.radians(X))
-        jet = jet.with_columns(**{"jet ID": agg.labels_})
-        jets_upd.append(jet)
-    jets = pl.concat(jets_upd)
-    # return jets
-    
-    # if -180 not in jets["lon"] and (jets["lon"] < 178).all():
-    #     """
-    #     I cannot use polars_ds in the other case because it cannot handle haversine distance in their KDTree / BallTree impl (see https://github.com/abstractqqq/polars_ds_extension/issues/237)
-    #     I'm doing it in the loop with sklearn instead, making it a bit slower
-    #     """
-    #     print("Using polars-ds",  180 - dx, jets["lon"].max())
-        # jets = jets.unique(["time", "jet ID", "lon", "lat"], maintain_order=False).with_columns(index=pl.int_range(0, pl.col("lon").len()).over("time", "jet ID")).with_columns(nn=pds.query_knn_ptwise("lon", "lat", index="index", k=2, dist="sql2").over("time", "jet ID"))
-        
-
-    jets_upd = []
-    n_unique = jets[[*index_columns, "jet ID"]].n_unique()
-    for _, jet in tqdm(jets.group_by([*index_columns, "jet ID"]), total=n_unique):
-        if len(jet) < 5:
-            continue
-        if "nn" not in jet.columns:
-            jet = jet.with_row_index()
-            jet_: Unknown = np.radians(jet[["lat", "lon"]].to_numpy())
-            model = NearestNeighbors(n_neighbors=5, metric="haversine", radius=1000).fit(jet_)
-            dist, nn = model.kneighbors(jet_, 5)
-            jet = jet.with_columns(nn=nn)
-        G: PyDiGraph[int, Any] = rx.PyDiGraph(multigraph=False)
-        nodes = list(range(len(jet)))
-        G.add_nodes_from(nodes)
-        edges = ([(i, k, None) for i in nodes for k in jet["nn"][i][1:]])
-        G.add_edges_from(edges)
-        predecs = [rx.bfs_predecessors(G, i) for i in nodes]
-        finish = np.argmax([len(predec) for predec in predecs])
-        try:
-            start = predecs[finish][-1][-1][0]
-            sort_ = list(rx.digraph_dijkstra_shortest_paths(G, start, finish)[finish])
-        except IndexError:
-            continue
-        jet = jet[sort_].drop("index", "nn").with_row_index()
-        if jet["lon"].diff().fill_null(0.).sign().mode()[0] < 0:
-            jet = jet.reverse().drop("index").with_row_index()
-        # if backwards (mean diff lon < 0) then swap order once
-        jets_upd.append(jet)
-    jets = pl.concat(jets_upd).sort([*index_columns, "jet ID", "index"])
-
-            
     jets = (
         jets
-        .with_columns(len=pl.col("s").len().over([*index_columns, "jet ID"]))
-        .filter(pl.col("len") > 15)
-        .drop("len")
+        .with_columns(len=pl.len().over([*index_columns, "contour"]))
+        .filter(pl.col("len") > 6)
+        .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "contour"]))
+        .unique([*index_columns, "contour", "index"])
+        .sort([*index_columns, "contour", "index"])
+        .with_columns(newindex.over([*index_columns, "contour"]))
+        .unique([*index_columns, "contour", "index"])
+        .sort([*index_columns, "contour", "index"])
+        .with_columns(diff=diff_exp.over([*index_columns, "contour"]))
+        .with_columns(contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 5).cum_sum()).rle_id().over(index_columns))
+        .rename({"contour": "jet ID"})
+        .drop("cyclic", "len", "index")
+    )
+    
+    jets = (
+        jets
+        .with_columns(len=pl.len().over([*index_columns, "jet ID"]))
+        .filter(pl.col("len") > 6)
+        .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "jet ID"]))
+        .unique([*index_columns, "jet ID", "index"])
+        .sort([*index_columns, "jet ID", "index"])
+        .with_columns(newindex.over([*index_columns, "jet ID"]))
+        .unique([*index_columns, "jet ID", "index"])
+        .sort([*index_columns, "jet ID", "index"])
         .with_columns(int=jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s")).over([*index_columns, "jet ID"]))
         .filter(condition_expr2).drop("int")
         .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
+        .sort([*index_columns, "jet ID", "index"])
     )
 
     return jets
@@ -735,7 +721,7 @@ def gather_normal_da_jets(
         ),
     )
     jets = add_normals(jets, half_length, dn, delete_middle)
-    dlon = (ds.lon[1] - ds.lon[0]).item()
+    dlon = (da.lon[1] - da.lon[0]).item()
     lonslice = ((jets["normallon"] / dlon).round() * dlon).unique()
     da = da.sel(
         lon=lonslice,
@@ -1214,7 +1200,7 @@ def is_polar_gmix(
             probas = gmix_fn(X_, **kwargs)
             to_concat.append(X.with_columns(is_polar=probas))
 
-    return pl.concat(to_concat).sort(index_columns)
+    return pl.concat(to_concat).sort([*index_columns, "index"])
 
 
 def add_feature_for_cat(
@@ -1231,9 +1217,10 @@ def add_feature_for_cat(
         jets = jets.drop(feature)
     if feature == "ratio":
         da = ds_low["s"]
-        jets.drop("s_low")
+        if "s_low" in jets.columns:
+            jets.drop("s_low")
         jets = join_wrapper(jets, da, suffix="_low")
-        jets = jet.with_columns(
+        jets = jets.with_columns(
             ratio=pl.col("s_low") / pl.col("s")
         )
     else:
@@ -1274,7 +1261,7 @@ def categorize_jets(
     if low_wind is not None:
         low_wind = low_wind.interp(lon=lon, lat=lat)
     for feat in feature_names:
-        add_feature_for_cat(
+        jets = add_feature_for_cat(
             jets,
             feat,
             ds,
