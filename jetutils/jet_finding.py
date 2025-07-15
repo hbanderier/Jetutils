@@ -336,10 +336,10 @@ def compute_alignment(
 def find_all_jets(
     ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
-    base_s_thresh: float = 0.7,
+    base_s_thresh: float = 0.5,
     alignment_thresh: float = 0.6,
-    int_thresh_factor: float = 0.8,
-    hole_size: int = 4,
+    int_thresh_factor: float = 0.6,
+    hole_size: int = 10,
 ):
     """
     Main function to find all jets in a polars DataFrame containing at least the "lon", "lat", "u", "v" and "s" columns. Will group by any potential index columns to compute jets independently for every, timestep, member and / or cluster. Any other non-index column present in `df` (like "theta" or "lev") will be interpolated to the jet cores in the output.
@@ -399,8 +399,8 @@ def find_all_jets(
     # contours
     all_contours = compute_contours(ds)
     
-    diff_exp = pl.col("lon").diff()
-    diff_exp = pl.when(diff_exp > 180).then(180 - diff_exp).otherwise(diff_exp)
+    diff_exp = pl.col("lon").diff().abs()
+    diff_exp = pl.when(diff_exp > 180).then(360 - diff_exp).otherwise(diff_exp)
     diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(5.0)
     newindex = (
         pl.col("index").cast(pl.Int32())
@@ -459,9 +459,9 @@ def find_all_jets(
         .unique([*index_columns, "contour", "index"])
         .sort([*index_columns, "contour", "index"])
         .with_columns(diff=diff_exp.over([*index_columns, "contour"]))
-        .with_columns(contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 5).cum_sum()).rle_id().over(index_columns))
+        .with_columns(contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 10).cum_sum()).rle_id().over(index_columns))
         .rename({"contour": "jet ID"})
-        .drop("cyclic", "len", "index")
+        .drop("cyclic", "len")
     )
     
     jets = (
@@ -722,10 +722,21 @@ def gather_normal_da_jets(
     )
     jets = add_normals(jets, half_length, dn, delete_middle)
     dlon = (da.lon[1] - da.lon[0]).item()
-    lonslice = ((jets["normallon"] / dlon).round() * dlon).unique()
+    dlat = (da.lat[1] - da.lat[0]).item()
+    jets = jets.with_columns(
+        normallon_rounded=(pl.col("normallon") / dlon).round() * dlon,
+        normallat_rounded=(pl.col("normallat") / dlat).round() * dlat
+    )
+    jets = jets.filter(
+        pl.col("normallon_rounded").is_in(da.lon.values.tolist()),
+        pl.col("normallat_rounded").is_in(da.lat.values.tolist())
+    )
+    
+    lonslice = jets["normallon_rounded"].unique()
+    latslice = jets["normallat_rounded"].unique()
     da = da.sel(
         lon=lonslice,
-        lat=slice(jets["normallat"].min(), jets["normallat"].max()),
+        lat=latslice,
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -1786,13 +1797,13 @@ class JetFindingExperiment(object):
             return pl.read_parquet(ofile_pad)
         if ofile_padu.is_file() and categorize and not force:
             props_as_df = average_jet_categories(pl.read_parquet(ofile_padu))
-            props_as_df = self.add_com_speed(props_as_df)
+            # props_as_df = self.add_com_speed(props_as_df)
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         props_as_df = self.compute_jet_props(force=force > 1)
         props_as_df.write_parquet(ofile_padu)
         props_as_df_cat = average_jet_categories(props_as_df)
-        props_as_df_cat = self.add_com_speed(props_as_df_cat)
+        # props_as_df_cat = self.add_com_speed(props_as_df_cat)
         props_as_df_cat.write_parquet(ofile_pad)
         if categorize:
             props_as_df_cat

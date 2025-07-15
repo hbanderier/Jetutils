@@ -538,7 +538,11 @@ def extract_region(
     da: same as input
         subset `da`
     """    
-    da = da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+    if minlon < maxlon:
+        return da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
+    da1 = da.sel(lon=slice(minlon, None), lat=slice(minlat, maxlat))
+    da2 = da.sel(lon=slice(None, maxlon), lat=slice(minlat, maxlat))
+    da = xr.concat([da1, da2], dim="lon")
     return da
 
 
