@@ -2,6 +2,7 @@
 """
 This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
 """
+import datetime
 import warnings
 from itertools import product
 from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
@@ -19,6 +20,7 @@ from contourpy import contour_generator
 from tqdm import tqdm, trange
 from numba import njit
 from sklearn.mixture import GaussianMixture
+import rustworkx as rx
 import dask
 
 from .definitions import (
@@ -461,7 +463,7 @@ def find_all_jets(
         .with_columns(diff=diff_exp.over([*index_columns, "contour"]))
         .with_columns(contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 10).cum_sum()).rle_id().over(index_columns))
         .rename({"contour": "jet ID"})
-        .drop("cyclic", "len")
+        .drop("cyclic", "len", "len_right")
     )
     
     jets = (
@@ -483,6 +485,10 @@ def find_all_jets(
     return jets
 
 
+def weighted_mean_pl(col, by: str = "s"):
+    return ((pl.col(col) * pl.col(by)).sum() / pl.col(by).sum()).alias(col)
+
+
 def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     """
     Computes all basic jet properties from a DataFrame containing many jets.
@@ -496,7 +502,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
 
     aggregations = [
         *[
-            ((pl.col(col) * pl.col("s")).sum() / pl.col("s").sum()).alias(f"mean_{col}")
+            weighted_mean_pl(col, "s").alias(f"mean_{col}")
             for col in position_columns
         ],
         pl.col("s").mean().alias("mean_s"),
@@ -1256,13 +1262,13 @@ def categorize_jets(
     init_params: str = "random_from_data",
     v2: bool = True,
 ):
+    if "is_polar" in jets.columns and not force:
+        return jets
     if feature_names is None:
         feature_names = ("ratio", "theta")
     if "ratio" in feature_names and low_wind is None:
         print("you need to provide low wind")
         raise ValueError
-    if "is_polar" in jets.columns and not force:
-        return jets
     
     if isinstance(low_wind, xr.Dataset):
         low_wind = low_wind[["s"]]
@@ -1409,63 +1415,172 @@ def average_jet_categories(
     return props_as_df_cat
 
 
-def add_com_speed(
-    props_as_df: pl.DataFrame,
-    lon_is_zero: bool = False,
-    lat_is_zero: bool = False,
-    smooth: bool = False
-) -> pl.DataFrame:
-    """
-    Computes the jets' center of mass (COM) speed as a new property in `props_as_df`.
-
-    Parameters
-    ----------
-    props_as_df : pl.DataFrame
-        categorized jet properties
-
-    Returns
-    -------
-    pl.DataFrame
-        `props_as_df` with a new column: `com_speed`.
-    """
-    member = ["member"] if "member" in props_as_df.columns else []
-    desc_member = [False] if "member" in props_as_df.columns else []
-    lon = pl.lit(0) if lon_is_zero else pl.col("mean_lon")
-    lat = pl.lit(0) if lat_is_zero else pl.col("mean_lat")
-    diffs = (
-        props_as_df[[*member, "jet", "time", "mean_lon", "mean_lat"]]
-        .group_by([*member, "jet"])
-        .agg(
-            pl.col("time"),
-            cs.numeric().diff().abs(),
-            (
-                pl.col("time").diff().cast(pl.Float32())
-                / pl.duration(
-                    seconds=1, time_unit=props_as_df["time"].dtype.time_unit
-                ).cast(pl.Float32())
-            ).alias("dt"),
-            pl.col("mean_lat").alias("actual_lat"),
+def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None):
+    if "len_right" in jets.columns:
+        jets = jets.drop("len_right")
+    filter1 = pl.col("overlap")
+    filter2 = pl.col("vert_dist").list.arg_min()
+    deltas = ["u", "v", "s", "theta"]
+    if "is_polar" in jets.columns:
+        deltas.append("is_polar")
+    typical_group_by = ["time", "jet ID", "jet ID_right"]
+    filter_ = pl.col("time").dt.year() == year
+    if (year + 1) in jets["time"].dt.year().unique():
+        filter_ = filter_ | (
+            pl.col("time")
+            == pl.col("time").filter(pl.col("time").dt.year() == year + 1).first()
         )
-        .explode(cs.all().exclude([*member, "jet"]))
-        .sort([*member, "time", "jet"], descending=[*desc_member, False, True])
+    if "member" in jets.columns and member is not None:
+        filter_ = filter_ & pl.col("member") == member
+        typical_group_by = ["member"].extend(typical_group_by)
+
+    jets_current = jets.filter(filter_).with_columns(
+        len=pl.col("lon").len().over(["time", "jet ID"]),
+        index=pl.int_range(0, pl.col("lon").len()).over(["time", "jet ID"]),
+    )
+    jets_next = (
+        jets_current.shift(
+            -(pl.col("time") == pl.col("time").first()).sum().cast(pl.Int16())
+        )
+        .drop_nulls("time")
+        .with_columns(time=pl.col("time") - datetime.timedelta(hours=6))
+    )
+    jets_current = jets_current.filter(pl.col("time").dt.year() == year)
+    cross = (
+        jets_current
+        .join(jets_next, on="time", how="left")
         .with_columns(
-            com_speed=(
-                haversine_from_dl(pl.col("actual_lat"), lon, lat)
-                / pl.col("dt")
+            **{
+                f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs()
+                for col in deltas
+            },
+            overlap=pl.col("lon") == pl.col("lon_right"),
+            vert_dist=(pl.col("lat") - pl.col("lat_right")).abs(),
+        )
+    )
+    one = (
+        cross.group_by([*typical_group_by, "lon"])
+        .agg(
+            pl.col("lon_right").filter(filter1),
+            pl.col("vert_dist").filter(filter1),
+        )
+        .with_columns(
+            pl.col("lon_right").list.get(filter2).over(typical_group_by),
+            pl.col("vert_dist").list.get(filter2).over(typical_group_by),
+            len=pl.col("lon").n_unique().over(typical_group_by),
+            len_right=pl.col("lon_right").n_unique().over(typical_group_by),
+        )
+        .drop_nulls("lon_right")
+        .with_columns(overlap=pl.col("lon_right").len().over(typical_group_by))
+    )
+    cross = (
+        one.join(cross.drop("len", "len_right"), on=[*typical_group_by, "lon"])
+        .group_by(typical_group_by)
+        .agg(
+            pl.col("len").first(),
+            pl.col("len_right").first(),
+            overlap_forward=pl.col("overlap").first() / pl.col("len").first(),
+            overlap_backward=pl.col("overlap").first() / pl.col("len_right").first(),
+            sum_overlap=pl.col("overlap").first(),
+            vert_dist=weighted_mean_pl("vert_dist"),
+            **{f"d{col}": weighted_mean_pl(f"d{col}") for col in deltas},
+        )
+        .with_columns(
+            overlap_min=pl.min_horizontal("overlap_forward", "overlap_backward"),
+            overlap_max=pl.max_horizontal("overlap_forward", "overlap_backward"),
+        )
+        .sort("time", "jet ID")
+    )
+    
+    
+def track_jets(all_jets_one_df: pl.DataFrame):
+    cross = []
+    gb = ["time", "jet ID"]
+    iterator = all_jets_one_df["time"].dt.year().unique()
+    if "member" in all_jets_one_df.columns:
+        iterator = product(all_jets_one_df["member"].unique(), iterator)
+        gb = ["member"].extend(gb)
+    else:
+        iterator = zip([None] * len(iterator), iterator)
+    
+    for member, year in iterator:
+        cross.append(
+            track_jets_one_year(
+                all_jets_one_df,
+                year,
+                member,
             )
-            .cast(pl.Float32())
         )
-    )   
-    if smooth:
-        diffs = (
-            diffs
-            .rolling("time", period="2d", offset="-1d", group_by=[*member, "jet"])
-            .agg(pl.col("com_speed").mean())
+    cross = pl.concat(cross)
+    return cross
+
+
+def connected_from_cross(
+    all_jets_one_df: pl.DataFrame,
+    cross: pl.DataFrame | None = None, 
+    props_as_df: pl.DataFrame | None = None,
+    dist_thresh: float = 2,
+    overlap_min_thresh: float = 0.5,
+    overlap_max_thresh: float = 0.6,
+    dis_polar_thresh: float | None = 1.0
+) -> pl.DataFrame:
+    if cross is None:
+        cross = track_jets(all_jets_one_df)
+    cross = cross.filter(
+        pl.col("vert_dist") < dist_thresh,
+        pl.col("overlap_min") > overlap_min_thresh,
+        pl.col("overlap_max") > overlap_max_thresh,
+        pl.col("dis_polar") < dis_polar_thresh,
+    )
+    gb = ["time", "jet ID"]
+    mem = []
+    mem_k = []
+    if "member" in all_jets_one_df.columns:
+        gb = ["member"].extend(gb)
+        mem = ["member"]
+        mem_k = ["member_k"]
+    summary = all_jets_one_df.group_by("time", "jet ID").agg()
+    cross = (
+        cross.join(
+            summary[[*gb, "index"]],
+            on=gb,
         )
-    if "com_speed" in props_as_df.columns:
-        props_as_df = props_as_df.drop("com_speed")
-    props_as_df = props_as_df.join(diffs[[*member, "time", "jet", "com_speed"]], on=[*member, "time", "jet"])
-    return props_as_df.sort([*member, "time", "jet"])
+        .rename({"index": "a"})
+        .join(
+            summary[[*gb, "index"]],
+            left_on=[*mem ,pl.col("time") + datetime.timedelta(hours=6), pl.col("jet ID_right")],
+            right_on=[*mem ,"time", "jet ID"],
+            suffix="_k",
+        )
+        .drop(*mem_k, "time_k", "jet ID_k")
+        .rename({"index": "b"})
+    )
+    deltas = ["u", "v", "s", "theta"]
+    if "is_polar" in all_jets_one_df.columns:
+        deltas.append("is_polar")
+        
+    edges = cross[["a", "b", "strength", "vert_dist", "overlap_max", *[f"d{col}" for col in deltas]]].to_dicts()
+    edges = [(edge["a"], edge["b"], {k: v for k, v in edge.items() if k not in ["a", "b"]}) for edge in edges]
+    G = rx.PyGraph(multigraph=False)
+    G.add_nodes_from(summary.rows())
+    G.add_edges_from(edges)
+    conn_comp = rx.connected_components(G)
+    summary_comp = []
+    for i, comp in enumerate(conn_comp):
+        this_comp = summary[list(comp)].select(
+            cs.float().mean(),
+            pl.col("index").implode(),
+            pl.col("jet ID").implode(), 
+            time=pl.col("time").implode(),
+            comp=i, 
+            len_comp=len(comp)
+        ).drop("index") 
+        summary_comp.append(this_comp)
+    summary_comp = pl.concat(summary_comp)
+    pl.concat([summary[list(comp)].select(cs.float().mean(), pl.col("index").implode(), pl.col("jet ID").implode(), time=pl.col("time").implode(), comp=i, len_comp=len(comp)).drop("index") for i, comp in enumerate(conn_comp)])
+    if props_as_df is not None:
+        summary_comp = summary_comp.explode("time", "jet ID").join(props_as_df, on=["time", "jet ID"])
+    return summary_comp
 
 
 def jet_position_as_da(
@@ -1648,13 +1763,13 @@ class JetFindingExperiment(object):
         )
         return ds_
 
-    def find_jets(self, **kwargs) -> pl.DataFrame:
+    def find_jets(self, force: bool = False, **kwargs) -> pl.DataFrame:
         """
         Wraps `find_all_jets(**kwargs)` and stores the output
         """
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
 
-        if ofile_ajdf.is_file():
+        if ofile_ajdf.is_file() and not force:
             all_jets_one_df = pl.read_parquet(ofile_ajdf)
             return all_jets_one_df
         try:
@@ -1811,50 +1926,57 @@ class JetFindingExperiment(object):
 
     def props_over_time(
         self,
-        all_jets_over_time: pl.DataFrame,
-        props_as_df_uncat: pl.DataFrame,
-        save: bool = True,
-        force: bool = False,
+        dist_thresh: float = 2,
+        overlap_min_thresh: float = 0.5,
+        overlap_max_thresh: float = 0.6,
+        dis_polar_thresh: float | None = 1.0,
+        force: int = 0,
     ) -> pl.DataFrame:
         """
-        Reorders the jet props like `all_jets_over_time`, that is with flag and relative time as indices.
+        Wraps cross and summary 
 
         Parameters
         ----------
-        all_jets_over_time : pl.DataFrame
-            the first output of `track_jets()`
-        props_as_df_uncat : pl.DataFrame
-            uncategorized jet categories, output of `self.compute_props()` for example
-        save : bool, optional
-            not always useful to save, by default True
-        force : bool, optional
-            whether to recompute even though a saved file is found, by default False
+        dist_thresh : float, optional
+            _description_, by default 2
+        overlap_min_thresh : float, optional
+            _description_, by default 0.5
+        overlap_max_thresh : float, optional
+            _description_, by default 0.6
+        dis_polar_thresh : float | None, optional
+            _description_, by default 1.0
+        force : int, optional
+            _description_, by default 0
 
         Returns
         -------
         pl.DataFrame
-            Reordered jet props.
+            _description_
         """
-        out_path = self.path.joinpath("all_props_over_time.parquet")
-        if out_path.is_file() and not force:
-            return pl.read_parquet(out_path)
-        index_columns = get_index_columns(props_as_df_uncat)
-        props_as_df_uncat = props_as_df_uncat.cast(
-            {
-                "time": all_jets_over_time["time"].dtype,
-                "jet ID": all_jets_over_time["jet ID"].dtype,
-            }
-        )
-        all_props_over_time = all_jets_over_time.join(
-            props_as_df_uncat, on=index_columns
-        )
-        sort_on = ["member"] if "member" in index_columns else []
-        sort_on.extend(("flag", "time"))
-        all_props_over_time = all_props_over_time.sort(sort_on)
-        if save:
-            all_props_over_time.write_parquet(out_path)
-        return all_props_over_time
-
+        cross_opath = self.path.joinpath("cross.parquet")
+        summary_opath = self.path.joinpath("summary.parquet")
+        all_jets_one_df = self.find_jets(force=force > 3)
+        if not cross_opath.is_file() or force > 1:
+            cross = track_jets(all_jets_one_df)
+            cross.write_parquet(cross_opath)
+        else:
+            cross = pl.read_parquet(cross_opath)
+        props_as_df = self.props_as_df(force=force > 5)
+        if not summary_opath.is_file() or force:
+            summary = connected_from_cross(
+                all_jets_one_df,
+                cross,
+                props_as_df,
+                dist_thresh,
+                overlap_min_thresh,
+                overlap_max_thresh,
+                dis_polar_thresh,
+            )
+            summary.write_parquet(summary_opath)
+        else:
+            summary = pl.read_parquet(summary_opath)
+        return summary
+            
 
     def jet_position_as_da(self, force: bool = False):
         """

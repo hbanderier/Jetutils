@@ -1487,7 +1487,7 @@ def periodic_rolling_pl(
     other_columns = get_index_columns(df, ("member", "jet"))
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df[col].unique().len() for col in other_columns]
-    len_ = np.prod(len_)
+    len_ = int(np.prod(len_))
     min_doy = df[dim].min()
     max_doy = df[dim].max()
     df = df.sort([dim, *other_columns], descending=descending)
