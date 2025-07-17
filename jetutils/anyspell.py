@@ -341,6 +341,13 @@ def get_persistent_spell_times_from_som(
     return spells
 
 
+def fill_null_mode(col: str, over: str | None = None):
+    expr = pl.col(col).fill_null(pl.col(col).filter(pl.col(col).is_not_null()).mode().first())
+    if over is None:
+        return expr
+    return expr.over(over)
+
+
 def extend_spells(
     spells: pl.DataFrame,
     time_before: datetime.timedelta = datetime.timedelta(0),
@@ -365,16 +372,23 @@ def extend_spells(
         )
         - pl.col("time").first(),
     }
-    other_columns = {
-        col: pl.col(col).first()
-        for col in spells.columns
-        if col not in [*index_columns, *list(exprs), "time"]
-    }
+    other_columns = [
+        col for col in spells.columns
+        if col not in [*index_columns, *list(exprs), "time", "relative_index"]
+    ]
     spells = (
         spells.group_by(index_columns, maintain_order=True)
-        .agg(**exprs, **other_columns)
+        .agg(**exprs)
         .explode(list(exprs)[1:])
-        .with_columns(relative_index=(pl.col("relative_time") / dt).cast(pl.Int32))
+        .join(
+            spells[[*index_columns, "time", *other_columns]], 
+            on=[*index_columns, "time"], 
+            how="left"
+        )
+        .with_columns(
+            *[fill_null_mode(col, "spell") for col in other_columns],
+            relative_index=(pl.col("relative_time") / dt).cast(pl.Int32)
+        )
     )
     return spells
 
