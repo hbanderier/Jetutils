@@ -1491,19 +1491,23 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         )
         .sort("time", "jet ID")
     )
+    return cross
     
     
 def track_jets(all_jets_one_df: pl.DataFrame):
     cross = []
     gb = ["time", "jet ID"]
     iterator = all_jets_one_df["time"].dt.year().unique()
+    total = len(iterator)
     if "member" in all_jets_one_df.columns:
-        iterator = product(all_jets_one_df["member"].unique(), iterator)
+        members = all_jets_one_df["member"].unique()
+        iterator = product(members, iterator)
         gb = ["member"].extend(gb)
+        total = total * len(members)
     else:
         iterator = zip([None] * len(iterator), iterator)
     
-    for member, year in iterator:
+    for member, year in tqdm(iterator, total=total):
         cross.append(
             track_jets_one_year(
                 all_jets_one_df,
@@ -1518,7 +1522,6 @@ def track_jets(all_jets_one_df: pl.DataFrame):
 def connected_from_cross(
     all_jets_one_df: pl.DataFrame,
     cross: pl.DataFrame | None = None, 
-    props_as_df: pl.DataFrame | None = None,
     dist_thresh: float = 2,
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
@@ -1539,7 +1542,7 @@ def connected_from_cross(
         gb = ["member"].extend(gb)
         mem = ["member"]
         mem_k = ["member_k"]
-    summary = all_jets_one_df.group_by("time", "jet ID").agg()
+    summary = all_jets_one_df.group_by("time", "jet ID", maintain_order=True).agg(pl.col("is_polar").mean()).with_row_index()
     cross = (
         cross.join(
             summary[[*gb, "index"]],
@@ -1559,7 +1562,7 @@ def connected_from_cross(
     if "is_polar" in all_jets_one_df.columns:
         deltas.append("is_polar")
         
-    edges = cross[["a", "b", "strength", "vert_dist", "overlap_max", *[f"d{col}" for col in deltas]]].to_dicts()
+    edges = cross[["a", "b", "vert_dist", "overlap_min", "overlap_max", *[f"d{col}" for col in deltas]]].to_dicts()
     edges = [(edge["a"], edge["b"], {k: v for k, v in edge.items() if k not in ["a", "b"]}) for edge in edges]
     G = rx.PyGraph(multigraph=False)
     G.add_nodes_from(summary.rows())
@@ -1569,17 +1572,13 @@ def connected_from_cross(
     for i, comp in enumerate(conn_comp):
         this_comp = summary[list(comp)].select(
             cs.float().mean(),
-            pl.col("index").implode(),
-            pl.col("jet ID").implode(), 
-            time=pl.col("time").implode(),
-            comp=i, 
-            len_comp=len(comp)
-        ).drop("index") 
+            pl.col("jet ID"), 
+            time=pl.col("time"),
+            spell=i, 
+            len=len(comp)
+        )
         summary_comp.append(this_comp)
-    summary_comp = pl.concat(summary_comp)
-    pl.concat([summary[list(comp)].select(cs.float().mean(), pl.col("index").implode(), pl.col("jet ID").implode(), time=pl.col("time").implode(), comp=i, len_comp=len(comp)).drop("index") for i, comp in enumerate(conn_comp)])
-    if props_as_df is not None:
-        summary_comp = summary_comp.explode("time", "jet ID").join(props_as_df, on=["time", "jet ID"])
+    summary_comp = pl.concat(summary_comp).sort("spell", "time")
     return summary_comp
 
 
@@ -1924,7 +1923,7 @@ class JetFindingExperiment(object):
             props_as_df_cat
         return props_as_df
 
-    def props_over_time(
+    def track_jets(
         self,
         dist_thresh: float = 2,
         overlap_min_thresh: float = 0.5,
@@ -1955,18 +1954,16 @@ class JetFindingExperiment(object):
         """
         cross_opath = self.path.joinpath("cross.parquet")
         summary_opath = self.path.joinpath("summary.parquet")
-        all_jets_one_df = self.find_jets(force=force > 3)
+        all_jets_one_df = self.find_jets(force=force > 3).cast({"time": pl.Datetime("ms")})
         if not cross_opath.is_file() or force > 1:
             cross = track_jets(all_jets_one_df)
             cross.write_parquet(cross_opath)
         else:
             cross = pl.read_parquet(cross_opath)
-        props_as_df = self.props_as_df(force=force > 5)
         if not summary_opath.is_file() or force:
             summary = connected_from_cross(
                 all_jets_one_df,
                 cross,
-                props_as_df,
                 dist_thresh,
                 overlap_min_thresh,
                 overlap_max_thresh,
@@ -1975,7 +1972,7 @@ class JetFindingExperiment(object):
             summary.write_parquet(summary_opath)
         else:
             summary = pl.read_parquet(summary_opath)
-        return summary
+        return cross, summary
             
 
     def jet_position_as_da(self, force: bool = False):
