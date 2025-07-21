@@ -184,9 +184,11 @@ def directional_diff(
     )
 
 
-def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13) -> xr.Dataset:
+def preprocess_ds(
+    ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13
+) -> xr.Dataset:
     ds = coarsen_da(ds, n_coarsen=n_coarsen)
-    
+
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
         smooth_map = {"lon": smooth_map, "lat": smooth_map}
@@ -206,7 +208,7 @@ def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         ds["sigma"] = (
-            - ds["u"] * ds["s"].differentiate("y") + ds["v"] * ds["s"].differentiate("x")
+            -ds["u"] * ds["s"].differentiate("y") + ds["v"] * ds["s"].differentiate("x")
         ) / ds["s"]
     # fft_smoothing = 1.0 if ds["sigma"].min() < -0.0001 else 0.8
     ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
@@ -267,7 +269,9 @@ def my_pairwise(X1: np.ndarray, X2: np.ndarray | None = None) -> np.ndarray:
 
 
 def find_contours_agg(x, y, z):
-    contours, types = contour_generator(x, y, (z > 0).astype(np.uint8), line_type="SeparateCode", quad_as_tri=False).lines(0)
+    contours, types = contour_generator(
+        x, y, (z > 0).astype(np.uint8), line_type="SeparateCode", quad_as_tri=False
+    ).lines(0)
     cyclic = np.asarray([79 in types_ for types_ in types])
     contours = [round_contour(contour, x, y) for contour in contours]
     return contours, cyclic
@@ -304,8 +308,11 @@ def compute_contours(ds: xr.Dataset) -> pl.DataFrame:
     iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
     iter3 = ((indexer, ds.loc[indexer]) for indexer in iter2)
     all_contours = map_maybe_parallel(
-        iter3, inner_compute_contours, len(iter2), processes=1, 
-    ) 
+        iter3,
+        inner_compute_contours,
+        len(iter2),
+        processes=1,
+    )
     all_contours = pl.concat(
         [contour for contour in all_contours if contour is not None]
     )
@@ -332,7 +339,9 @@ def compute_alignment(
     #     .agg(alignment=alignment)
     #     .explode("alignment")
     # )
-    return all_contours.with_columns(alignment=alignment.over([*index_columns, "contour"]))
+    return all_contours.with_columns(
+        alignment=alignment.over([*index_columns, "contour"])
+    )
 
 
 def find_all_jets(
@@ -354,25 +363,41 @@ def find_all_jets(
     ds = preprocess_ds(ds, n_coarsen=3, smooth_s=5)
     dx = (ds["lon"][1] - ds["lon"][0]).item()
     dy = (ds["lat"][1] - ds["lat"][0]).item()
-    dX = 1.5 * np.sqrt(dx ** 2 + dy ** 2)
+    dX = 1.5 * np.sqrt(dx**2 + dy**2)
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
-        ds
-        .drop_vars(smoothed_to_remove)
-        .rename({f"{var}_orig": var for var in smoothed_to_remove})
+        ds.drop_vars(smoothed_to_remove).rename(
+            {f"{var}_orig": var for var in smoothed_to_remove}
+        )
     )
     x_periodic = has_periodic_x(ds)
-    index_columns = get_index_columns(df, ("member", "time", "cluster", "jet ID", "spell", "relative_index", "sample_index", "inside_index"))
-    
+    index_columns = get_index_columns(
+        df,
+        (
+            "member",
+            "time",
+            "cluster",
+            "jet ID",
+            "spell",
+            "relative_index",
+            "sample_index",
+            "inside_index",
+        ),
+    )
+
     # thresholds
     dl = np.radians(df["lon"].max() - df["lon"].min())
-    base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
+    base_int_thresh = (
+        RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
+    )
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(index_columns).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
         )
         base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
-        base_int_thresh = RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
+        base_int_thresh = (
+            RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
+        )
     elif thresholds is not None:
         thresholds = (
             pl.from_pandas(thresholds.to_dataframe().reset_index())
@@ -400,18 +425,16 @@ def find_all_jets(
 
     # contours
     all_contours = compute_contours(ds)
-    
+
     diff_exp = pl.col("lon").diff().abs()
     diff_exp = pl.when(diff_exp > 180).then(360 - diff_exp).otherwise(diff_exp)
     diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(5.0)
-    newindex = (
-        pl.col("index").cast(pl.Int32())
-        - diff_exp.arg_max()
-    ) % pl.col("index").max()
-    
+    newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % pl.col(
+        "index"
+    ).max()
+
     all_contours = (
-        all_contours
-        .with_columns(len=pl.len().over([*index_columns, "contour"]))
+        all_contours.with_columns(len=pl.len().over([*index_columns, "contour"]))
         .filter(pl.col("len") > 6)
         .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "contour"]))
         .unique([*index_columns, "contour", "index"])
@@ -420,7 +443,7 @@ def find_all_jets(
         .unique([*index_columns, "contour", "index"])
         .sort([*index_columns, "contour", "index"])
     )
-    
+
     for index_column in index_columns:
         try:
             all_contours = all_contours.cast({index_column: df[index_column].dtype})
@@ -434,25 +457,23 @@ def find_all_jets(
     valids = (
         explode_rle(
             do_rle(
-                all_contours
-                .with_columns(condition=condition_expr), [*index_columns, "contour"]
+                all_contours.with_columns(condition=condition_expr),
+                [*index_columns, "contour"],
             )
             .with_columns(value=pl.col("value").fill_null(False))
-            .filter((pl.col("value").not_() & (pl.col("len") < hole_size)) | pl.col("value"))
+            .filter(
+                (pl.col("value").not_() & (pl.col("len") < hole_size)) | pl.col("value")
+            )
         )
         .drop("value", "len", "start")
         .group_by([*index_columns, "contour"], maintain_order=True)
-        .agg(
-            pl.col("index"), 
-            len=pl.col("index").len()
-        )
+        .agg(pl.col("index"), len=pl.col("index").len())
         .filter(pl.col("len") > 5)
         .explode("index")
     )
     jets = valids.join(all_contours, on=[*index_columns, "contour", "index"])
     jets = (
-        jets
-        .with_columns(len=pl.len().over([*index_columns, "contour"]))
+        jets.with_columns(len=pl.len().over([*index_columns, "contour"]))
         .filter(pl.col("len") > 6)
         .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "contour"]))
         .unique([*index_columns, "contour", "index"])
@@ -461,14 +482,17 @@ def find_all_jets(
         .unique([*index_columns, "contour", "index"])
         .sort([*index_columns, "contour", "index"])
         .with_columns(diff=diff_exp.over([*index_columns, "contour"]))
-        .with_columns(contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 10).cum_sum()).rle_id().over(index_columns))
+        .with_columns(
+            contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 10).cum_sum())
+            .rle_id()
+            .over(index_columns)
+        )
         .rename({"contour": "jet ID"})
         .drop("cyclic", "len", "len_right")
     )
-    
+
     jets = (
-        jets
-        .with_columns(len=pl.len().over([*index_columns, "jet ID"]))
+        jets.with_columns(len=pl.len().over([*index_columns, "jet ID"]))
         .filter(pl.col("len") > 6)
         .with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, "jet ID"]))
         .unique([*index_columns, "jet ID", "index"])
@@ -476,8 +500,13 @@ def find_all_jets(
         .with_columns(newindex.over([*index_columns, "jet ID"]))
         .unique([*index_columns, "jet ID", "index"])
         .sort([*index_columns, "jet ID", "index"])
-        .with_columns(int=jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s")).over([*index_columns, "jet ID"]))
-        .filter(condition_expr2).drop("int")
+        .with_columns(
+            int=jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s")).over(
+                [*index_columns, "jet ID"]
+            )
+        )
+        .filter(condition_expr2)
+        .drop("int")
         .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
         .sort([*index_columns, "jet ID", "index"])
     )
@@ -501,10 +530,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
         return pl.col(col).max() - pl.col(col).min()
 
     aggregations = [
-        *[
-            weighted_mean_pl(col, "s").alias(f"mean_{col}")
-            for col in position_columns
-        ],
+        *[weighted_mean_pl(col, "s").alias(f"mean_{col}") for col in position_columns],
         pl.col("s").mean().alias("mean_s"),
         *[
             pl.col(col).get(pl.col("s").arg_max()).alias(f"{col}_star")
@@ -513,11 +539,15 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
         *[dl(col).alias(f"{col}_ext") for col in ["lon", "lat"]],
         (
             pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
-            .struct.field("beta").first().alias("tilt")
+            .struct.field("beta")
+            .first()
+            .alias("tilt")
         ),
         (
-            1 - pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
-            .struct.field("r2").first()
+            1
+            - pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
+            .struct.field("r2")
+            .first()
         ).alias("waviness1"),
         (pl.col("lat") - pl.col("lat").mean()).pow(2).sum().alias("waviness2"),
         (
@@ -586,15 +616,11 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
         revert_rename = True
     else:
         revert_rename = False
-    indices_right = (
-        lon
-        .search_sorted(jets["normallon"], side="right")
-        .clip(1, len(lon) - 1)
+    indices_right = lon.search_sorted(jets["normallon"], side="right").clip(
+        1, len(lon) - 1
     )
-    indices_above = (
-        lat
-        .search_sorted(jets["normallat"], side="right")
-        .clip(1, len(lat) - 1)
+    indices_above = lat.search_sorted(jets["normallat"], side="right").clip(
+        1, len(lat) - 1
     )
     jets = jets.with_columns(
         left=lon[indices_right - 1],
@@ -651,7 +677,13 @@ def add_normals(
         angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
         wind_speed = ["u", "v", "s"]
     else:
-        angle = pl.arctan2(pl.col("lat").shift() - pl.col("lat"), pl.col("lon").shift() - pl.col("lon")).interpolate("linear") + np.pi / 2
+        angle = (
+            pl.arctan2(
+                pl.col("lat").shift() - pl.col("lat"),
+                pl.col("lon").shift() - pl.col("lon"),
+            ).interpolate("linear")
+            + np.pi / 2
+        )
         angle = angle.fill_null(0)
         angle = (angle.shift(2, fill_value=0) + angle) / 2
         wind_speed = []
@@ -731,13 +763,13 @@ def gather_normal_da_jets(
     dlat = (da.lat[1] - da.lat[0]).item()
     jets = jets.with_columns(
         normallon_rounded=(pl.col("normallon") / dlon).round() * dlon,
-        normallat_rounded=(pl.col("normallat") / dlat).round() * dlat
+        normallat_rounded=(pl.col("normallat") / dlat).round() * dlat,
     )
     jets = jets.filter(
         pl.col("normallon_rounded").is_in(da.lon.values.tolist()),
-        pl.col("normallat_rounded").is_in(da.lat.values.tolist())
+        pl.col("normallat_rounded").is_in(da.lat.values.tolist()),
     )
-    
+
     lonslice = jets["normallon_rounded"].unique()
     latslice = jets["normallat_rounded"].unique()
     da = da.sel(
@@ -848,24 +880,36 @@ def expand_jets(jets: pl.DataFrame, max_t: float, dt: float) -> pl.DataFrame:
     angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear")
     tangent_n = pl.linear_space(0, max_t, int(max_t / dt) + 1)
 
-    tangent_lon_before_start = pl.col("lon").first() - angle.head(5).mean().cos() * tangent_n.reverse()
-    tangent_lat_before_start = pl.col("lat").first() - angle.head(5).mean().sin() * tangent_n.reverse()
+    tangent_lon_before_start = (
+        pl.col("lon").first() - angle.head(5).mean().cos() * tangent_n.reverse()
+    )
+    tangent_lat_before_start = (
+        pl.col("lat").first() - angle.head(5).mean().sin() * tangent_n.reverse()
+    )
 
-    tangent_lon_after_end = pl.col("lon").last() + angle.tail(5).mean().cos() * tangent_n
-    tangent_lat_after_end = pl.col("lat").last() + angle.tail(5).mean().sin() * tangent_n
+    tangent_lon_after_end = (
+        pl.col("lon").last() + angle.tail(5).mean().cos() * tangent_n
+    )
+    tangent_lat_after_end = (
+        pl.col("lat").last() + angle.tail(5).mean().sin() * tangent_n
+    )
 
-    bigger_lon = tangent_lon_before_start.append(pl.col("lon")).append(tangent_lon_after_end)
-    bigger_lat = tangent_lat_before_start.append(pl.col("lat")).append(tangent_lat_after_end)
-    
+    bigger_lon = tangent_lon_before_start.append(pl.col("lon")).append(
+        tangent_lon_after_end
+    )
+    bigger_lat = tangent_lat_before_start.append(pl.col("lat")).append(
+        tangent_lat_after_end
+    )
+
     jets = (
-        jets
-        .group_by(index_columns, maintain_order=True)
-        .agg(bigger_lon, bigger_lat)
+        jets.group_by(index_columns, maintain_order=True).agg(bigger_lon, bigger_lat)
     ).explode("lon", "lat")
     return jets
 
 
-def join_wrapper(df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs):
+def join_wrapper(
+    df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs
+):
     """
     Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
 
@@ -893,9 +937,7 @@ def join_wrapper(df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = 
         with dask.config.set(**{"array.slicing.split_large_chunks": True}):
             da_ = compute(da.sel(**idx2), progress_flag=False)
         da_ = xarray_to_polars(da_)
-        these_jets = these_jets.join(
-            da_, on=dims, how="left", suffix=suffix
-        )
+        these_jets = these_jets.join(da_, on=dims, how="left", suffix=suffix)
         df_upd.append(these_jets)
     df = pl.concat(df_upd)
     return df
@@ -1228,7 +1270,7 @@ def add_feature_for_cat(
     ofile_ajdf: Path | None = None,
     force: bool = False,
 ):
-    if ((feature in jets.columns) and not force):
+    if (feature in jets.columns) and not force:
         return jets
     if feature in jets.columns:
         jets = jets.drop(feature)
@@ -1237,9 +1279,7 @@ def add_feature_for_cat(
         if "s_low" in jets.columns:
             jets.drop("s_low")
         jets = join_wrapper(jets, da, suffix="_low")
-        jets = jets.with_columns(
-            ratio=pl.col("s_low") / pl.col("s")
-        )
+        jets = jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
     else:
         da = ds[feature]
         jets = join_wrapper(jets, da)
@@ -1269,7 +1309,7 @@ def categorize_jets(
     if "ratio" in feature_names and low_wind is None:
         print("you need to provide low wind")
         raise ValueError
-    
+
     if isinstance(low_wind, xr.Dataset):
         low_wind = low_wind[["s"]]
 
@@ -1432,7 +1472,9 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         )
     if "member" in jets.columns and member is not None:
         filter_ = filter_ & pl.col("member") == member
-        typical_group_by = ["member"].extend(typical_group_by)
+        typical_group_by_ = ["member"]
+        typical_group_by_.extend(typical_group_by)
+        typical_group_by = typical_group_by_
 
     jets_current = jets.filter(filter_).with_columns(
         len=pl.col("lon").len().over(["time", "jet ID"]),
@@ -1450,10 +1492,7 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         jets_current
         .join(jets_next, on="time", how="left")
         .with_columns(
-            **{
-                f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs()
-                for col in deltas
-            },
+            **{f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs() for col in deltas},
             overlap=pl.col("lon") == pl.col("lon_right"),
             vert_dist=(pl.col("lat") - pl.col("lat_right")).abs(),
         )
@@ -1467,21 +1506,22 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         .with_columns(
             pl.col("lon_right").list.get(filter2).over(typical_group_by),
             pl.col("vert_dist").list.get(filter2).over(typical_group_by),
-            len=pl.col("lon").n_unique().over(typical_group_by),
-            len_right=pl.col("lon_right").n_unique().over(typical_group_by),
+            len_reduced=pl.col("lon").n_unique().over(typical_group_by),
+            len_reduced_right=pl.col("lon_right").n_unique().over(typical_group_by),
         )
         .drop_nulls("lon_right")
-        .with_columns(overlap=pl.col("lon_right").len().over(typical_group_by))
     )
     cross = (
-        one.join(cross.drop("len", "len_right"), on=[*typical_group_by, "lon"])
+        one.join(cross, on=[*typical_group_by, "lon"])
         .group_by(typical_group_by)
         .agg(
             pl.col("len").first(),
             pl.col("len_right").first(),
-            overlap_forward=pl.col("overlap").first() / pl.col("len").first(),
-            overlap_backward=pl.col("overlap").first() / pl.col("len_right").first(),
-            sum_overlap=pl.col("overlap").first(),
+            pl.col("len_reduced").first(),
+            pl.col("len_reduced_right").first(),
+            overlap_forward=pl.col("len_reduced").first() / pl.col("len").first(),
+            overlap_backward=pl.col("len_reduced_right").first() / pl.col("len_right").first(),
+            sum_overlap=pl.col("overlap").sum(),
             vert_dist=weighted_mean_pl("vert_dist"),
             **{f"d{col}": weighted_mean_pl(f"d{col}") for col in deltas},
         )
@@ -1492,8 +1532,8 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         .sort("time", "jet ID")
     )
     return cross
-    
-    
+
+
 def track_jets(all_jets_one_df: pl.DataFrame):
     cross = []
     gb = ["time", "jet ID"]
@@ -1506,7 +1546,7 @@ def track_jets(all_jets_one_df: pl.DataFrame):
         total = total * len(members)
     else:
         iterator = zip([None] * len(iterator), iterator)
-    
+
     for member, year in tqdm(iterator, total=total):
         cross.append(
             track_jets_one_year(
@@ -1521,11 +1561,11 @@ def track_jets(all_jets_one_df: pl.DataFrame):
 
 def connected_from_cross(
     all_jets_one_df: pl.DataFrame,
-    cross: pl.DataFrame | None = None, 
+    cross: pl.DataFrame | None = None,
     dist_thresh: float = 2,
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
-    dis_polar_thresh: float | None = 1.0
+    dis_polar_thresh: float | None = 1.0,
 ) -> pl.DataFrame:
     if cross is None:
         cross = track_jets(all_jets_one_df)
@@ -1542,7 +1582,11 @@ def connected_from_cross(
         gb = ["member"].extend(gb)
         mem = ["member"]
         mem_k = ["member_k"]
-    summary = all_jets_one_df.group_by("time", "jet ID", maintain_order=True).agg(pl.col("is_polar").mean()).with_row_index()
+    summary = (
+        all_jets_one_df.group_by("time", "jet ID", maintain_order=True)
+        .agg(pl.col("is_polar").mean())
+        .with_row_index()
+    )
     cross = (
         cross.join(
             summary[[*gb, "index"]],
@@ -1551,8 +1595,12 @@ def connected_from_cross(
         .rename({"index": "a"})
         .join(
             summary[[*gb, "index"]],
-            left_on=[*mem ,pl.col("time") + datetime.timedelta(hours=6), pl.col("jet ID_right")],
-            right_on=[*mem ,"time", "jet ID"],
+            left_on=[
+                *mem,
+                pl.col("time") + datetime.timedelta(hours=6),
+                pl.col("jet ID_right"),
+            ],
+            right_on=[*mem, "time", "jet ID"],
             suffix="_k",
         )
         .drop(*mem_k, "time_k", "jet ID_k")
@@ -1561,25 +1609,63 @@ def connected_from_cross(
     deltas = ["u", "v", "s", "theta"]
     if "is_polar" in all_jets_one_df.columns:
         deltas.append("is_polar")
-        
-    edges = cross[["a", "b", "vert_dist", "overlap_min", "overlap_max", *[f"d{col}" for col in deltas]]].to_dicts()
-    edges = [(edge["a"], edge["b"], {k: v for k, v in edge.items() if k not in ["a", "b"]}) for edge in edges]
+
+    edges = cross[
+        [
+            "a",
+            "b",
+            "vert_dist",
+            "overlap_min",
+            "overlap_max",
+            *[f"d{col}" for col in deltas],
+        ]
+    ].to_dicts()
+    edges = [
+        (edge["a"], edge["b"], {k: v for k, v in edge.items() if k not in ["a", "b"]})
+        for edge in edges
+    ]
     G = rx.PyGraph(multigraph=False)
     G.add_nodes_from(summary.rows())
     G.add_edges_from(edges)
     conn_comp = rx.connected_components(G)
     summary_comp = []
-    for i, comp in enumerate(conn_comp):
-        this_comp = summary[list(comp)].select(
-            cs.float().mean(),
-            pl.col("jet ID"), 
-            time=pl.col("time"),
-            spell=i, 
-            len=len(comp)
+    # this could be faster
+    index_df = (
+        pl.from_dicts(
+            [
+                {"spell": i, "index": list(comp), "len": len(comp)}
+                for i, comp in enumerate(conn_comp)
+            ]
         )
-        summary_comp.append(this_comp)
-    summary_comp = pl.concat(summary_comp).sort("spell", "time")
-    return summary_comp
+        .explode("index")
+        .cast({"index": pl.UInt32()})
+    )
+    summary_comp = index_df.join(summary, on="index")
+    summary_comp = summary_comp.join(
+        cross.drop("time", "jet ID", "jet ID_right", "len", "len_right"),
+        how="left",
+        left_on="index",
+        right_on="a",
+    )
+    return cross, summary_comp.sort("spell", "time").drop("index", "b")
+    # print("success")
+    # for i, comp in enumerate(conn_comp):
+    #     this_comp = summary[list(comp)].select(
+    #         cs.float().mean(),
+    #         pl.col("jet ID"),
+    #         time=pl.col("time"),
+    #         spell=i,
+    #         len=len(comp),
+    #     )
+    #     this_cross = (
+    #         cross
+    #         .filter(pl.col("b").is_in(list(comp)))
+    #         .drop("jet ID", "jet ID_right", "len", "len_right")
+    #     )
+    #     this_comp = this_comp.join(this_cross, on=[*mem, "time"], how="left")
+    #     summary_comp.append(this_comp)
+    # summary_comp = pl.concat(summary_comp).sort("spell", "time")
+    # return summary_comp, hoho
 
 
 def jet_position_as_da(
@@ -1834,20 +1920,19 @@ class JetFindingExperiment(object):
         jets = self.find_jets()
         ofile_ajdf = self.path.joinpath("all_jets_one_df.parquet")
         jets = categorize_jets(
-            jets=jets, 
-            ds=self.ds, 
-            low_wind=low_wind, 
-            feature_names=feature_names, 
-            force=force, 
-            mode=mode, 
-            n_components=n_components, 
-            n_init=n_init, 
+            jets=jets,
+            ds=self.ds,
+            low_wind=low_wind,
+            feature_names=feature_names,
+            force=force,
+            mode=mode,
+            n_components=n_components,
+            n_init=n_init,
             init_params=init_params,
             v2=v2,
         )
         jets.write_parquet(ofile_ajdf)
         return jets
-    
 
     def compute_jet_props(
         self,
@@ -1932,7 +2017,7 @@ class JetFindingExperiment(object):
         force: int = 0,
     ) -> pl.DataFrame:
         """
-        Wraps cross and summary 
+        Wraps cross and summary
 
         Parameters
         ----------
@@ -1954,7 +2039,9 @@ class JetFindingExperiment(object):
         """
         cross_opath = self.path.joinpath("cross.parquet")
         summary_opath = self.path.joinpath("summary.parquet")
-        all_jets_one_df = self.find_jets(force=force > 3).cast({"time": pl.Datetime("ms")})
+        all_jets_one_df = self.find_jets(force=force > 3).cast(
+            {"time": pl.Datetime("ms")}
+        )
         if not cross_opath.is_file() or force > 1:
             cross = track_jets(all_jets_one_df)
             cross.write_parquet(cross_opath)
@@ -1973,7 +2060,6 @@ class JetFindingExperiment(object):
         else:
             summary = pl.read_parquet(summary_opath)
         return cross, summary
-            
 
     def jet_position_as_da(self, force: bool = False):
         """
