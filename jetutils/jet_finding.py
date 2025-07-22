@@ -1455,7 +1455,7 @@ def average_jet_categories(
     return props_as_df_cat
 
 
-def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None):
+def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None, n_next: int = 1):
     if "len_right" in jets.columns:
         jets = jets.drop("len_right")
     filter1 = pl.col("overlap")
@@ -1463,12 +1463,11 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
     deltas = ["u", "v", "s", "theta"]
     if "is_polar" in jets.columns:
         deltas.append("is_polar")
-    typical_group_by = ["time", "jet ID", "jet ID_right"]
+    typical_group_by = ["time", "time_right", "jet ID", "jet ID_right"]
     filter_ = pl.col("time").dt.year() == year
     if (year + 1) in jets["time"].dt.year().unique():
-        filter_ = filter_ | (
-            pl.col("time")
-            == pl.col("time").filter(pl.col("time").dt.year() == year + 1).first()
+        filter_ = filter_ | pl.col("time").is_in(
+            pl.col("time").filter(pl.col("time").dt.year() == year + 1).unique().bottom_k(n_next).implode()
         )
     if "member" in jets.columns and member is not None:
         filter_ = filter_ & pl.col("member") == member
@@ -1480,17 +1479,16 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
         len=pl.col("lon").len().over(["time", "jet ID"]),
         index=pl.int_range(0, pl.col("lon").len()).over(["time", "jet ID"]),
     )
-    jets_next = (
-        jets_current.shift(
-            -(pl.col("time") == pl.col("time").first()).sum().cast(pl.Int16())
-        )
-        .drop_nulls("time")
-        .with_columns(time=pl.col("time") - datetime.timedelta(hours=6))
-    )
+    jets_next = []
+    dt = jets_current["time"].unique().bottom_k(2).sort()
+    dt = dt[1] - dt[0]
+    for n_nex in range(1, n_next + 1):
+        jets_next.append(jets_current.with_columns(time_shifted=pl.col("time") - n_nex * dt))
+    jets_next = pl.concat(jets_next)
     jets_current = jets_current.filter(pl.col("time").dt.year() == year)
     cross = (
         jets_current
-        .join(jets_next, on="time", how="left")
+        .join(jets_next, left_on="time", right_on="time_shifted", how="left")
         .with_columns(
             **{f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs() for col in deltas},
             overlap=pl.col("lon") == pl.col("lon_right"),
@@ -1534,7 +1532,7 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
     return cross
 
 
-def track_jets(all_jets_one_df: pl.DataFrame):
+def track_jets(all_jets_one_df: pl.DataFrame, n_next: int = 1):
     cross = []
     gb = ["time", "jet ID"]
     iterator = all_jets_one_df["time"].dt.year().unique()
@@ -1553,6 +1551,7 @@ def track_jets(all_jets_one_df: pl.DataFrame):
                 all_jets_one_df,
                 year,
                 member,
+                n_next=n_next,
             )
         )
     cross = pl.concat(cross)
@@ -1579,7 +1578,9 @@ def connected_from_cross(
     mem = []
     mem_k = []
     if "member" in all_jets_one_df.columns:
-        gb = ["member"].extend(gb)
+        gb_ = ["member"]
+        gb_.extend(gb)
+        gb = gb_
         mem = ["member"]
         mem_k = ["member_k"]
     summary = (
@@ -1597,13 +1598,13 @@ def connected_from_cross(
             summary[[*gb, "index"]],
             left_on=[
                 *mem,
-                pl.col("time") + datetime.timedelta(hours=6),
+                pl.col("time_right"),
                 pl.col("jet ID_right"),
             ],
             right_on=[*mem, "time", "jet ID"],
             suffix="_k",
         )
-        .drop(*mem_k, "time_k", "jet ID_k")
+        .drop(*mem_k)
         .rename({"index": "b"})
     )
     deltas = ["u", "v", "s", "theta"]
@@ -1642,30 +1643,12 @@ def connected_from_cross(
     )
     summary_comp = index_df.join(summary, on="index")
     summary_comp = summary_comp.join(
-        cross.drop("time", "jet ID", "jet ID_right", "len", "len_right"),
+        cross.drop("time", "time_right", "jet ID", "jet ID_right", "len", "len_right"),
         how="left",
         left_on="index",
         right_on="a",
     )
     return cross, summary_comp.sort("spell", "time").drop("index", "b")
-    # print("success")
-    # for i, comp in enumerate(conn_comp):
-    #     this_comp = summary[list(comp)].select(
-    #         cs.float().mean(),
-    #         pl.col("jet ID"),
-    #         time=pl.col("time"),
-    #         spell=i,
-    #         len=len(comp),
-    #     )
-    #     this_cross = (
-    #         cross
-    #         .filter(pl.col("b").is_in(list(comp)))
-    #         .drop("jet ID", "jet ID_right", "len", "len_right")
-    #     )
-    #     this_comp = this_comp.join(this_cross, on=[*mem, "time"], how="left")
-    #     summary_comp.append(this_comp)
-    # summary_comp = pl.concat(summary_comp).sort("spell", "time")
-    # return summary_comp, hoho
 
 
 def jet_position_as_da(
@@ -2014,6 +1997,7 @@ class JetFindingExperiment(object):
         overlap_min_thresh: float = 0.5,
         overlap_max_thresh: float = 0.6,
         dis_polar_thresh: float | None = 1.0,
+        n_next: int = 1,
         force: int = 0,
     ) -> pl.DataFrame:
         """
@@ -2039,16 +2023,16 @@ class JetFindingExperiment(object):
         """
         cross_opath = self.path.joinpath("cross.parquet")
         summary_opath = self.path.joinpath("summary.parquet")
-        all_jets_one_df = self.find_jets(force=force > 3).cast(
+        all_jets_one_df = self.find_jets().cast(
             {"time": pl.Datetime("ms")}
         )
         if not cross_opath.is_file() or force > 1:
-            cross = track_jets(all_jets_one_df)
+            cross = track_jets(all_jets_one_df, n_next=n_next)
             cross.write_parquet(cross_opath)
         else:
             cross = pl.read_parquet(cross_opath)
         if not summary_opath.is_file() or force:
-            summary = connected_from_cross(
+            cross_upd, summary = connected_from_cross(
                 all_jets_one_df,
                 cross,
                 dist_thresh,
@@ -2059,7 +2043,7 @@ class JetFindingExperiment(object):
             summary.write_parquet(summary_opath)
         else:
             summary = pl.read_parquet(summary_opath)
-        return cross, summary
+        return cross_upd, summary
 
     def jet_position_as_da(self, force: bool = False):
         """
