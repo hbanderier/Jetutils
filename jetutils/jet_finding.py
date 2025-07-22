@@ -1630,7 +1630,6 @@ def connected_from_cross(
     G.add_edges_from(edges)
     conn_comp = rx.connected_components(G)
     summary_comp = []
-    # this could be faster
     index_df = (
         pl.from_dicts(
             [
@@ -1641,14 +1640,20 @@ def connected_from_cross(
         .explode("index")
         .cast({"index": pl.UInt32()})
     )
-    summary_comp = index_df.join(summary, on="index")
-    summary_comp = summary_comp.join(
-        cross.drop("time", "time_right", "jet ID", "jet ID_right", "len", "len_right"),
-        how="left",
-        left_on="index",
-        right_on="a",
+    summary_comp = (
+        index_df
+        .join(summary, on="index")
+        .join(
+            cross.drop("time_right", "jet ID_right", "len", "len_right"),
+            how="left",
+            on=["time", "jet ID"]
+        )
+        .sort("spell", "time")
+        .drop("index", "b")
+        .group_by(["spell", "time", "jet ID"], maintain_order=True)
+        .agg(pl.all().get(pl.col("overlap_min").fill_null(0).arg_max()))
     )
-    return cross, summary_comp.sort("spell", "time").drop("index", "b")
+    return cross, summary_comp
 
 
 def jet_position_as_da(
