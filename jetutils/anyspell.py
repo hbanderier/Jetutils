@@ -396,12 +396,23 @@ def extend_spells(
 def make_daily(
     df: pl.DataFrame,
     group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None,
+    to_keep: Sequence[str] | Sequence[pl.Expr] | None = None
 ) -> pl.DataFrame:
+    if to_keep is None:
+        to_keep = []
+    if "relative_time" in df.columns:
+        min_rel_time = df["relative_time"].min()
+    else:
+        min_rel_time = pl.duration(days=0, time_unit=df["time"].dtype.time_unit)
     aggs = [
-        (~cs.numeric()).first(),
-        cs.numeric().mean(),
+        *[pl.col(col).first() for col in to_keep],
+        cs.numeric().exclude(to_keep).mean(),
     ]
-    return df.group_by_dynamic("time", every="1d", group_by=group_by).agg(*aggs)
+    relative_time = (pl.col("time") - pl.col("time").first()).over(group_by)
+    relative_time = relative_time + min_rel_time
+    relative_index = (relative_time / pl.duration(days=1)).cast(pl.Int32())
+    df = df.group_by_dynamic("time", every="1d", group_by=group_by).agg(*aggs)
+    return df.with_columns(relative_time=relative_time, relative_index=relative_index)
 
 
 def get_spells(
@@ -463,6 +474,8 @@ def subset_around_onset(df, around_onset: int | datetime.timedelta | None = None
         df = df.filter(pl.col("relative_index").abs() <= around_onset)
     elif isinstance(around_onset, datetime.timedelta) and "relative_time" in df.columns:
         df = df.filter(pl.col("relative_time").abs() <= around_onset)
+    else:
+        raise ValueError
     return df
 
 

@@ -2037,7 +2037,7 @@ class JetFindingExperiment(object):
         else:
             cross = pl.read_parquet(cross_opath)
         if not summary_opath.is_file() or force:
-            cross_upd, summary = connected_from_cross(
+            cross, summary = connected_from_cross(
                 all_jets_one_df,
                 cross,
                 dist_thresh,
@@ -2048,7 +2048,7 @@ class JetFindingExperiment(object):
             summary.write_parquet(summary_opath)
         else:
             summary = pl.read_parquet(summary_opath)
-        return cross_upd, summary
+        return cross, summary
 
     def jet_position_as_da(self, force: bool = False):
         """
