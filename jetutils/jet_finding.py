@@ -523,13 +523,30 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     Computes all basic jet properties from a DataFrame containing many jets.
     """
     position_columns = [
-        col for col in ["lon", "lat", "lev", "theta"] if col in df.columns
+        col for col in ["lat", "lev", "theta"] if col in df.columns
     ]
 
     def dl(col):
         return pl.col(col).max() - pl.col(col).min()
+    
+    lon_rad = pl.col("lon").radians()
+    weights = pl.col("s")
+
+    # Compute weighted sine and cosine
+    weighted_sin = (weights * lon_rad.sin()).sum()
+    weighted_cos = (weights * lon_rad.cos()).sum()
+    total_weight = weights.sum()
+
+    # Compute mean sine and cosine
+    mean_sin = weighted_sin / total_weight
+    mean_cos = weighted_cos / total_weight
+
+    # Convert back to degrees using atan2
+    mean_lon = pl.arctan2(mean_sin, mean_cos)
+    mean_lon = mean_lon.degrees().alias("mean_lon")
 
     aggregations = [
+        mean_lon,
         *[weighted_mean_pl(col, "s").alias(f"mean_{col}") for col in position_columns],
         pl.col("s").mean().alias("mean_s"),
         *[
@@ -761,13 +778,30 @@ def gather_normal_da_jets(
     jets = add_normals(jets, half_length, dn, delete_middle)
     dlon = (da.lon[1] - da.lon[0]).item()
     dlat = (da.lat[1] - da.lat[0]).item()
-    jets = jets.with_columns(
-        normallon_rounded=(pl.col("normallon") / dlon).round() * dlon,
-        normallat_rounded=(pl.col("normallat") / dlat).round() * dlat,
-    )
-    jets = jets.filter(
-        pl.col("normallon_rounded").is_in(da.lon.values.tolist()),
-        pl.col("normallat_rounded").is_in(da.lat.values.tolist()),
+    lon = pl.Series("normallon_rounded", da.lon.values).to_frame()
+    lat = pl.Series("normallat_rounded", da.lat.values).to_frame()
+    jets = (
+        jets
+        .with_row_index("big_index")
+        .sort("normallon")
+        .join_asof(
+            lon, 
+            left_on="normallon", 
+            right_on="normallon_rounded", 
+            strategy="nearest", 
+            tolerance=dlon
+        )
+        .sort("normallat")
+        .join_asof(
+            lat, 
+            left_on="normallat", 
+            right_on="normallat_rounded", 
+            strategy="nearest", 
+            tolerance=dlat
+        )
+        .sort("big_index")
+        .drop("big_index")
+        .drop_nulls(["normallon_rounded", "normallat_rounded"])
     )
 
     lonslice = jets["normallon_rounded"].unique()
@@ -1984,13 +2018,11 @@ class JetFindingExperiment(object):
             return pl.read_parquet(ofile_pad)
         if ofile_padu.is_file() and categorize and not force:
             props_as_df = average_jet_categories(pl.read_parquet(ofile_padu))
-            # props_as_df = self.add_com_speed(props_as_df)
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         props_as_df = self.compute_jet_props(force=force > 1)
         props_as_df.write_parquet(ofile_padu)
         props_as_df_cat = average_jet_categories(props_as_df)
-        # props_as_df_cat = self.add_com_speed(props_as_df_cat)
         props_as_df_cat.write_parquet(ofile_pad)
         if categorize:
             props_as_df_cat
