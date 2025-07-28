@@ -77,7 +77,7 @@ def haversine_from_dl(lat: pl.Expr, dlon: pl.Expr, dlat: pl.Expr) -> pl.Expr:
 
 
 def jet_integral_haversine(
-    lon: pl.Expr, lat: pl.Expr, s: pl.Expr | None = None, x_is_one: bool = False
+    lon: pl.Expr = pl.col("lon"), lat: pl.Expr = pl.col("lon"), s: pl.Expr | None = pl.col("s"), x_is_one: bool = False
 ) -> pl.Expr:
     """
     Generates an expression to integrate the column `s` along a path on the sphere defined by `lon`and `lat`. Assumes we are on Earth since `haversine` uses the Earth's radius.
@@ -363,7 +363,6 @@ def find_all_jets(
     ds = preprocess_ds(ds, n_coarsen=3, smooth_s=5)
     dx = (ds["lon"][1] - ds["lon"][0]).item()
     dy = (ds["lat"][1] - ds["lat"][0]).item()
-    dX = 1.5 * np.sqrt(dx**2 + dy**2)
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds.drop_vars(smoothed_to_remove).rename(
@@ -428,10 +427,8 @@ def find_all_jets(
 
     diff_exp = pl.col("lon").diff().abs()
     diff_exp = pl.when(diff_exp > 180).then(360 - diff_exp).otherwise(diff_exp)
-    diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(5.0)
-    newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % pl.col(
-        "index"
-    ).max()
+    diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(10.0)
+    newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % (pl.col("index").max() + 1)
 
     all_contours = (
         all_contours.with_columns(len=pl.len().over([*index_columns, "contour"]))
@@ -506,16 +503,35 @@ def find_all_jets(
             )
         )
         .filter(condition_expr2)
-        .drop("int")
         .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
+        .with_columns(newindex.over([*index_columns, "jet ID"]))
+        .unique([*index_columns, "jet ID", "index"])
         .sort([*index_columns, "jet ID", "index"])
     )
 
     return jets
 
 
-def weighted_mean_pl(col, by: str = "s"):
-    return ((pl.col(col) * pl.col(by)).sum() / pl.col(by).sum()).alias(col)
+def to_expr(expr: pl.Expr | str):
+    if isinstance(expr, str):
+        expr = pl.col(expr)
+    return expr
+
+
+def weighted_mean_pl(col: pl.Expr | str, by: pl.Expr | str | None = None):
+    col = to_expr(col)
+    if by is None:
+        return col.mean()
+    by = to_expr(by)
+    return ((col * by).sum() / by.sum()).alias(col.meta.output_name())
+
+
+def circular_mean(col: pl.Expr | str, weights: pl.Expr | str | None = None):
+    col = to_expr(col)
+    col = col.radians()
+    mean_sin = weighted_mean_pl(col.sin(), weights)
+    mean_cos = weighted_mean_pl(col.cos(), weights)
+    return pl.arctan2(mean_sin, mean_cos).degrees().alias(col.meta.output_name())
 
 
 def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
@@ -529,21 +545,19 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     def dl(col):
         return pl.col(col).max() - pl.col(col).min()
     
-    lon_rad = pl.col("lon").radians()
-    weights = pl.col("s")
-
-    # Compute weighted sine and cosine
-    weighted_sin = (weights * lon_rad.sin()).sum()
-    weighted_cos = (weights * lon_rad.cos()).sum()
-    total_weight = weights.sum()
-
-    # Compute mean sine and cosine
-    mean_sin = weighted_sin / total_weight
-    mean_cos = weighted_cos / total_weight
-
-    # Convert back to degrees using atan2
-    mean_lon = pl.arctan2(mean_sin, mean_cos)
-    mean_lon = mean_lon.degrees().alias("mean_lon")
+    mean_lon = circular_mean("lon", "s")
+    
+    diff_lon = pl.col("lon").diff()
+    diff_lon = (
+        pl
+        .when(diff_lon > 180)
+        .then(diff_lon - 360)
+        .when(diff_lon <= -180)
+        .then(diff_lon + 360)
+        .otherwise(diff_lon)
+    )
+    
+    unraveled_lon = pl.col("lon").first() + diff_lon.cum_sum().fill_null(0.)
 
     aggregations = [
         mean_lon,
@@ -555,14 +569,14 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
         ],
         *[dl(col).alias(f"{col}_ext") for col in ["lon", "lat"]],
         (
-            pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
+            pds.lin_reg_report(unraveled_lon, target=pl.col("lat"), add_bias=True)
             .struct.field("beta")
             .first()
             .alias("tilt")
         ),
         (
             1
-            - pds.lin_reg_report(pl.col("lon"), target=pl.col("lat"), add_bias=True)
+            - pds.lin_reg_report(unraveled_lon, target=pl.col("lat"), add_bias=True)
             .struct.field("r2")
             .first()
         ).alias("waviness1"),
@@ -1372,6 +1386,108 @@ def categorize_jets(
     return jets
 
 
+def average_jet_categories_v2(
+    props_as_df: pl.DataFrame
+):
+    """
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
+
+    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
+
+    Parameters
+    ----------
+    props_as_df : pl.DataFrame
+        Uncategorized jet properties, that contain at least the `jet ID` column.
+    polar_cutoff : float | None, optional
+        Cutoff, by default None
+    allow_hybrid : bool, optional
+        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
+
+    Returns
+    -------
+    props_as_df
+        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
+    """
+
+    def polar_weights(is_polar: bool = False):
+        return pl.col("is_polar") if is_polar else 1 - pl.col("is_polar")
+    index_columns = get_index_columns(
+        props_as_df, ("member", "time", "cluster", "spell", "relative_index")
+    )
+    other_columns = [
+        col for col in props_as_df.columns if col not in [*index_columns, "jet"]
+    ]
+    agg = [
+        {
+            col: weighted_mean_pl(pl.col(col).fill_nan(0.), pl.col("int") * polar_weights(bool(i))) for col in other_columns
+        }
+        for i in range(2)
+    ]
+    for i in range(2):
+        agg[i]["int"] = weighted_mean_pl("int", polar_weights(bool(i)))
+        agg[i]["is_polar"] = weighted_mean_pl("is_polar", polar_weights(bool(i)))
+        agg[i]["njets"] = (pl.col("is_polar") < 0.5).sum().cast(pl.UInt8())
+
+    jet_names = ["STJ", "EDJ"]
+    props_as_df_cat = [
+        props_as_df
+        .group_by(index_columns)
+        .agg(**agg[i])
+        .with_columns(jet=pl.lit(jet_names[i]))
+        for i in range(2)
+    ]
+    props_as_df_cat = pl.concat(props_as_df_cat)
+
+    if "member" in index_columns:
+        dummy_indexer = (
+            props_as_df_cat["member"]
+            .unique()
+            .sort()
+            .to_frame()
+            .join(
+                props_as_df_cat["time"].unique().sort().to_frame(),
+                how="cross",
+            )
+            .join(
+                props_as_df_cat["jet"].unique().sort(descending=True).to_frame(),
+                how="cross",
+            )
+        )
+    elif "cluster" in index_columns:
+        dummy_indexer = (
+            props_as_df_cat["cluster"]
+            .unique()
+            .sort()
+            .to_frame()
+            .join(
+                props_as_df_cat["jet"].unique().sort(descending=True).to_frame(),
+                how="cross",
+            )
+        )
+    else:
+        dummy_indexer = (
+            props_as_df_cat["time"]
+            .unique()
+            .sort()
+            .to_frame()
+            .join(
+                props_as_df_cat["jet"].unique().sort(descending=True).to_frame(),
+                how="cross",
+            )
+        )
+    new_index_columns = get_index_columns(
+        props_as_df_cat, ("member", "time", "cluster", "jet", "spell", "relative_index")
+    )
+
+    sort_descending = [False] * len(new_index_columns)
+    sort_descending[-1] = True
+    props_as_df_cat = dummy_indexer.join(
+        props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
+    ).sort(new_index_columns, descending=sort_descending)
+    props_as_df_cat = props_as_df_cat.with_columns(pl.col("njets").fill_null(0))
+    return props_as_df_cat
+
+
 def average_jet_categories(
     props_as_df: pl.DataFrame,
     polar_cutoff: float | None = None,
@@ -2025,7 +2141,7 @@ class JetFindingExperiment(object):
         props_as_df_cat = average_jet_categories(props_as_df)
         props_as_df_cat.write_parquet(ofile_pad)
         if categorize:
-            props_as_df_cat
+            return props_as_df_cat
         return props_as_df
 
     def track_jets(
