@@ -43,6 +43,7 @@ from .data import (
     to_netcdf,
     coarsen_da,
 )
+from .anyspell import get_spells
 
 
 def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.Expr:
@@ -77,7 +78,10 @@ def haversine_from_dl(lat: pl.Expr, dlon: pl.Expr, dlat: pl.Expr) -> pl.Expr:
 
 
 def jet_integral_haversine(
-    lon: pl.Expr = pl.col("lon"), lat: pl.Expr = pl.col("lon"), s: pl.Expr | None = pl.col("s"), x_is_one: bool = False
+    lon: pl.Expr = pl.col("lon"),
+    lat: pl.Expr = pl.col("lon"),
+    s: pl.Expr | None = pl.col("s"),
+    x_is_one: bool = False,
 ) -> pl.Expr:
     """
     Generates an expression to integrate the column `s` along a path on the sphere defined by `lon`and `lat`. Assumes we are on Earth since `haversine` uses the Earth's radius.
@@ -428,7 +432,9 @@ def find_all_jets(
     diff_exp = pl.col("lon").diff().abs()
     diff_exp = pl.when(diff_exp > 180).then(360 - diff_exp).otherwise(diff_exp)
     diff_exp = (diff_exp.abs() + pl.col("lat").diff().abs()).fill_null(10.0)
-    newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % (pl.col("index").max() + 1)
+    newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % (
+        pl.col("index").max() + 1
+    )
 
     all_contours = (
         all_contours.with_columns(len=pl.len().over([*index_columns, "contour"]))
@@ -538,26 +544,23 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     """
     Computes all basic jet properties from a DataFrame containing many jets.
     """
-    position_columns = [
-        col for col in ["lat", "lev", "theta"] if col in df.columns
-    ]
+    position_columns = [col for col in ["lat", "lev", "theta"] if col in df.columns]
 
     def dl(col):
         return pl.col(col).max() - pl.col(col).min()
-    
+
     mean_lon = circular_mean("lon", "s")
-    
+
     diff_lon = pl.col("lon").diff()
     diff_lon = (
-        pl
-        .when(diff_lon > 180)
+        pl.when(diff_lon > 180)
         .then(diff_lon - 360)
         .when(diff_lon <= -180)
         .then(diff_lon + 360)
         .otherwise(diff_lon)
     )
-    
-    unraveled_lon = pl.col("lon").first() + diff_lon.cum_sum().fill_null(0.)
+
+    unraveled_lon = pl.col("lon").first() + diff_lon.cum_sum().fill_null(0.0)
 
     aggregations = [
         mean_lon,
@@ -795,23 +798,22 @@ def gather_normal_da_jets(
     lon = pl.Series("normallon_rounded", da.lon.values).to_frame()
     lat = pl.Series("normallat_rounded", da.lat.values).to_frame()
     jets = (
-        jets
-        .with_row_index("big_index")
+        jets.with_row_index("big_index")
         .sort("normallon")
         .join_asof(
-            lon, 
-            left_on="normallon", 
-            right_on="normallon_rounded", 
-            strategy="nearest", 
-            tolerance=dlon
+            lon,
+            left_on="normallon",
+            right_on="normallon_rounded",
+            strategy="nearest",
+            tolerance=dlon,
         )
         .sort("normallat")
         .join_asof(
-            lat, 
-            left_on="normallat", 
-            right_on="normallat_rounded", 
-            strategy="nearest", 
-            tolerance=dlat
+            lat,
+            left_on="normallat",
+            right_on="normallat_rounded",
+            strategy="nearest",
+            tolerance=dlat,
         )
         .sort("big_index")
         .drop("big_index")
@@ -1386,9 +1388,7 @@ def categorize_jets(
     return jets
 
 
-def average_jet_categories_v2(
-    props_as_df: pl.DataFrame
-):
+def average_jet_categories_v2(props_as_df: pl.DataFrame):
     """
     For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
 
@@ -1411,6 +1411,7 @@ def average_jet_categories_v2(
 
     def polar_weights(is_polar: bool = False):
         return pl.col("is_polar") if is_polar else 1 - pl.col("is_polar")
+
     index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "spell", "relative_index")
     )
@@ -1419,7 +1420,10 @@ def average_jet_categories_v2(
     ]
     agg = [
         {
-            col: weighted_mean_pl(pl.col(col).fill_nan(0.), pl.col("int") * polar_weights(bool(i))) for col in other_columns
+            col: weighted_mean_pl(
+                pl.col(col).fill_nan(0.0), pl.col("int") * polar_weights(bool(i))
+            )
+            for col in other_columns
         }
         for i in range(2)
     ]
@@ -1430,8 +1434,7 @@ def average_jet_categories_v2(
 
     jet_names = ["STJ", "EDJ"]
     props_as_df_cat = [
-        props_as_df
-        .group_by(index_columns)
+        props_as_df.group_by(index_columns)
         .agg(**agg[i])
         .with_columns(jet=pl.lit(jet_names[i]))
         for i in range(2)
@@ -1605,19 +1608,25 @@ def average_jet_categories(
     return props_as_df_cat
 
 
-def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None, n_next: int = 1):
+def track_jets_one_year(
+    jets: pl.DataFrame, year: int, member: str | None = None, n_next: int = 1
+):
     if "len_right" in jets.columns:
         jets = jets.drop("len_right")
-    filter1 = pl.col("overlap")
-    filter2 = pl.col("vert_dist").list.arg_min()
     deltas = ["u", "v", "s", "theta"]
+    distargmin = pl.col("dist").arg_min()
     if "is_polar" in jets.columns:
         deltas.append("is_polar")
+    deltas2 = [f"d{col}" for col in deltas]
     typical_group_by = ["time", "time_right", "jet ID", "jet ID_right"]
     filter_ = pl.col("time").dt.year() == year
     if (year + 1) in jets["time"].dt.year().unique():
         filter_ = filter_ | pl.col("time").is_in(
-            pl.col("time").filter(pl.col("time").dt.year() == year + 1).unique().bottom_k(n_next).implode()
+            pl.col("time")
+            .filter(pl.col("time").dt.year() == year + 1)
+            .unique()
+            .bottom_k(n_next)
+            .implode()
         )
     if "member" in jets.columns and member is not None:
         filter_ = filter_ & pl.col("member") == member
@@ -1633,51 +1642,84 @@ def track_jets_one_year(jets: pl.DataFrame, year: int, member: str | None = None
     dt = jets_current["time"].unique().bottom_k(2).sort()
     dt = dt[1] - dt[0]
     for n_nex in range(1, n_next + 1):
-        jets_next.append(jets_current.with_columns(time_shifted=pl.col("time") - n_nex * dt))
+        jets_next.append(
+            jets_current.with_columns(time_shifted=pl.col("time") - n_nex * dt)
+        )
     jets_next = pl.concat(jets_next)
     jets_current = jets_current.filter(pl.col("time").dt.year() == year)
     cross = (
-        jets_current
-        .join(jets_next, left_on="time", right_on="time_shifted", how="left")
-        .with_columns(
-            **{f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs() for col in deltas},
-            overlap=pl.col("lon") == pl.col("lon_right"),
-            vert_dist=(pl.col("lat") - pl.col("lat_right")).abs(),
-        )
-    )
-    one = (
-        cross.group_by([*typical_group_by, "lon"])
-        .agg(
-            pl.col("lon_right").filter(filter1),
-            pl.col("vert_dist").filter(filter1),
+        jets_current.join(
+            jets_next, left_on="time", right_on="time_shifted", how="left"
         )
         .with_columns(
-            pl.col("lon_right").list.get(filter2).over(typical_group_by),
-            pl.col("vert_dist").list.get(filter2).over(typical_group_by),
-            len_reduced=pl.col("lon").n_unique().over(typical_group_by),
-            len_reduced_right=pl.col("lon_right").n_unique().over(typical_group_by),
+            **{
+                f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs()
+                for col in deltas
+            },
+            dist=haversine(
+                pl.col("lon"), pl.col("lat"), pl.col("lon_right"), pl.col("lat_right")
+            ),
         )
-        .drop_nulls("lon_right")
+        .with_columns(overlap=pl.col("dist") < 5e5)
     )
     cross = (
-        one.join(cross, on=[*typical_group_by, "lon"])
-        .group_by(typical_group_by)
+        cross.group_by(typical_group_by)
         .agg(
             pl.col("len").first(),
             pl.col("len_right").first(),
-            pl.col("len_reduced").first(),
-            pl.col("len_reduced_right").first(),
-            overlap_forward=pl.col("len_reduced").first() / pl.col("len").first(),
-            overlap_backward=pl.col("len_reduced_right").first() / pl.col("len_right").first(),
-            sum_overlap=pl.col("overlap").sum(),
-            vert_dist=weighted_mean_pl("vert_dist"),
-            **{f"d{col}": weighted_mean_pl(f"d{col}") for col in deltas},
+            pl.col("index").filter("overlap"),
+            pl.col("index_right").filter("overlap"),
+            pl.col("dist").filter("overlap"),
+            overlap_forward=pl.col("index").filter("overlap").n_unique()
+            / pl.col("len").first(),
+            overlap_backward=pl.col("index_right").filter("overlap").n_unique()
+            / pl.col("len_right").first(),
+            **{
+                f"d{col}": (pl.col(col) - pl.col(f"{col}_right"))
+                .abs()
+                .filter("overlap")
+                for col in deltas
+            },
         )
         .with_columns(
             overlap_min=pl.min_horizontal("overlap_forward", "overlap_backward"),
             overlap_max=pl.max_horizontal("overlap_forward", "overlap_backward"),
         )
-        .sort("time", "jet ID")
+    )
+
+    forward = (
+        cross.explode("index", "index_right", "dist", *deltas2)
+        .group_by(*typical_group_by, "index")
+        .agg(
+            *[
+                pl.col(col).get(distargmin)
+                for col in [*[f"d{d}" for d in deltas], "dist"]
+            ]
+        )
+        .group_by(typical_group_by)
+        .agg(pl.col(col).mean().alias(f"{col}_forward") for col in [*deltas2, "dist"])
+    )
+    backward = (
+        cross.explode("index", "index_right", "dist", *deltas2)
+        .group_by(*typical_group_by, "index_right")
+        .agg(*[pl.col(col).get(distargmin) for col in [*deltas2, "dist"]])
+        .group_by(typical_group_by)
+        .agg(pl.col(col).mean().alias(f"{col}_backward") for col in [*deltas2, "dist"])
+    )
+    cross = (
+        cross.drop("index", "index_right", "dist", *deltas2)
+        .join(forward, on=typical_group_by)
+        .join(backward, on=typical_group_by)
+        .drop_nulls(["du_forward"])
+        .sort(*typical_group_by)
+        .with_columns(
+            pl.mean_horizontal(f"{col}_backward", f"{col}_forward").alias(col)
+            for col in [*deltas2, "dist"]
+        )
+        .drop(
+            *[f"{col}_backward" for col in [*deltas2, "dist"]],
+            *[f"{col}_forward" for col in [*deltas2, "dist"]],
+        )
     )
     return cross
 
@@ -1711,7 +1753,7 @@ def track_jets(all_jets_one_df: pl.DataFrame, n_next: int = 1):
 def connected_from_cross(
     all_jets_one_df: pl.DataFrame,
     cross: pl.DataFrame | None = None,
-    dist_thresh: float = 2,
+    dist_thresh: float = 2e5,
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
     dis_polar_thresh: float | None = 1.0,
@@ -1719,7 +1761,7 @@ def connected_from_cross(
     if cross is None:
         cross = track_jets(all_jets_one_df)
     cross = cross.filter(
-        pl.col("vert_dist") < dist_thresh,
+        pl.col("dist") < dist_thresh,
         pl.col("overlap_min") > overlap_min_thresh,
         pl.col("overlap_max") > overlap_max_thresh,
         pl.col("dis_polar") < dis_polar_thresh,
@@ -1737,6 +1779,20 @@ def connected_from_cross(
         all_jets_one_df.group_by("time", "jet ID", maintain_order=True)
         .agg(pl.col("is_polar").mean())
         .with_row_index()
+    )
+    cross = (
+        cross
+        .with_columns(
+            dt=((pl.col("time_right") - pl.col("time")) / (pl.col("time_right") - pl.col("time")).min()).cast(pl.Int32())
+        )
+        .with_columns(pers=persistence_expr() / pl.col("dt"))
+        .group_by("time", "jet ID", maintain_order=True)
+        .agg(
+            pl.col("time_right").get(pl.col("pers").arg_max()),
+            pl.col("jet ID_right").get(pl.col("pers").arg_max()),
+            pl.col("dt").get(pl.col("pers").arg_max())
+        )
+        .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
     )
     cross = (
         cross.join(
@@ -1765,7 +1821,7 @@ def connected_from_cross(
         [
             "a",
             "b",
-            "vert_dist",
+            "dist",
             "overlap_min",
             "overlap_max",
             *[f"d{col}" for col in deltas],
@@ -1791,19 +1847,133 @@ def connected_from_cross(
         .cast({"index": pl.UInt32()})
     )
     summary_comp = (
-        index_df
-        .join(summary, on="index")
+        index_df.join(summary, on="index")
         .join(
             cross.drop("time_right", "jet ID_right", "len", "len_right"),
             how="left",
-            on=["time", "jet ID"]
+            on=["time", "jet ID"],
         )
         .sort("spell", "time")
         .drop("index", "b")
-        .group_by(["spell", "time", "jet ID"], maintain_order=True)
-        .agg(pl.all().get(pl.col("overlap_min").fill_null(0).arg_max()))
     )
     return cross, summary_comp
+
+
+def persistence_expr():
+    return pl.col("overlap_min") * RADIUS / pl.col("dist").replace(0, RADIUS * 0.1)
+
+
+def spells_from_cross(
+    all_jets_one_df: pl.DataFrame,
+    cross: pl.DataFrame,
+    dist_thresh: float = 2e5,
+    overlap_min_thresh: float = 0.5,
+    overlap_max_thresh: float = 0.6,
+    dis_polar_thresh: float | None = 1.0,
+    q: float = 0.99,
+    season: pl.Series | None = None,
+    subtropical_cutoff: float = 0.4,
+    polar_cutoff: float = 0.6,
+):
+    _, summary_comp = connected_from_cross(
+        all_jets_one_df,
+        cross,
+        dist_thresh=dist_thresh,
+        overlap_min_thresh=overlap_min_thresh,
+        overlap_max_thresh=overlap_max_thresh,
+        dis_polar_thresh=dis_polar_thresh,
+    )
+    if season is not None:
+        summary_comp = summary_comp.filter(
+            (pl.col("time").is_in(season.implode()).mean() > 0.8).over("spell")
+        )
+    summer_spells = (
+        summary_comp.filter(pl.col("len") > 2)
+        .with_columns(pers=persistence_expr())
+        .group_by("spell", maintain_order=True)
+        .agg(
+            pl.col("time"),
+            pl.col("jet ID"),
+            pl.col("len").first(),
+            pl.col("overlap_min"),
+            pl.col("overlap_max"),
+            pl.col("pers"),
+            pl.col("dis_polar"),
+            pl.col("is_polar"),
+            mean_is_polar=pl.col("is_polar").mean(),
+            pers_sum=pl.col("pers").sum(),
+        )
+    )
+
+    spells_list = {}
+    spells_list["STJ"] = (
+        summer_spells.filter(pl.col("mean_is_polar") < subtropical_cutoff)
+        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q))
+        .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
+        .with_columns(
+            spell_of=pl.lit("STJ"),
+            spell2=pl.col("spell").rle_id(),
+            relative_index=pl.col("time").rle_id().over("spell"),
+        )
+        .drop("is_polar")
+    )
+    spells_list["EDJ"] = (
+        summer_spells.filter(pl.col("mean_is_polar") > polar_cutoff)
+        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q))
+        .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
+        .with_columns(
+            spell_of=pl.lit("EDJ"),
+            spell2=pl.col("spell").rle_id(),
+            relative_index=pl.col("time").rle_id().over("spell"),
+        )
+        .drop("is_polar")
+    )
+    return spells_list
+
+
+def spells_from_cross_catd(
+    # all_jets_one_df: pl.DataFrame,
+    cross: pl.DataFrame,
+    q: float = 0.99,
+    season: pl.Series | None = None,
+):
+    if season is not None:
+        cross = season.rename("time").to_frame().join(cross, on="time")
+    cross = (
+        cross
+        .filter(pl.col("jet ID") == pl.col("jet ID_right"))
+        .with_columns(
+            spell_of=pl.when(pl.col("jet ID") == 0)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("EDJ")),
+            pers=persistence_expr()
+        )
+    )
+    cross = (
+        cross
+        .with_columns(
+            dt=((pl.col("time_right") - pl.col("time")) / (pl.col("time_right") - pl.col("time")).min()).cast(pl.Int32())
+        )
+        .with_columns(pers2=pl.col("pers") / pl.col("dt"))
+        .group_by("time", "jet ID", maintain_order=True)
+        .agg(
+            pl.col("time_right").get(pl.col("pers").arg_max()),
+            pl.col("jet ID_right").get(pl.col("pers").arg_max()),
+            pl.col("dt").get(pl.col("pers").arg_max())
+        )
+        .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
+    )
+    pers = cross.rolling("time", period="3d", group_by="spell_of").agg(
+        pl.col("pers").mean().fill_null(0.0)
+    )
+    spells = get_spells(
+        pers, pl.col("pers") > pl.col("pers").quantile(q), group_by="spell_of"
+    ).sort("spell_of", "spell")
+    spells = spells.join(cross.drop("len", "len_right"), on=["time", "spell_of"])
+    spells_list = {
+        jet: spells.filter(pl.col("spell_of") == jet) for jet in spells["spell_of"].unique()
+    }
+    return spells_list
 
 
 def jet_position_as_da(
@@ -2176,9 +2346,7 @@ class JetFindingExperiment(object):
         """
         cross_opath = self.path.joinpath("cross.parquet")
         summary_opath = self.path.joinpath("summary.parquet")
-        all_jets_one_df = self.find_jets().cast(
-            {"time": pl.Datetime("ms")}
-        )
+        all_jets_one_df = self.find_jets().cast({"time": pl.Datetime("ms")})
         if not cross_opath.is_file() or force > 1:
             cross = track_jets(all_jets_one_df, n_next=n_next)
             cross.write_parquet(cross_opath)

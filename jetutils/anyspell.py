@@ -355,7 +355,7 @@ def extend_spells(
 ) -> pl.DataFrame:
     times = spells["time"].unique()
     dt = times[1] - times[0]
-    index_columns = get_index_columns(spells, ["member", "region", "spell", "jet"])
+    index_columns = get_index_columns(spells, ["member", "region", "spell", "jet", "spell_of"])
     exprs = {
         "len": pl.col("len").first(),
         "time": pl.datetime_range(
