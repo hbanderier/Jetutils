@@ -1932,13 +1932,7 @@ def spells_from_cross(
     return spells_list
 
 
-def spells_from_cross_catd(
-    # all_jets_one_df: pl.DataFrame,
-    cross: pl.DataFrame,
-    q_STJ: float = 0.99,
-    q_EDJ: float = 0.95,
-    season: pl.Series | None = None,
-):
+def pers_from_cross_catd(cross: pl.DataFrame, season: pl.Series | None = None) -> pl.DataFrame:
     if season is not None:
         cross = season.rename("time").to_frame().join(cross, on="time")
     cross = (
@@ -1968,6 +1962,17 @@ def spells_from_cross_catd(
     pers = cross.rolling("time", period="3d", group_by="spell_of").agg(
         pl.col("pers").mean().fill_null(0.0)
     )
+    return cross, pers
+
+
+def spells_from_cross_catd(
+    # all_jets_one_df: pl.DataFrame,
+    cross: pl.DataFrame,
+    q_STJ: float = 0.99,
+    q_EDJ: float = 0.95,
+    season: pl.Series | None = None,
+):
+    cross, pers = pers_from_cross_catd(cross, season)
     exprs = {
         spell_of: pl.col("pers") > pl.col("pers").quantile(q) for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
     }
