@@ -1870,7 +1870,8 @@ def spells_from_cross(
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
     dis_polar_thresh: float | None = 1.0,
-    q: float = 0.99,
+    q_STJ: float = 0.99,
+    q_EDJ: float = 0.95,
     season: pl.Series | None = None,
     subtropical_cutoff: float = 0.4,
     polar_cutoff: float = 0.6,
@@ -1908,7 +1909,7 @@ def spells_from_cross(
     spells_list = {}
     spells_list["STJ"] = (
         summer_spells.filter(pl.col("mean_is_polar") < subtropical_cutoff)
-        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q))
+        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_STJ))
         .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
         .with_columns(
             spell_of=pl.lit("STJ"),
@@ -1919,7 +1920,7 @@ def spells_from_cross(
     )
     spells_list["EDJ"] = (
         summer_spells.filter(pl.col("mean_is_polar") > polar_cutoff)
-        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q))
+        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_EDJ))
         .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
         .with_columns(
             spell_of=pl.lit("EDJ"),
@@ -1934,7 +1935,8 @@ def spells_from_cross(
 def spells_from_cross_catd(
     # all_jets_one_df: pl.DataFrame,
     cross: pl.DataFrame,
-    q: float = 0.99,
+    q_STJ: float = 0.99,
+    q_EDJ: float = 0.95,
     season: pl.Series | None = None,
 ):
     if season is not None:
@@ -1966,12 +1968,17 @@ def spells_from_cross_catd(
     pers = cross.rolling("time", period="3d", group_by="spell_of").agg(
         pl.col("pers").mean().fill_null(0.0)
     )
-    spells = get_spells(
-        pers, pl.col("pers") > pl.col("pers").quantile(q), group_by="spell_of"
-    ).sort("spell_of", "spell")
-    spells = spells.join(cross.drop("len", "len_right"), on=["time", "spell_of"])
+    exprs = {
+        spell_of: pl.col("pers") > pl.col("pers").quantile(q) for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
+    }
     spells_list = {
-        jet: spells.filter(pl.col("spell_of") == jet) for jet in spells["spell_of"].unique()
+        spell_of: (
+            get_spells(pers.filter(pl.col("spell_of") == spell_of), expr)
+            .with_columns(spell_of=pl.lit(spell_of))
+            .sort("spell")
+            .join(cross.drop("len", "len_right"), on=["time", "spell_of"])
+        )
+        for spell_of, expr in exprs.items()
     }
     return spells_list
 

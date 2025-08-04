@@ -684,7 +684,7 @@ class Clusterplot:
         mask: np.ndarray,
         FDR: bool = False,
         color: str = "black",
-        hatch: str = "////////////",
+        hatch: str = "xx",
     ) -> None:
         to_test = []
         for mas in mask.T:
@@ -705,12 +705,11 @@ class Clusterplot:
             )
 
         for ax, signif in zip(self.axes, significances):
-            print(signif.sum())
-            cs = ax.contourf(
+            cs = ax.pcolor(
                 lon,
                 lat,
                 da[0].where(signif),
-                hatches=hatch,
+                hatch=hatch,
                 alpha=0.,
             )
 
