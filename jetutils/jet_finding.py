@@ -642,8 +642,8 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
     index_columns = get_index_columns(da_df)
     lon = da_df["lon"].unique().sort()
     lat = da_df["lat"].unique().sort()
-    dlon = lon[1] - lon[0]
-    dlat = lat[1] - lat[0]
+    dlon = lon.diff().filter(lon.diff() > 0).min()
+    dlat = lat.diff().filter(lat.diff() > 0).min()
     da_df = da_df.rename({"lon": "lon_", "lat": "lat_"})
     if varname in jets.columns:
         jets = jets.rename({varname: f"{varname}_core"})
@@ -830,7 +830,7 @@ def gather_normal_da_jets(
         warnings.simplefilter("ignore", category=RuntimeWarning)
         if "time" in da.dims:
             if da["time"].dtype == np.dtype("object"):
-                da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
+                da["time"] = da.indexes["time"].to_datetimeindex(time_unit="ms")
             da = da.sel(time=jets["time"].unique().sort().to_numpy())
     da_df = xarray_to_polars(da)
     if "time" in da_df.columns:

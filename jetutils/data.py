@@ -135,6 +135,7 @@ def _open_many_da_wrapper(
                 # exceptions are raised by clim.nc, which we do not want anyways
                 continue
             da_ = open_dataset(fn, chunks="auto")
+            da_ = standardize(da_)
             if len(stem) == 6:
                 yearmask = da_.time.dt.year.values == int(stem[:4])
                 monthmask = da_.time.dt.month.values == int(stem[4:])
