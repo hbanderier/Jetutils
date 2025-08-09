@@ -59,19 +59,20 @@ from .anyspell import extend_spells
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 
-mpl.rcParams["font.size"] = 11
-mpl.rcParams["axes.titlesize"] = 11
-mpl.rcParams["axes.labelsize"] = 11
-mpl.rcParams["axes.titlepad"] = 2
-mpl.rcParams["xtick.labelsize"] = 11
-mpl.rcParams["ytick.labelsize"] = 11
-mpl.rcParams["legend.fontsize"] = 11
-mpl.rcParams["figure.titlesize"] = 11
-mpl.rcParams["figure.dpi"] = 100
-mpl.rcParams["savefig.dpi"] = 300
-mpl.rcParams["savefig.bbox"] = "tight"
-mpl.rcParams["text.usetex"] = False
-mpl.rcParams["animation.ffmpeg_path"] = r"~/miniforge3/envs/env12/bin/ffmpeg"
+mpl.rcParams = mpl.rcParams | {
+    "font.size": 15,
+    "font.family": "cmu serif",
+    "xtick.labelsize": 15,
+    "ytick.labelsize": 15,
+    "axes.titlesize": 15,
+    "axes.labelsize": 15,
+    "figure.titlesize": 17,
+    "axes.titlepad": 10,
+    "figure.dpi": 100,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "text.usetex": True,
+}
 
 
 COLORS5 = [

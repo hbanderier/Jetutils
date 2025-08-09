@@ -1960,7 +1960,7 @@ def pers_from_cross_catd(cross: pl.DataFrame, season: pl.Series | None = None) -
         .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
     )
     pers = cross.rolling("time", period="3d", group_by="spell_of").agg(
-        pl.col("pers").mean().fill_null(0.0)
+        pl.col("pers").mean()
     )
     return cross, pers
 
