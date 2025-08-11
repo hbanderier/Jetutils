@@ -59,7 +59,7 @@ from .anyspell import extend_spells
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 
-mpl.rcParams = mpl.rcParams | {
+mpl.rcParams.update({
     "font.size": 15,
     "font.family": "cmu serif",
     "xtick.labelsize": 15,
@@ -72,7 +72,7 @@ mpl.rcParams = mpl.rcParams | {
     "savefig.dpi": 300,
     "savefig.bbox": "tight",
     "text.usetex": True,
-}
+})
 
 
 COLORS5 = [
