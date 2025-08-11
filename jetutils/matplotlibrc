@@ -1,0 +1,12 @@
+font.size: 15
+font.family: cmu serif
+xtick.labelsize: 15
+ytick.labelsize: 15
+axes.titlesize: 15
+axes.labelsize: 15
+figure.titlesize: 17
+axes.titlepad: 10
+figure.dpi: 100
+savefig.dpi: 300
+savefig.bbox: tight
+text.usetex: True

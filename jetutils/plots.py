@@ -3,6 +3,7 @@ from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor
 
+import os
 import numpy as np
 from scipy.stats import gaussian_kde
 from scipy.interpolate import LinearNDInterpolator
@@ -13,6 +14,7 @@ import polars_ds as pds
 from contourpy import contour_generator
 from tqdm import tqdm, trange
 from string import ascii_lowercase
+from pathlib import Path
 
 import matplotlib as mpl
 from matplotlib import path as mpath
@@ -56,23 +58,27 @@ from .jet_finding import gather_normal_da_jets
 from .stats import field_significance
 from .data import periodic_rolling_pl
 from .anyspell import extend_spells
+import jetutils
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
+STYLE_SHEET = Path(jetutils.__path__[0]).joinpath("matplotlibrc").as_posix()
 
-mpl.rcParams.update({
-    "font.size": 15,
-    "font.family": "cmu serif",
-    "xtick.labelsize": 15,
-    "ytick.labelsize": 15,
-    "axes.titlesize": 15,
-    "axes.labelsize": 15,
-    "figure.titlesize": 17,
-    "axes.titlepad": 10,
-    "figure.dpi": 100,
-    "savefig.dpi": 300,
-    "savefig.bbox": "tight",
-    "text.usetex": True,
-})
+plt.style.use(STYLE_SHEET)
+
+# mpl.rcParams.update({
+#     "font.size": 15,
+#     "font.family": "cmu serif",
+#     "xtick.labelsize": 15,
+#     "ytick.labelsize": 15,
+#     "axes.titlesize": 15,
+#     "axes.labelsize": 15,
+#     "figure.titlesize": 17,
+#     "axes.titlepad": 10,
+#     "figure.dpi": 100,
+#     "savefig.dpi": 300,
+#     "savefig.bbox": "tight",
+#     "text.usetex": True,
+# })
 
 
 COLORS5 = [
