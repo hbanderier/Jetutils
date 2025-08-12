@@ -1971,6 +1971,7 @@ def spells_from_cross_catd(
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
     season: pl.Series | None = None,
+    minlen: datetime.timedelta = datetime.timedelta(days=5)
 ):
     cross, pers = pers_from_cross_catd(cross, season)
     exprs = {
@@ -1978,7 +1979,7 @@ def spells_from_cross_catd(
     }
     spells_list = {
         spell_of: (
-            get_spells(pers.filter(pl.col("spell_of") == spell_of), expr)
+            get_spells(pers.filter(pl.col("spell_of") == spell_of), expr, minlen=minlen)
             .with_columns(spell_of=pl.lit(spell_of))
             .sort("spell")
             .join(cross.drop("len", "len_right"), on=["time", "spell_of"])

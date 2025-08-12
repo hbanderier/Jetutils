@@ -127,6 +127,8 @@ if "DATADIR" not in globals():
         "com_speed": "COM speed",
         "double_jet_index": "Double jet index",
         "ratio": "Baroclinicity proxy",
+        "mean_lat:var": "Latitude var.",
+        "mean_s:var": "Speed var.",
     }
 
     UNITS = {
@@ -154,6 +156,8 @@ if "DATADIR" not in globals():
         "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
         "double_jet_index": "$~$",
         "ratio": "$~$",
+        "mean_lat:var": r"$~^{\circ} \mathrm{E} ^2$",
+        "mean_s:var": r"$\mathrm{m^2\cdot s^{-2}}$",
     }
 
     DEFAULT_VALUES = {
