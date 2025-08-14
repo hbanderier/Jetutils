@@ -434,6 +434,8 @@ class Clusterplot:
             ax.set_extent(
                 [self.minlon, self.maxlon, self.minlat, self.maxlat],
             )
+            ax.set_xlim(self.minlon - self.central_longitude, self.maxlon - self.central_longitude)
+            ax.set_ylim(self.minlat, self.maxlat)
             if self.lambert_projection:
                 ax.set_boundary(self.boundary)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
@@ -521,6 +523,7 @@ class Clusterplot:
         **kwargs,
     ) -> None:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
+        lon = lon + self.central_longitude
 
         levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q)
 
@@ -547,7 +550,6 @@ class Clusterplot:
                 levels=levelscf,
                 colors=colors,
                 linestyles=linestyles,
-                linewidths=2.0,
                 **kwargs,
             )
 
