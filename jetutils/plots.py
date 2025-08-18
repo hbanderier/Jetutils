@@ -434,6 +434,8 @@ class Clusterplot:
             ax.set_extent(
                 [self.minlon, self.maxlon, self.minlat, self.maxlat],
             )
+            ax.set_xlim(self.minlon - self.central_longitude, self.maxlon - self.central_longitude)
+            ax.set_ylim(self.minlat, self.maxlat)
             if self.lambert_projection:
                 ax.set_boundary(self.boundary)
             # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
@@ -453,7 +455,6 @@ class Clusterplot:
                     ha="left",
                     va="baseline",
                     fontweight="demi",
-                    fontsize=12,
                     bbox={
                         "boxstyle": "square, pad=0.1",
                         "edgecolor": "none",
@@ -499,7 +500,7 @@ class Clusterplot:
         for title, ax in zip(titles, self.axes):
             if isinstance(title, float):
                 title = f"{title:.2f}"
-            ax.set_title(title, fontsize=16)
+            ax.set_title(title)
 
     def resize_relative(self, ratios=Sequence[float]):
         self.fig.set_size_inches(self.fig.get_size_inches() * np.asarray(ratios))
@@ -522,6 +523,7 @@ class Clusterplot:
         **kwargs,
     ) -> None:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
+        lon = lon + self.central_longitude
 
         levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q)
 
@@ -548,14 +550,13 @@ class Clusterplot:
                 levels=levelscf,
                 colors=colors,
                 linestyles=linestyles,
-                linewidths=2.0,
                 **kwargs,
             )
 
             if isinstance(clabels, bool) and clabels:
-                ax.clabel(cs, fontsize=11)
+                ax.clabel(cs)
             elif isinstance(clabels, list):
-                ax.clabel(cs, levels=clabels, fontsize=11)
+                ax.clabel(cs, levels=clabels)
 
             if self.lambert_projection and self.boundary is not None:
                 ax.set_boundary(self.boundary, transform=ccrs.PlateCarree())
@@ -1057,7 +1058,7 @@ def plot_trends(
             )
             if dji:
                 break
-        ax.legend(ncol=1, fontsize=10)
+        ax.legend(ncol=1)
     if save:
         subtitle = "_std_" if std else "_"
         fig.savefig(
