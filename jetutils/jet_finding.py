@@ -1968,7 +1968,7 @@ def spells_from_cross_catd(
 ) -> dict[str, DataFrame]:
     cross = pers_from_cross_catd(cross, season)
     cross = squarify(cross, ["time", "spell_of"])
-    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(0.2), group_by="spell_of", minlen=minlen, fill_holes=datetime.timedelta(hours=18))
+    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(0.6), group_by="spell_of", minlen=minlen)
     stats: DataFrame = spells_base.group_by(["spell_of", "spell"], maintain_order=True).agg(pl.col("len").first(), pl.col("pers").sum())
 
     spells_list: dict[str, DataFrame] = {

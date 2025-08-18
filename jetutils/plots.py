@@ -310,7 +310,11 @@ def create_levels(
     if levels is None:
         levels = 7 if direction is None else 4
 
-    lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
+    try:
+        lowbound, highbound = np.nanquantile(to_plot, q=[1 - q, q])
+    except ValueError:
+        lowbound = np.mean([np.nanquantile(tplt, q=1 - q) for tplt in to_plot])
+        highbound = np.mean([np.nanquantile(tplt, q=q) for tplt in to_plot])
     lowbound = 0 if direction == 1 else lowbound
     highbound = 0 if direction == -1 else highbound
     levelsc = MaxNLocator(levels, symmetric=(direction == 0)).tick_values(

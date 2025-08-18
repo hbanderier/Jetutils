@@ -561,8 +561,8 @@ def infer_direction(to_plot: Any) -> int:
     int
         -1 if the data is mostly negative, +1 if it is mostly positive and 0 if the data is symmetric
     """
-    max_: float = np.nanmax(to_plot)
-    min_: float = np.nanmin(to_plot)
+    max_: float = max([np.nanmax(tplt) for tplt in to_plot])
+    min_: float = min([np.nanmin(tplt) for tplt in to_plot])
     try:
         max_ = max_.item()
         min_ = min_.item()
