@@ -7,6 +7,7 @@ import datetime
 
 import numpy as np
 import polars as pl
+from polars import DataFrame, Series, Expr
 import xarray as xr
 import polars_ds as pds
 import polars.selectors as cs
@@ -51,6 +52,7 @@ from .definitions import (
     get_index_columns,
     extract_season_from_df,
     gb_index,
+    explode_rle,
 )
 from .data import (
     compute_anomalies_pl,
@@ -352,10 +354,12 @@ def extend_spells(
     spells: pl.DataFrame,
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
+    index_columns: Sequence[str] | None = None,
 ) -> pl.DataFrame:
     times = spells["time"].unique()
     dt = times[1] - times[0]
-    index_columns = get_index_columns(spells, ["member", "region", "spell", "jet", "spell_of"])
+    if index_columns is None:
+        index_columns = get_index_columns(spells, ["member", "region", "spell", "jet", "spell_of", "jet ID"])
     exprs = {
         "len": pl.col("len").first(),
         "time": pl.datetime_range(
@@ -424,7 +428,7 @@ def get_spells(
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
     daily: bool = False,
-):
+) -> DataFrame:
     if isinstance(group_by, str | pl.Expr):
         group_by = [group_by]
     if group_by is None:
@@ -433,20 +437,14 @@ def get_spells(
         df = make_daily(df, group_by)
     times = df["time"].unique()
     dt = times[1] - times[0]
-    out = do_rle_fill_hole(df, expr, group_by, fill_holes)
     minlen = int(minlen / dt)
-    out = out.filter(pl.col("value"), pl.col("len") >= minlen).with_columns(
-        range=pl.int_ranges(
-            pl.col("start"),
-            pl.col("start") + pl.col("len"),
-            dtype=pl.UInt32,
-        ),
-        relative_index=pl.int_ranges(0, pl.col("len"), dtype=pl.Int32),
-    )
-    out = gb_index(out, group_by, "spell").explode("range", "relative_index")
-    df = gb_index(df[*group_by, "time"], group_by)
-    out = out.join(df, left_on=["range", *group_by], right_on=["index", *group_by])
-    out = extend_spells(out, time_before=time_before, time_after=time_after)
+    out = do_rle_fill_hole(df, expr, group_by, fill_holes)
+    out = out.filter(pl.col("value"), pl.col("len") >= minlen)
+    out = gb_index(out, group_by, "spell")
+    out = explode_rle(out)
+    df = gb_index(df[*group_by, "time", expr.meta.output_name()], group_by)
+    out = out.join(df, on=[*group_by, "index"])
+    out = extend_spells(out, index_columns=["spell", *group_by])
     out = out.sort([*group_by, "spell", "relative_index"])
     return out
 

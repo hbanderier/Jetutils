@@ -488,7 +488,7 @@ def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
 
 def get_index_columns(
     df,
-    potentials: tuple = (
+    potentials: list[str] | tuple[str] = (
         "member",
         "time",
         "cluster",
@@ -499,7 +499,7 @@ def get_index_columns(
         "sample_index",
         "inside_index",
     ),
-):
+) -> list[str]:
     """
     Finds columns in `df` that represent an index imformation more than a data information in the context of this package.
 
@@ -515,7 +515,7 @@ def get_index_columns(
     list
         list of columns in `potentials` that are columns in `df`.
     """
-    index_columns = [ic for ic in potentials if ic in df.columns]
+    index_columns: list[str] = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
 
@@ -561,14 +561,14 @@ def infer_direction(to_plot: Any) -> int:
     int
         -1 if the data is mostly negative, +1 if it is mostly positive and 0 if the data is symmetric
     """
-    max_ = np.nanmax(to_plot)
-    min_ = np.nanmin(to_plot)
+    max_: float = np.nanmax(to_plot)
+    min_: float = np.nanmin(to_plot)
     try:
         max_ = max_.item()
         min_ = min_.item()
     except AttributeError:
         pass
-    sym = np.sign(max_) == -np.sign(min_)
+    sym: bool = np.sign(max_) == -np.sign(min_)
     sym = sym and np.abs(np.log10(np.abs(max_)) - np.log10(np.abs(min_))) <= 2
     if sym:
         return 0
@@ -756,6 +756,15 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
     return idxs
 
 
+def squarify(df: pl.DataFrame, index_columns: Sequence[str] | None = None) -> pl.DataFrame:
+    if index_columns is None:
+        index_columns = get_index_columns(df)
+    indexer = df[index_columns[0]].unique().sort().to_frame()
+    for index_column in index_columns[1:]:
+        indexer = indexer.join(df[index_column].unique().sort().to_frame(), how="cross")
+    return indexer.join(df.unique(index_columns), on=index_columns, how="left")
+
+
 def gb_index(
     df: pl.DataFrame,
     group_by: list | tuple,
@@ -770,7 +779,7 @@ def gb_index(
     return df.sort(group_by).with_columns(**count)
 
 
-def explode_rle(df):
+def explode_rle(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
         index=(pl.int_ranges(pl.col("start"), pl.col("start") + pl.col("len"))).cast(
             pl.List(pl.UInt32)
@@ -840,7 +849,7 @@ def do_rle_fill_hole(
     """
     if isinstance(group_by, str | pl.Expr):
         group_by = [group_by]
-    to_drop = []
+    to_drop: list[str] = []
     if not group_by:
         group_by = []
         group_by.extend(get_index_columns(df, ["member", "cluster"]))
@@ -852,7 +861,7 @@ def do_rle_fill_hole(
     df = df.with_columns(
         index=pl.int_range(0, pl.col(group_by[0]).len()).cast(pl.UInt32).over(group_by)
     )
-    df1 = df.with_columns(condition=condition_expr.not_().over(group_by))
+    df1: pl.DataFrame = df.with_columns(condition=condition_expr.not_().over(group_by))
     df = df.with_columns(condition=condition_expr.over(group_by))
     if isinstance(hole_size, datetime.timedelta):
         if "time" not in df.columns or (group_by is not None and "time" in group_by):
@@ -861,8 +870,8 @@ def do_rle_fill_hole(
         dt = times[1] - times[0]
         hole_size = int(hole_size / dt)
         no_time_jump_expr = (pl.col("time").diff() <= dt).fill_null(True)
-        df = df.with_columns(condition=pl.col("condition") & no_time_jump_expr)
-        df1 = df1.with_columns(condition=pl.col("condition") & no_time_jump_expr)
+        df = df.with_columns(condition=pl.col("condition") & no_time_jump_expr.over(group_by))
+        df1 = df1.with_columns(condition=pl.col("condition") & no_time_jump_expr.over(group_by))
 
     holes_to_fill = do_rle(df1, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(

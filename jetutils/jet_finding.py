@@ -5,14 +5,14 @@ This probably too big module contains all the utilities relative to jet extracti
 import datetime
 import warnings
 from itertools import product
-from typing import Callable, Iterable, Mapping, Sequence, Tuple, Literal
+from typing import Callable, Iterable, Sequence, Tuple, Literal
 from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+from polars import DataFrame, Series, Expr
 from polars.exceptions import ColumnNotFoundError
-import polars.selectors as cs
 import polars_ds as pds
 from scipy.linalg import sqrtm
 import xarray as xr
@@ -32,7 +32,7 @@ from .definitions import (
     get_index_columns,
     extract_season_from_df,
     explode_rle,
-    Timer,
+    squarify,
 )
 from .data import (
     compute_extreme_climatology,
@@ -46,7 +46,7 @@ from .data import (
 from .anyspell import get_spells
 
 
-def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.Expr:
+def haversine(lon1: Expr, lat1: Expr, lon2: Expr, lat2: Expr) -> Expr:
     """
     Generates a polars Expression to compute the haversine distance, in meters, between points defined with the columns (lon1, lat1) and the points defined with the columns (lon2, lat2).
     TODO: support other planets by passing the radius as an argument.
@@ -63,7 +63,7 @@ def haversine(lon1: pl.Expr, lat1: pl.Expr, lon2: pl.Expr, lat2: pl.Expr) -> pl.
     return 2 * a.sqrt().arcsin() * RADIUS
 
 
-def haversine_from_dl(lat: pl.Expr, dlon: pl.Expr, dlat: pl.Expr) -> pl.Expr:
+def haversine_from_dl(lat: Expr, dlon: Expr, dlat: Expr) -> Expr:
     """
     Alternative definition of the haversine distance, in meters, this time using the latitude of the first point, and the *differences* in longitues and latitudes between points.
     """
@@ -78,15 +78,15 @@ def haversine_from_dl(lat: pl.Expr, dlon: pl.Expr, dlat: pl.Expr) -> pl.Expr:
 
 
 def jet_integral_haversine(
-    lon: pl.Expr = pl.col("lon"),
-    lat: pl.Expr = pl.col("lon"),
-    s: pl.Expr | None = pl.col("s"),
+    lon: Expr = pl.col("lon"),
+    lat: Expr = pl.col("lon"),
+    s: Expr | None = pl.col("s"),
     x_is_one: bool = False,
-) -> pl.Expr:
+) -> Expr:
     """
     Generates an expression to integrate the column `s` along a path on the sphere defined by `lon`and `lat`. Assumes we are on Earth since `haversine` uses the Earth's radius.
     """
-    ds = haversine(
+    ds: Expr = haversine(
         lon,
         lat,
         lon.shift(),
@@ -97,20 +97,20 @@ def jet_integral_haversine(
     return 0.5 * (ds * (s + s.shift())).sum()
 
 
-def has_periodic_x(df: pl.DataFrame | xr.Dataset | xr.DataArray) -> bool:
+def has_periodic_x(df: DataFrame | xr.Dataset | xr.DataArray) -> bool:
     """
     Checks if the `lon` column contains both sides of the +-180 line. Only makes sense if data went through `.data.standardize()`.
 
     Parameters
     ----------
-    df : pl.DataFrame
+    df : DataFrame
         A DataFrame containing the `lon` column.
 
     Returns
     -------
     bool
     """
-    if isinstance(df, pl.DataFrame):
+    if isinstance(df, DataFrame):
         lon = df["lon"].unique().sort().to_numpy()
     else:
         lon = np.sort(df["lon"].values)
@@ -118,7 +118,7 @@ def has_periodic_x(df: pl.DataFrame | xr.Dataset | xr.DataArray) -> bool:
     return (-180 in lon) and ((180 - dx) in lon)
 
 
-def coarsen_pl(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFrame:
+def coarsen_pl(df: DataFrame, coarsen_map: dict[str, float]) -> DataFrame:
     """
     Coarsening for polars DataFrame
     """
@@ -137,14 +137,14 @@ def coarsen_pl(df: pl.DataFrame, coarsen_map: Mapping[str, float]) -> pl.DataFra
     return df
 
 
-def round_polars(col: str, factor: int = 2) -> pl.Expr:
+def round_polars(col: str, factor: int = 2) -> Expr:
     """
     Generates an Expression that rounds the given column to a given base, one over the factor.
     """
     return (pl.col(col) * factor).round() / factor
 
 
-def central_diff(by: str) -> pl.Expr:
+def central_diff(by: str) -> Expr:
     """
     Generates Expression to implement central differences for the given columns; and adds sensical numbers to the first and last element of the differentiation.
     """
@@ -153,7 +153,7 @@ def central_diff(by: str) -> pl.Expr:
     return diff_1.gather(0).append(diff_2).append(diff_1.gather(-1))
 
 
-def diff_maybe_periodic(by: str, periodic: bool = False) -> pl.Expr:
+def diff_maybe_periodic(by: str, periodic: bool = False) -> Expr:
     """
     Wraps around `central_diff` to generate an Expression that implements central differences over a potentially periodic column like longitude.
     """
@@ -165,8 +165,8 @@ def diff_maybe_periodic(by: str, periodic: bool = False) -> pl.Expr:
 
 
 def directional_diff(
-    df: pl.DataFrame, col: str, by: str, periodic: bool = False
-) -> pl.DataFrame:
+    df: DataFrame, col: str, by: str, periodic: bool = False
+) -> DataFrame:
     """
     Wraps around `central_diff` and `diff_maybe_periodic` to generate an Expression that differentiates a column `col` by another `by`. The output Expression will create a column with name `f"d{col}d{by}"`.
     """
@@ -219,7 +219,7 @@ def preprocess_ds(
     return ds.reset_coords(["x", "y"], drop=True)
 
 
-def nearest_mapping(df1: pl.DataFrame, df2: pl.DataFrame, col: str):
+def nearest_mapping(df1: DataFrame, df2: DataFrame, col: str):
     """
     Uses the amazing polars' `join_asof` to get a mapping from the unique values in `df1[col]` to the nearest element in the unique values in `df2[col]`.
     """
@@ -292,7 +292,7 @@ def inner_compute_contours(args):
     contours, cyclic = find_contours_agg(lon, lat, sigma)
     valid_index = [i for i, contour in enumerate(contours) if len(contour) > 5]
     contours = [
-        pl.DataFrame(contours[i], schema={"lon": pl.Float32, "lat": pl.Float32})
+        DataFrame(contours[i], schema={"lon": pl.Float32, "lat": pl.Float32})
         .with_columns(**indexer)
         .with_columns(cyclic=pl.lit(cyclic[i]))
         .with_columns(contour=pl.lit(i))
@@ -303,7 +303,7 @@ def inner_compute_contours(args):
     return None
 
 
-def compute_contours(ds: xr.Dataset) -> pl.DataFrame:
+def compute_contours(ds: xr.Dataset) -> DataFrame:
     """
     Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`.
     """
@@ -324,8 +324,8 @@ def compute_contours(ds: xr.Dataset) -> pl.DataFrame:
 
 
 def compute_alignment(
-    all_contours: pl.DataFrame, periodic: bool = False
-) -> pl.DataFrame:
+    all_contours: DataFrame, periodic: bool = False
+) -> DataFrame:
     """
     This function computes the alignment criterion for zero-sigma-contours. It is the scalar product betweeen the vector from a contour point to the next and the horizontal wind speed vector.
     """
@@ -365,8 +365,6 @@ def find_all_jets(
     """
     # process input
     ds = preprocess_ds(ds, n_coarsen=3, smooth_s=5)
-    dx = (ds["lon"][1] - ds["lon"][0]).item()
-    dy = (ds["lat"][1] - ds["lat"][0]).item()
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds.drop_vars(smoothed_to_remove).rename(
@@ -424,7 +422,6 @@ def find_all_jets(
             pl.col("alignment") > alignment_thresh
         )
         condition_expr2 = pl.col("int") > base_int_thresh
-        drop = ["contour", "index", "cyclic", "condition", "int"]
 
     # contours
     all_contours = compute_contours(ds)
@@ -518,13 +515,13 @@ def find_all_jets(
     return jets
 
 
-def to_expr(expr: pl.Expr | str):
+def to_expr(expr: Expr | str):
     if isinstance(expr, str):
         expr = pl.col(expr)
     return expr
 
 
-def weighted_mean_pl(col: pl.Expr | str, by: pl.Expr | str | None = None):
+def weighted_mean_pl(col: Expr | str, by: Expr | str | None = None):
     col = to_expr(col)
     if by is None:
         return col.mean()
@@ -532,7 +529,7 @@ def weighted_mean_pl(col: pl.Expr | str, by: pl.Expr | str | None = None):
     return ((col * by).sum() / by.sum()).alias(col.meta.output_name())
 
 
-def circular_mean(col: pl.Expr | str, weights: pl.Expr | str | None = None):
+def circular_mean(col: Expr | str, weights: Expr | str | None = None):
     col = to_expr(col)
     col = col.radians()
     mean_sin = weighted_mean_pl(col.sin(), weights)
@@ -540,7 +537,7 @@ def circular_mean(col: pl.Expr | str, weights: pl.Expr | str | None = None):
     return pl.arctan2(mean_sin, mean_cos).degrees().alias(col.meta.output_name())
 
 
-def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
+def compute_jet_props(df: DataFrame) -> DataFrame:
     """
     Computes all basic jet properties from a DataFrame containing many jets.
     """
@@ -634,7 +631,7 @@ def compute_jet_props(df: pl.DataFrame) -> pl.DataFrame:
     return props_as_df
 
 
-def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
+def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str):
     """
     Bilinear interpolation. Values in `da_df[varname]` will be bilinearly interpolated to the jet points' `lon`-`lat` coordinates, resulting in a new column in `jets` with a name constructed as `f"{varname}_interp"`.
     """
@@ -695,16 +692,16 @@ def interp_from_other(jets: pl.DataFrame, da_df: pl.DataFrame, varname: str):
 
 
 def add_normals(
-    jets: pl.DataFrame,
+    jets: DataFrame,
     half_length: float = 12.0,
     dn: float = 1.0,
     delete_middle: bool = False,
-) -> pl.DataFrame:
+) -> DataFrame:
     is_polar = ["is_polar"] if "is_polar" in jets.columns else []
     ns_df = np.arange(-half_length, half_length + dn, dn)
     if delete_middle:
         ns_df = np.delete(ns_df, int(half_length // dn))
-    ns_df = pl.Series("n", ns_df).to_frame()
+    ns_df = Series("n", ns_df).to_frame()
 
     # Expr angle
     if "u" in jets.columns and "v" in jets.columns:
@@ -769,12 +766,12 @@ def add_normals(
 
 
 def gather_normal_da_jets(
-    jets: pl.DataFrame,
+    jets: DataFrame,
     da: xr.DataArray,
     half_length: float = 12.0,
     dn: float = 1.0,
     delete_middle: bool = False,
-) -> pl.DataFrame:
+) -> DataFrame:
     """
     Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
     """
@@ -795,8 +792,8 @@ def gather_normal_da_jets(
     jets = add_normals(jets, half_length, dn, delete_middle)
     dlon = (da.lon[1] - da.lon[0]).item()
     dlat = (da.lat[1] - da.lat[0]).item()
-    lon = pl.Series("normallon_rounded", da.lon.values).to_frame()
-    lat = pl.Series("normallat_rounded", da.lat.values).to_frame()
+    lon = Series("normallon_rounded", da.lon.values).to_frame()
+    lat = Series("normallat_rounded", da.lat.values).to_frame()
     jets = (
         jets.with_row_index("big_index")
         .sort("normallon")
@@ -842,7 +839,7 @@ def gather_normal_da_jets(
     return jets
 
 
-def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
+def compute_widths(jets: DataFrame, da: xr.DataArray):
     """
     Computes the width of each jet using normally interpolated wind speed on either side of the jet.
     """
@@ -907,13 +904,13 @@ def compute_widths(jets: pl.DataFrame, da: xr.DataArray):
     return jets.collect()
 
 
-def expand_jets(jets: pl.DataFrame, max_t: float, dt: float) -> pl.DataFrame:
+def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     """
     Expands the jets by appending segments before the start and after the end, following the tangent angle at the start and the end of the original jet, respectively.
 
     Parameters
     ----------
-    jets : pl.DataFrame
+    jets : DataFrame
         Jets to extend
     max_t : float
         Length of the added segments
@@ -922,7 +919,7 @@ def expand_jets(jets: pl.DataFrame, max_t: float, dt: float) -> pl.DataFrame:
 
     Returns
     -------
-    pl.DataFrame
+    DataFrame
         Jets DataFrame with all the index dimensions kept original, only lon and lat as additional columns (the rest is dropped), and longer jets with added segments.
     """
     index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
@@ -958,14 +955,14 @@ def expand_jets(jets: pl.DataFrame, max_t: float, dt: float) -> pl.DataFrame:
 
 
 def join_wrapper(
-    df: pl.DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs
+    df: DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs
 ):
     """
     Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
 
     Parameters
     ----------
-    df : pl.DataFrame
+    df : DataFrame
         A DataFrame with columns also found in da
     da : xr.DataArray | xr.Dataset
         Xarray object whose values to join to the DataFrame
@@ -976,7 +973,7 @@ def join_wrapper(
 
     Returns
     -------
-    pl.DataFrame
+    DataFrame
         Original DataFrame with one or several extra columns from da.
     """
     indexer = iterate_over_year_maybe_member(df, da, **kwargs)
@@ -1053,7 +1050,7 @@ def map_maybe_parallel(
 
 
 def create_mappable_iterator(
-    df: pl.DataFrame,
+    df: DataFrame,
     das: Sequence | None = None,
     others: Sequence | None = None,
     potentials: Tuple = ("member", "time", "cluster"),
@@ -1063,7 +1060,7 @@ def create_mappable_iterator(
 
     Parameters
     ----------
-    df : pl.DataFrame
+    df : DataFrame
         _description_
     das : Sequence | None, optional
         _description_, by default None
@@ -1119,10 +1116,10 @@ def round_half(x):
 
 
 def extract_features(
-    df: pl.DataFrame,
+    df: DataFrame,
     feature_names: Sequence = None,
     season: list | str | tuple | int | None = None,
-) -> pl.DataFrame:
+) -> DataFrame:
     """
     Tiny wrapper to extract columns and subset time from a polars DataFrame.
     """
@@ -1144,7 +1141,7 @@ def one_gmix(
 
     Parameters
     ----------
-    X : pl.DataFrame
+    X : DataFrame
         Input data
     n_components : int
         Number of Gaussian components, by default 2
@@ -1186,7 +1183,7 @@ def one_gmix_v2(
 
     Parameters
     ----------
-    X : pl.DataFrame
+    X : DataFrame
         Input data
     n_components : int
         Number of Gaussian components, by default 2
@@ -1225,7 +1222,7 @@ def one_gmix_v2(
 
 
 def is_polar_gmix(
-    df: pl.DataFrame,
+    df: DataFrame,
     feature_names: list,
     mode: (
         Literal["all"] | Literal["season"] | Literal["month"] | Literal["week"]
@@ -1234,13 +1231,13 @@ def is_polar_gmix(
     n_init: int = 20,
     init_params: str = "random_from_data",
     v2: bool = True,
-) -> pl.DataFrame:
+) -> DataFrame:
     """
     Trains one or several Gaussian Mixture model independently, depending on the `mode` argument.
 
     Parameters
     ----------
-    df : pl.DataFrame
+    df : DataFrame
         DataFrame to cluster
     feature_names : list
         Which columns to cluster on
@@ -1255,7 +1252,7 @@ def is_polar_gmix(
 
     Returns
     -------
-    pl.DataFrame
+    DataFrame
         DataFrame of same length as `df` with the same index columns, the `feature_names` columns and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
     """
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
@@ -1313,7 +1310,7 @@ def is_polar_gmix(
 
 
 def add_feature_for_cat(
-    jets: pl.DataFrame,
+    jets: DataFrame,
     feature: str,
     ds: xr.Dataset | None = None,
     ds_low: xr.Dataset | None = None,
@@ -1339,7 +1336,7 @@ def add_feature_for_cat(
 
 
 def categorize_jets(
-    jets: pl.DataFrame,
+    jets: DataFrame,
     ds: xr.Dataset | None = None,
     low_wind: xr.Dataset | xr.DataArray | None = None,
     feature_names: tuple | None = None,
@@ -1388,7 +1385,7 @@ def categorize_jets(
     return jets
 
 
-def average_jet_categories_v2(props_as_df: pl.DataFrame):
+def average_jet_categories_v2(props_as_df: DataFrame):
     """
     For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
 
@@ -1396,7 +1393,7 @@ def average_jet_categories_v2(props_as_df: pl.DataFrame):
 
     Parameters
     ----------
-    props_as_df : pl.DataFrame
+    props_as_df : DataFrame
         Uncategorized jet properties, that contain at least the `jet ID` column.
     polar_cutoff : float | None, optional
         Cutoff, by default None
@@ -1492,7 +1489,7 @@ def average_jet_categories_v2(props_as_df: pl.DataFrame):
 
 
 def average_jet_categories(
-    props_as_df: pl.DataFrame,
+    props_as_df: DataFrame,
     polar_cutoff: float | None = None,
     allow_hybrid: bool = False,
 ):
@@ -1503,7 +1500,7 @@ def average_jet_categories(
 
     Parameters
     ----------
-    props_as_df : pl.DataFrame
+    props_as_df : DataFrame
         Uncategorized jet properties, that contain at least the `jet ID` column.
     polar_cutoff : float | None, optional
         Cutoff, by default None
@@ -1609,7 +1606,7 @@ def average_jet_categories(
 
 
 def track_jets_one_year(
-    jets: pl.DataFrame, year: int, member: str | None = None, n_next: int = 1
+    jets: DataFrame, year: int, member: str | None = None, n_next: int = 1
 ):
     if "len_right" in jets.columns:
         jets = jets.drop("len_right")
@@ -1724,7 +1721,7 @@ def track_jets_one_year(
     return cross
 
 
-def track_jets(all_jets_one_df: pl.DataFrame, n_next: int = 1):
+def track_jets(all_jets_one_df: DataFrame, n_next: int = 1):
     cross = []
     gb = ["time", "jet ID"]
     iterator = all_jets_one_df["time"].dt.year().unique()
@@ -1751,13 +1748,13 @@ def track_jets(all_jets_one_df: pl.DataFrame, n_next: int = 1):
 
 
 def connected_from_cross(
-    all_jets_one_df: pl.DataFrame,
-    cross: pl.DataFrame | None = None,
+    all_jets_one_df: DataFrame,
+    cross: DataFrame | None = None,
     dist_thresh: float = 2e5,
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
     dis_polar_thresh: float | None = 1.0,
-) -> pl.DataFrame:
+) -> DataFrame:
     if cross is None:
         cross = track_jets(all_jets_one_df)
     cross = cross.filter(
@@ -1859,20 +1856,20 @@ def connected_from_cross(
     return cross, summary_comp
 
 
-def persistence_expr():
-    return pl.col("overlap_min") * RADIUS / pl.col("dist").replace(0, RADIUS * 0.1)
+def persistence_expr() -> Expr:
+    return pl.col("overlap_min") / pl.col("dist").replace(0, RADIUS * 0.1) * pl.col("time").diff().mode().first().cast(pl.Duration("ms")).cast(pl.Float64()) / 1000
 
 
 def spells_from_cross(
-    all_jets_one_df: pl.DataFrame,
-    cross: pl.DataFrame,
+    all_jets_one_df: DataFrame,
+    cross: DataFrame,
     dist_thresh: float = 2e5,
     overlap_min_thresh: float = 0.5,
     overlap_max_thresh: float = 0.6,
     dis_polar_thresh: float | None = 1.0,
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
-    season: pl.Series | None = None,
+    season: Series | None = None,
     subtropical_cutoff: float = 0.4,
     polar_cutoff: float = 0.6,
 ):
@@ -1932,9 +1929,9 @@ def spells_from_cross(
     return spells_list
 
 
-def pers_from_cross_catd(cross: pl.DataFrame, season: pl.Series | None = None) -> pl.DataFrame:
+def pers_from_cross_catd(cross: DataFrame, season: Series | None = None) -> DataFrame:
     if season is not None:
-        cross = season.rename("time").to_frame().join(cross, on="time")
+        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
     cross = (
         cross
         .filter(pl.col("jet ID") == pl.col("jet ID_right"))
@@ -1959,38 +1956,40 @@ def pers_from_cross_catd(cross: pl.DataFrame, season: pl.Series | None = None) -
         )
         .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
     )
-    pers = cross.rolling("time", period="3d", group_by="spell_of").agg(
-        pl.col("pers").mean()
-    )
-    return cross, pers
+    return cross
 
 
 def spells_from_cross_catd(
-    # all_jets_one_df: pl.DataFrame,
-    cross: pl.DataFrame,
+    cross: DataFrame,
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
-    season: pl.Series | None = None,
+    season: Series | None = None,
     minlen: datetime.timedelta = datetime.timedelta(days=5)
-):
-    cross, pers = pers_from_cross_catd(cross, season)
-    exprs = {
-        spell_of: pl.col("pers") > pl.col("pers").quantile(q) for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
-    }
-    spells_list = {
+) -> dict[str, DataFrame]:
+    cross = pers_from_cross_catd(cross, season)
+    cross = squarify(cross, ["time", "spell_of"])
+    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(0.2), group_by="spell_of", minlen=minlen, fill_holes=datetime.timedelta(hours=18))
+    stats: DataFrame = spells_base.group_by(["spell_of", "spell"], maintain_order=True).agg(pl.col("len").first(), pl.col("pers").sum())
+
+    spells_list: dict[str, DataFrame] = {
         spell_of: (
-            get_spells(pers.filter(pl.col("spell_of") == spell_of), expr, minlen=minlen)
-            .with_columns(spell_of=pl.lit(spell_of))
-            .sort("spell")
-            .join(cross.drop("len", "len_right"), on=["time", "spell_of"])
+            stats
+            .filter(pl.col("spell_of") == spell_of)
+            .filter(pl.col("pers") > pl.col("pers").quantile(q))
+            .rename({"pers": "pers_sum"})
+            .join(
+                spells_base.filter(pl.col("spell_of") == spell_of).drop("len", "value"),
+                on=["spell_of", "spell"]
+            )
+            .with_columns(spell=pl.col("spell").rle_id())
         )
-        for spell_of, expr in exprs.items()
+        for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
     }
     return spells_list
 
 
 def jet_position_as_da(
-    all_jets_one_df: pl.DataFrame,
+    all_jets_one_df: DataFrame,
 ) -> xr.DataArray:
     """
     Constructs a `DataArray` of dimensions (*index_columns, lat, lon) from jets. The DataArray starts with NaNs everywhere. Then, for every jet point, the DataArray is filled with the jet point's `"is_polar"` value.
@@ -2009,7 +2008,7 @@ def jet_position_as_da(
     return da_jet_pos
 
 
-def get_double_jet_index(props_as_df: pl.DataFrame, jet_pos_da: xr.DataArray):
+def get_double_jet_index(props_as_df: DataFrame, jet_pos_da: xr.DataArray):
     """
     Adds a new columns to props_as_df; `"double_jet_index"`, by checking, for all longitudes, if there are at least two jet core points along the latitude, then averaging this over longitudes above 20° West.
     """
@@ -2018,7 +2017,7 @@ def get_double_jet_index(props_as_df: pl.DataFrame, jet_pos_da: xr.DataArray):
     dji = pl.concat(
         [
             props_as_df.select(index_columns).unique(maintain_order=True),
-            pl.Series(
+            Series(
                 "double_jet_index",
                 overlap.sel(lon=slice(-20, None, None)).mean("lon").values,
             ).to_frame(),
@@ -2030,7 +2029,7 @@ def get_double_jet_index(props_as_df: pl.DataFrame, jet_pos_da: xr.DataArray):
 
 
 def iterate_over_year_maybe_member(
-    df: pl.DataFrame | None = None,
+    df: DataFrame | None = None,
     da: xr.DataArray | xr.Dataset | None = None,
     several_years: int = 1,
     several_members: int = 1,
@@ -2169,7 +2168,7 @@ class JetFindingExperiment(object):
         )
         return ds_
 
-    def find_jets(self, force: bool = False, **kwargs) -> pl.DataFrame:
+    def find_jets(self, force: bool = False, **kwargs) -> DataFrame:
         """
         Wraps `find_all_jets(**kwargs)` and stores the output
         """
@@ -2235,7 +2234,7 @@ class JetFindingExperiment(object):
 
         Returns
         -------
-        pl.DataFrame
+        DataFrame
             DataFrame of same length as the jets with the same index columns, the `feature_names` columns: "ratio" and "theta", and a new `is_polar` column, corresponding to the proability of each row to belong to the eddy-driven jet component.
         """
         jets = self.find_jets()
@@ -2258,7 +2257,7 @@ class JetFindingExperiment(object):
     def compute_jet_props(
         self,
         force: bool = False,
-    ) -> pl.DataFrame:
+    ) -> DataFrame:
         """
         Compute "raw" jet properties from the jets
 
@@ -2269,7 +2268,7 @@ class JetFindingExperiment(object):
 
         Returns
         -------
-        pl.DataFrame
+        DataFrame
             Jet properties for all jets
         """
         jet_props_incomplete_path = self.path.joinpath("props_as_df_raw.parquet")
@@ -2293,7 +2292,7 @@ class JetFindingExperiment(object):
         props_as_df.write_parquet(jet_props_incomplete_path)
         return props_as_df
 
-    def props_as_df(self, categorize: bool = True, force: int = 0) -> pl.DataFrame:
+    def props_as_df(self, categorize: bool = True, force: int = 0) -> DataFrame:
         """
         Compute full jet properties from the jets, with or without categorization
 
@@ -2306,7 +2305,7 @@ class JetFindingExperiment(object):
 
         Returns
         -------
-        pl.DataFrame
+        DataFrame
             Jet properties for all jets
         """
         ofile_padu = self.path.joinpath("props_as_df_uncat.parquet")
@@ -2335,7 +2334,7 @@ class JetFindingExperiment(object):
         dis_polar_thresh: float | None = 1.0,
         n_next: int = 1,
         force: int = 0,
-    ) -> pl.DataFrame:
+    ) -> DataFrame:
         """
         Wraps cross and summary
 
@@ -2354,7 +2353,7 @@ class JetFindingExperiment(object):
 
         Returns
         -------
-        pl.DataFrame
+        DataFrame
             _description_
         """
         cross_opath = self.path.joinpath("cross.parquet")
@@ -2404,7 +2403,7 @@ class JetFindingExperiment(object):
             Don't take every year in the data but only one every `subsample`, by default 5
         """
         da = self.ds[varname]
-        time = pl.Series("time", self.time)
+        time = Series("time", self.time)
         years = time.dt.year().to_numpy()
         mask = np.isin(years, np.unique(years)[::subsample])
         opath = self.path.joinpath(f"{varname}_q_clim.nc")
