@@ -144,6 +144,11 @@ PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[
 BLUEWHITERED = LinearSegmentedColormap.from_list(
     "bluewhitered", [COLORS_EXT[11], COLORS[3], "#f2f2f2", COLORS[0], COLORS_EXT[2]]
 )
+WERNLI_FLAIR: LinearSegmentedColormap = LinearSegmentedColormap.from_list(
+    "wernli_flair", 
+    ["#7D96CA", "#99B8DE", "#BBCEE7", "#DBE8F1", "#F3E1AB", "#F1C48B", "#EF8851", "#E8442E", "#F2A347", "#FBE96B", "#B0D175", "#88C267"]
+)
+WERNLI_FLAIR_LEVELS: list[float] = [-1., 0., 0.2, 0.5, 0.8, 1., 1.5, 2., 4., 6., 8., 10., 20.]
 
 
 COASTLINE = feat.NaturalEarthFeature(

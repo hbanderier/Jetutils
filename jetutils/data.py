@@ -539,7 +539,7 @@ def extract_region(
     da: same as input
         subset `da`
     """    
-    if minlon < maxlon:
+    if minlon is None or maxlon is None or minlon < maxlon:
         return da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
     da1 = da.sel(lon=slice(minlon, None), lat=slice(minlat, maxlat))
     da2 = da.sel(lon=slice(None, maxlon), lat=slice(minlat, maxlat))
@@ -1327,6 +1327,8 @@ def compute_all_smoothed_anomalies(
     else:
         iterator_ = zip(sources, dests_anom)
     for source, dest in iterator_:
+        if dest.is_file():
+            continue
         anom = _open_many_da_wrapper(source)
         anom = compute_anom(anom, clim, clim_type, False)
         if smoothing is not None:
