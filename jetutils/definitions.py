@@ -242,7 +242,7 @@ if "DATADIR" not in globals():
         "West.",
         "South.",
         "North.",
-        "Scand.",
+        "East.",
         "N-E.",
     ]
 
