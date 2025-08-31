@@ -810,9 +810,9 @@ def open_da(
         period = np.arange(int(period[0]), int(period[1] + 1)).tolist()
     elif isinstance(period, list):
         period = np.asarray(period).astype(int).tolist()
-    elif period == "all":
+    elif period == "all" and file_structure != "one_file":
         period = determine_period(path)
-    elif isinstance(period, int | str):
+    elif isinstance(period, int | str) and period != "all":
         period = [int(period)]
 
     files_to_load = []

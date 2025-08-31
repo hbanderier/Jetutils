@@ -1265,7 +1265,7 @@ def _gather_normal_da_jets_wrapper(
         return jets
     clim = xarray_to_polars(clim)
     jets = jets.with_columns(
-        dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar") > 0.5
+        dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5
     ).cast({"n": pl.Float64})
     jets = (
         jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
@@ -1292,7 +1292,7 @@ def gather_normal_da_jets_wrapper(
     if not n_bootstraps:
         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, half_length=half_length, dn=dn)
         jets = jets.group_by(
-            [pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True
+            [pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"], maintain_order=True
         ).agg(pl.col(varname).mean())
         return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
     rng = np.random.default_rng()
@@ -1338,7 +1338,7 @@ def gather_normal_da_jets_wrapper(
     )
     jets = (
         jets.group_by(
-            ["sample_index", pl.col("is_polar") > 0.5, "norm_index", "n"],
+            ["sample_index", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"],
             maintain_order=True,
         )
         .agg(pl.col(varname).mean())
@@ -1354,9 +1354,9 @@ def gather_normal_da_jets_wrapper(
         .join(jets, on=["sample_index", "is_polar", "norm_index", "n"], how="left")
     )
     pvals = jets.group_by(
-        [pl.col("is_polar") > 0.5, "norm_index", "n"], maintain_order=True
+        [pl.col("is_polar"), "norm_index", "n"], maintain_order=True
     ).agg(
-        pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1))
+        pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)).first()
         / n_bootstraps
     )
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
