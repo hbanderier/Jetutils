@@ -1,5 +1,5 @@
 font.size: 15
-font.family: cmu serif
+font.family: serif
 xtick.labelsize: 15
 ytick.labelsize: 15
 axes.titlesize: 15
