@@ -1,4 +1,5 @@
 # coding: utf-8
+from jetutils.jet_finding import central_diff
 from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor
@@ -744,6 +745,7 @@ class Clusterplot:
     ) -> ScalarMappable | None:
         to_plot = []
         time_name = "time" if "time" in da.dims else da.dims[0]
+        hatch = kwargs.pop("hatch", "xx")
         for mas in tqdm(mask.T, total=mask.shape[1]):
             if np.sum(mas) < 1:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
@@ -778,7 +780,7 @@ class Clusterplot:
                 color = stippling
             else:
                 color = "black"
-            self.add_stippling(da, mask, color=color)
+            self.add_stippling(da, mask, color=color, hatch=hatch)
         return im
 
     def cluster_on_fig(
@@ -1255,18 +1257,27 @@ def _gather_normal_da_jets_wrapper(
     clim: xr.DataArray | None = None,
     half_length: float = 20,
     dn: float = 1,
+    grad: bool = False,
 ):
     jets = times.join(jets, on="time", how="left")
     jets = gather_normal_da_jets(jets, da, half_length=half_length, dn=dn)
     varname = da.name + "_interp"
 
     jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
+    
+    if grad:
+        expr = central_diff(pl.col(varname).sort_by("n")) / central_diff(pl.col("n").sort())
+        possible_cols = get_index_columns(jets, ["time", "sample_index", "time"])
+        jets = jets.with_columns(**{varname: expr.over([*possible_cols, "jet ID", "norm_index"])})
+        
     if clim is None:
         return jets
     clim = xarray_to_polars(clim)
     jets = jets.with_columns(
         dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5
     ).cast({"n": pl.Float64})
+    if grad:
+        clim = clim.with_columns(**{varname: expr.over(["dayofyear", "is_polar", "norm_index"])})
     jets = (
         jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
         .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
@@ -1284,13 +1295,14 @@ def gather_normal_da_jets_wrapper(
     half_length: float = 20,
     dn: float = 1,
     clim: xr.DataArray | None = None,
+    grad: bool = False,
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
 ):
     times = extend_spells(times, time_before=time_before, time_after=time_after)
     varname = da.name + "_interp"
     if not n_bootstraps:
-        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, half_length=half_length, dn=dn)
+        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, half_length=half_length, dn=dn, grad=grad)
         jets = jets.group_by(
             [pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"], maintain_order=True
         ).agg(pl.col(varname).mean())
@@ -1334,12 +1346,12 @@ def gather_normal_da_jets_wrapper(
         ]
     )
     jets = _gather_normal_da_jets_wrapper(
-        jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim
+        jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim, grad=grad
     )
+        
     jets = (
         jets.group_by(
-            ["sample_index", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"],
-            maintain_order=True,
+            ["sample_index", pl.col("is_polar"), "norm_index", "n"],
         )
         .agg(pl.col(varname).mean())
         .sort("sample_index", "is_polar", "norm_index", "n")
@@ -1354,7 +1366,7 @@ def gather_normal_da_jets_wrapper(
         .join(jets, on=["sample_index", "is_polar", "norm_index", "n"], how="left")
     )
     pvals = jets.group_by(
-        [pl.col("is_polar"), "norm_index", "n"], maintain_order=True
+        ["is_polar", "norm_index", "n"], maintain_order=True
     ).agg(
         pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)).first()
         / n_bootstraps

@@ -144,13 +144,15 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     return (pl.col(col) * factor).round() / factor
 
 
-def central_diff(by: str) -> Expr:
+def central_diff(by: str | pl.Expr) -> Expr:
     """
     Generates Expression to implement central differences for the given columns; and adds sensical numbers to the first and last element of the differentiation.
     """
-    diff_2 = pl.col(by).diff(2, null_behavior="ignore").slice(2)
-    diff_1 = pl.col(by).diff(1, null_behavior="ignore")
-    return diff_1.gather(0).append(diff_2).append(diff_1.gather(-1))
+    if isinstance(by, str):
+        by = pl.col(by)
+    diff_2 = by.diff(2, null_behavior="ignore").slice(2)
+    diff_1 = by.diff(1, null_behavior="ignore")
+    return diff_1.gather(1).append(diff_2).append(diff_1.gather(-1))
 
 
 def diff_maybe_periodic(by: str, periodic: bool = False) -> Expr:
