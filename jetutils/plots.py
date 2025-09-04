@@ -22,7 +22,7 @@ from matplotlib import path as mpath
 from matplotlib import pyplot as plt
 from matplotlib import ticker as mticker
 from matplotlib.patches import PathPatch
-from matplotlib.figure import Figure
+from matplotlib.figure import Figure, SubFigure
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import (
     BoundaryNorm,
@@ -255,9 +255,13 @@ def honeycomb_panel(
     hspace: float = 0.0,
     wspace: float = 0.0,
     row_height: float = 2.0,
+    fig: Figure | SubFigure | None = None,
     **subplot_kw,
 ) -> Tuple[Figure, np.ndarray]:
-    fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
+    if fig is None:
+        fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
+    elif isinstance(fig, Figure):
+        fig.set_size_inches(row_height * nrow, row_height * ratio * nrow)
     gs = GridSpec(nrow, 2 * ncol + 1, hspace=hspace, wspace=wspace)
     axes = np.empty((nrow, ncol), dtype=object)
     if subplot_kw is None:
@@ -396,6 +400,7 @@ class Clusterplot:
         numbering: bool | Callable | Sequence = False,
         coastline: bool = True,
         row_height: float = 3,
+        fig: Figure | SubFigure | None = None,
     ) -> None:
         self.nrow = nrow
         self.ncol = ncol
@@ -427,16 +432,17 @@ class Clusterplot:
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
-                self.nrow, self.ncol, ratio, row_height=row_height, projection=projection
+                self.nrow, self.ncol, ratio, row_height=row_height, projection=projection, fig=fig
             )
         else:
-            self.fig, self.axes = plt.subplots(
-                self.nrow,
-                self.ncol,
-                figsize=(row_height * self.ncol, row_height * self.ncol * ratio),
-                constrained_layout=not lambert_projection,
-                subplot_kw={"projection": projection},
-            )
+            if fig is not None:
+                self.fig = fig
+            else: 
+                self.fig = plt.figure()
+            if isinstance(self.fig, Figure):
+                self.fig.set_size_inches(row_height * self.ncol, row_height * self.ncol * ratio)
+                self.fig.set_constrained_layout(not lambert_projection)
+            self.axes = self.fig.subplots(self.nrow, self.ncol, subplot_kw={"projection": projection})
         self.axes = np.atleast_1d(self.axes).flatten()
         for ax in self.axes:
             if coastline:
