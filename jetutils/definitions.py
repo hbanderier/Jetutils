@@ -129,6 +129,8 @@ if "DATADIR" not in globals():
         "ratio": "Baroclinicity proxy",
         "mean_lat:var": "Latitude var.",
         "mean_s:var": "Speed var.",
+        "mean_lat_var": "Rolling latitude var.",
+        "mean_s_var": "Rolling speed var.",
     }
 
     UNITS = {
@@ -158,6 +160,8 @@ if "DATADIR" not in globals():
         "ratio": "$~$",
         "mean_lat:var": r"$~^{\circ} \mathrm{E} ^2$",
         "mean_s:var": r"$\mathrm{m^2\cdot s^{-2}}$",
+        "mean_lat_var": r"$~^{\circ} \mathrm{E} ^2$",
+        "mean_s_var": r"$\mathrm{m^2\cdot s^{-2}}$",
     }
 
     DEFAULT_VALUES = {
