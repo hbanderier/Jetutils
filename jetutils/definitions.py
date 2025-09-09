@@ -760,13 +760,23 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
     return idxs
 
 
-def squarify(df: pl.DataFrame, index_columns: Sequence[str] | None = None) -> pl.DataFrame:
+def squarify(df: pl.DataFrame, index_columns: Sequence[str | list[str]] | None = None) -> pl.DataFrame:
     if index_columns is None:
         index_columns = get_index_columns(df)
-    indexer = df[index_columns[0]].unique().sort().to_frame()
+    newcols = []
+    for col in index_columns:
+        if not isinstance(col, list | tuple):
+            newcols.append([col])
+        else:
+            newcols.append(col)
+    index_columns = newcols
+    indexer = df[index_columns[0]].unique(index_columns[0]).sort(index_columns[0])
     for index_column in index_columns[1:]:
-        indexer = indexer.join(df[index_column].unique().sort().to_frame(), how="cross")
-    return indexer.join(df.unique(index_columns), on=index_columns, how="left")
+        indexer = indexer.join(df[index_column].unique(index_column).sort(index_column), how="cross")
+    index_columns_unwrapped = []
+    for col in index_columns:
+        index_columns_unwrapped.extend(col)
+    return indexer.join(df.unique(index_columns_unwrapped), on=index_columns_unwrapped, how="left")
 
 
 def gb_index(
