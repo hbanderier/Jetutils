@@ -1273,7 +1273,8 @@ def _gather_normal_da_jets_wrapper(
     
     if grad:
         expr = central_diff(pl.col(varname).sort_by("n")) / central_diff(pl.col("n").sort())
-        possible_cols = get_index_columns(jets, ["time", "sample_index", "time"])
+        possible_cols = get_index_columns(jets, ["time", "sample_index"])
+        jets = jets.filter(pl.col("n").len().over([*possible_cols, "jet ID", "norm_index"]) > 2)
         jets = jets.with_columns(**{varname: expr.over([*possible_cols, "jet ID", "norm_index"])})
         
     if clim is None:
@@ -1292,14 +1293,59 @@ def _gather_normal_da_jets_wrapper(
     return jets
 
 
+def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 1) -> pl.DataFrame:
+    rng = np.random.default_rng()
+    orig_times = times.clone()
+    boostrap_len = orig_times["time"].n_unique()
+    spell_cols = ["spell", "relative_index", "relative_time", "len"] if "spell" in times.columns else []
+    times = (
+        times[["time", *spell_cols]]
+        .with_row_index("inside_index")
+        .with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
+    )
+    if "spell" in orig_times.columns:  # then per-spell bootstrapping
+        min_rel_index = times["relative_index"].min()
+        unique_spells, lens = times.group_by("spell").agg(len=pl.col("time").len()).sort("spell")
+        ts_bootstrapped = []
+        for spell, len_ in zip(unique_spells, lens):
+            bootstraps: ndarray[Any, dtype[signedinteger[_64Bit]]] = rng.choice(all_times.shape[0] - len_, size=(n_bootstraps, 1)) # should be -len per year....
+            bootstraps = bootstraps + np.arange(len_)[None, :]
+            this_ts = all_times[bootstraps.flatten()].to_frame()
+            this_ts = this_ts.with_columns(
+                len=pl.lit(len_).cast(pl.UInt32()),
+                sample_index=pl.row_index() // len_,
+                inside_index=pl.row_index() % len_,
+                relative_index=pl.row_index().cast(pl.Int32()) % len_ + min_rel_index,
+                spell=pl.lit(spell).cast(pl.UInt32()),
+            ).join(times[["spell", "relative_index", "relative_time"]], on=["spell", "relative_index"])
+            ts_bootstrapped.append(this_ts)
+        ts_bootstrapped = pl.concat(ts_bootstrapped)
+    else:
+        bootstraps = rng.choice(all_times.shape[0], size=(n_bootstraps, boostrap_len))
+        ts_bootstrapped = all_times[bootstraps.flatten()].to_frame()
+        ts_bootstrapped = ts_bootstrapped.with_columns(
+            sample_index=pl.row_index() // boostrap_len,
+            inside_index=pl.row_index() % boostrap_len,
+        )
+    columns = ["sample_index", "inside_index", "time", *spell_cols]
+    ts_bootstrapped: DataFrame | Unknown = pl.concat(
+        [
+            ts_bootstrapped[columns],
+            times[columns],
+        ]
+    )
+    return ts_bootstrapped
+
+
 def gather_normal_da_jets_wrapper(
     jets: pl.DataFrame,
     times: pl.DataFrame,
     da: xr.DataArray,
-    n_interp: int = 30,
-    n_bootstraps: int = 0,
+    all_times: pl.Series | None = None,
     half_length: float = 20,
     dn: float = 1,
+    n_interp: int = 30,
+    n_bootstraps: int = 0,
     clim: xr.DataArray | None = None,
     grad: bool = False,
     time_before: datetime.timedelta = datetime.timedelta(0),
@@ -1313,44 +1359,9 @@ def gather_normal_da_jets_wrapper(
             [pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"], maintain_order=True
         ).agg(pl.col(varname).mean())
         return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
-    rng = np.random.default_rng()
-    orig_times = times.clone()
-    boostrap_len = orig_times["time"].n_unique()
-    all_times = jets["time"].unique().clone()
-    times = (
-        times[["time"]]
-        .with_row_index("inside_index")
-        .with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
-    )
-    if "spell" in orig_times.columns:  # then block bootstrapping
-        if (boostrap_len % orig_times["spell"].n_unique()) == 0:
-            bootstrap_block = int(boostrap_len // orig_times["spell"].n_unique())
-        else:
-            bootstrap_block = 1
-        boostraps = rng.choice(
-            all_times.shape[0] - bootstrap_block,
-            size=(n_bootstraps, boostrap_len // bootstrap_block),
-        )
-        boostraps = boostraps[..., None] + np.arange(bootstrap_block)[None, None, :]
-        boostraps = boostraps.reshape(n_bootstraps, boostrap_len)
-    else:
-        boostraps = rng.choice(all_times.shape[0], size=(n_bootstraps, boostrap_len))
-    ts_bootstrapped = all_times[boostraps.flatten()].to_frame()
-    ts_bootstrapped = ts_bootstrapped.with_columns(
-        sample_index=pl.Series(
-            values=np.arange(len(ts_bootstrapped)) // boostrap_len, dtype=pl.UInt32
-        ),
-        inside_index=pl.Series(
-            values=np.arange(len(ts_bootstrapped)) % boostrap_len, dtype=pl.UInt32
-        ),
-    )
-    columns = ["sample_index", "inside_index", "time"]
-    ts_bootstrapped = pl.concat(
-        [
-            ts_bootstrapped[columns],
-            times[columns],
-        ]
-    )
+    if all_times is None:
+        all_times = jets["time"].unique().clone()
+    ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
     jets = _gather_normal_da_jets_wrapper(
         jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim, grad=grad
     )
@@ -1373,10 +1384,60 @@ def gather_normal_da_jets_wrapper(
     )
     pvals = jets.group_by(
         ["is_polar", "norm_index", "n"], maintain_order=True
-    ).agg(
-        pl.col(varname).head(n_bootstraps).sort().search_sorted(pl.col(varname).get(-1)).first()
-        / n_bootstraps
-    )
+    ).agg(pl.col(varname_).rank().last() / n_bootstraps)
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
     jets = jets.with_columns(pvals=pvals[varname])
     return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
+
+
+def last_figure(
+    jets: pl.DataFrame,
+    times: pl.DataFrame,
+    da: xr.DataArray,
+    basic_filter: list[pl.Expr], 
+    filters: dict[str, list[pl.Expr]],
+    jet: str,
+    varname: str,
+    all_times: pl.Series | None = None,
+    half_length: float = 20,
+    dn: float = 1,
+    n_interp: int = 30,
+    n_bootstraps: int = 0,
+    clim: xr.DataArray | None = None,
+) -> dict[str, pl.DataFrame]:
+    return_dict = {}
+    id_ = int(jet == "EDJ")
+    if clim is None:
+        jets = _gather_normal_da_jets_wrapper(
+            jets,
+            times,
+            da,
+            clim=clim,
+            half_length=half_length,
+            dn=1.0,
+        )
+        for filter_name, filter_ in filters.items():
+            x, y = jets.filter(*filter_).group_by("spell").mean()[["spell", f"{varname}_interp"]]
+            full_name = f"{jet}, {varname}, {filter_name}"
+            return_dict[full_name] = y[x.arg_sort()].to_frame()
+        return return_dict
+    if all_times is None:
+        all_times = jets["time"].unique().clone()
+    ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
+    jets = _gather_normal_da_jets_wrapper(
+        jets,
+        ts_bootstrapped,
+        da,
+        clim=clim,
+        half_length=half_length,
+        dn=1.0,
+    ) # columns: "sample_index", "inside_index", "time", "spell", ...
+    varname_ = f"{varname}_interp"
+    for filter_name, filter_ in filters.items():
+        results = jets.filter(*basic_filter, pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").mean()
+        x, y = results.filter(pl.col("sample_index") == n_bootstraps)[["spell", varname_]]
+        _, pvals = results.group_by("spell").agg(pl.col(varname_).rank().last() / n_bootstraps)
+        full_name = f"{jet}, {varname}, {filter_name}"
+        order = x.arg_sort()
+        return_dict[full_name] = y[order].to_frame().with_columns(pvals=pvals[order])
+    return return_dict
