@@ -416,7 +416,7 @@ def make_daily(
     relative_time = relative_time + min_rel_time
     relative_index = (relative_time / pl.duration(days=1)).cast(pl.Int32())
     df = df.group_by_dynamic("time", every="1d", group_by=group_by).agg(*aggs)
-    return df.with_columns(relative_time=relative_time, relative_index=relative_index)
+    return df.with_columns(relative_time=relative_time, relative_index=relative_index).with_columns(len=pl.col("relative_index").filter(pl.col("relative_index") >= 0).len().over("spell"))
 
 
 def get_spells(

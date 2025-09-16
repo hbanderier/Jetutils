@@ -1,4 +1,5 @@
 # coding: utf-8
+from jetutils.definitions import squarify
 from jetutils.jet_finding import central_diff
 from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
@@ -1394,7 +1395,6 @@ def last_figure(
     jets: pl.DataFrame,
     times: pl.DataFrame,
     da: xr.DataArray,
-    basic_filter: list[pl.Expr], 
     filters: dict[str, list[pl.Expr]],
     jet: str,
     varname: str,
@@ -1434,10 +1434,11 @@ def last_figure(
     ) # columns: "sample_index", "inside_index", "time", "spell", ...
     varname_ = f"{varname}_interp"
     for filter_name, filter_ in filters.items():
-        results = jets.filter(*basic_filter, pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").mean()
+        results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").mean()
+        results = squarify(results, ["sample_index", "spell"])
         x, y = results.filter(pl.col("sample_index") == n_bootstraps)[["spell", varname_]]
         _, pvals = results.group_by("spell").agg(pl.col(varname_).rank().last() / n_bootstraps)
         full_name = f"{jet}, {varname}, {filter_name}"
         order = x.arg_sort()
-        return_dict[full_name] = y[order].to_frame().with_columns(pvals=pvals[order])
+        return_dict[full_name] = y[order].fill_null(0.).to_frame().with_columns(pvals=pvals[order], spell=x[order])
     return return_dict
