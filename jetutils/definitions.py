@@ -776,7 +776,7 @@ def squarify(df: pl.DataFrame, index_columns: Sequence[str | list[str]] | None =
     index_columns_unwrapped = []
     for col in index_columns:
         index_columns_unwrapped.extend(col)
-    return indexer.join(df.unique(index_columns_unwrapped), on=index_columns_unwrapped, how="left")
+    return indexer.join(df.unique(index_columns_unwrapped), on=index_columns_unwrapped, how="left").sort(index_column)
 
 
 def gb_index(

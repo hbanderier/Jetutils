@@ -1262,6 +1262,7 @@ def _gather_normal_da_jets_wrapper(
     da: xr.DataArray,
     n_interp: int = 30,
     clim: xr.DataArray | None = None,
+    clim_std: xr.DataArray | None = None,
     half_length: float = 20,
     dn: float = 1,
     grad: bool = False,
@@ -1280,6 +1281,9 @@ def _gather_normal_da_jets_wrapper(
         
     if clim is None:
         return jets
+    if grad and clim_std is not None:
+        print("Grad and clim_std, not possible")
+        raise NotImplementedError
     clim = xarray_to_polars(clim)
     jets = jets.with_columns(
         dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5
@@ -1287,8 +1291,18 @@ def _gather_normal_da_jets_wrapper(
     if grad:
         clim = clim.with_columns(**{varname: expr.over(["dayofyear", "is_polar", "norm_index"])})
     jets = (
-        jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
+        jets
+        .join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
         .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
+        .drop(f"{varname}_right")
+    )
+    if clim_std is None:
+        return jets.drop("dayofyear")
+    clim_std = xarray_to_polars(clim_std)
+    jets = (
+        jets
+        .join(clim_std, on=["dayofyear", "is_polar", "norm_index", "n"])
+        .with_columns(pl.col(varname) / pl.col(f"{varname}_right"))
         .drop(f"{varname}_right", "dayofyear")
     )
     return jets
@@ -1348,6 +1362,7 @@ def gather_normal_da_jets_wrapper(
     n_interp: int = 30,
     n_bootstraps: int = 0,
     clim: xr.DataArray | None = None,
+    clim_std: xr.DataArray | None = None,
     grad: bool = False,
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
@@ -1355,7 +1370,7 @@ def gather_normal_da_jets_wrapper(
     times = extend_spells(times, time_before=time_before, time_after=time_after)
     varname = da.name + "_interp"
     if not n_bootstraps:
-        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, half_length=half_length, dn=dn, grad=grad)
+        jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, clim_std=clim_std, half_length=half_length, dn=dn, grad=grad)
         jets = jets.group_by(
             [pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"], maintain_order=True
         ).agg(pl.col(varname).mean())
@@ -1364,7 +1379,7 @@ def gather_normal_da_jets_wrapper(
         all_times = jets["time"].unique().clone()
     ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
     jets = _gather_normal_da_jets_wrapper(
-        jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim, grad=grad
+        jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim, clim_std=clim_std, grad=grad
     )
         
     jets = (
@@ -1385,7 +1400,7 @@ def gather_normal_da_jets_wrapper(
     )
     pvals = jets.group_by(
         ["is_polar", "norm_index", "n"], maintain_order=True
-    ).agg(pl.col(varname_).rank().last() / n_bootstraps)
+    ).agg((pl.col(varname).rank().last() - 1) / n_bootstraps)
     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
     jets = jets.with_columns(pvals=pvals[varname])
     return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
@@ -1404,23 +1419,27 @@ def last_figure(
     n_interp: int = 30,
     n_bootstraps: int = 0,
     clim: xr.DataArray | None = None,
+    clim_std: xr.DataArray | None = None,
 ) -> dict[str, pl.DataFrame]:
-    return_dict = {}
+    to_ret = times["spell"].unique().to_frame()
     id_ = int(jet == "EDJ")
+    varname_ = f"{varname}_interp"
     if clim is None:
         jets = _gather_normal_da_jets_wrapper(
             jets,
             times,
             da,
             clim=clim,
+            clim_std=clim_std,
             half_length=half_length,
             dn=1.0,
         )
         for filter_name, filter_ in filters.items():
-            x, y = jets.filter(*filter_).group_by("spell").mean()[["spell", f"{varname}_interp"]]
-            full_name = f"{jet}, {varname}, {filter_name}"
-            return_dict[full_name] = y[x.arg_sort()].to_frame()
-        return return_dict
+            full_name = f"{varname}_{filter_name}"
+            results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("spell").agg(**{full_name: pl.col(varname_).mean()})
+            to_ret = to_ret.join(results, on="spell", how="left")
+        return to_ret
+    
     if all_times is None:
         all_times = jets["time"].unique().clone()
     ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
@@ -1429,16 +1448,20 @@ def last_figure(
         ts_bootstrapped,
         da,
         clim=clim,
+        clim_std=clim_std,
         half_length=half_length,
         dn=1.0,
     ) # columns: "sample_index", "inside_index", "time", "spell", ...
-    varname_ = f"{varname}_interp"
     for filter_name, filter_ in filters.items():
         results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").mean()
         results = squarify(results, ["sample_index", "spell"])
-        x, y = results.filter(pl.col("sample_index") == n_bootstraps)[["spell", varname_]]
-        _, pvals = results.group_by("spell").agg(pl.col(varname_).rank().last() / n_bootstraps)
-        full_name = f"{jet}, {varname}, {filter_name}"
-        order = x.arg_sort()
-        return_dict[full_name] = y[order].fill_null(0.).to_frame().with_columns(pvals=pvals[order], spell=x[order])
-    return return_dict
+        full_name = f"{varname}_{filter_name}"
+        full_name_pvals = f"{full_name}_pvals"
+        results = results.group_by("spell", maintain_order=True).agg(
+            **{
+                full_name: pl.col(varname_).last(), 
+                full_name_pvals: (pl.col(varname_).rank().last() - 1) / n_bootstraps
+            }
+        )
+        to_ret = to_ret.join(results, on="spell", how="left")
+    return to_ret
