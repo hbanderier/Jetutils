@@ -1323,7 +1323,7 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
         unique_spells, lens = times.group_by("spell").agg(len=pl.col("time").len()).sort("spell")
         ts_bootstrapped = []
         for spell, len_ in zip(unique_spells, lens):
-            bootstraps: ndarray[Any, dtype[signedinteger[_64Bit]]] = rng.choice(all_times.shape[0] - len_, size=(n_bootstraps, 1)) # should be -len per year....
+            bootstraps = rng.choice(all_times.shape[0] - len_, size=(n_bootstraps, 1)) # should be -len per year....
             bootstraps = bootstraps + np.arange(len_)[None, :]
             this_ts = all_times[bootstraps.flatten()].to_frame()
             this_ts = this_ts.with_columns(
@@ -1343,7 +1343,7 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
             inside_index=pl.row_index() % boostrap_len,
         )
     columns = ["sample_index", "inside_index", "time", *spell_cols]
-    ts_bootstrapped: DataFrame | Unknown = pl.concat(
+    ts_bootstrapped = pl.concat(
         [
             ts_bootstrapped[columns],
             times[columns],
