@@ -1424,6 +1424,7 @@ def last_figure(
     to_ret = times["spell"].unique().to_frame()
     id_ = int(jet == "EDJ")
     varname_ = f"{varname}_interp"
+    agg = pl.col(varname_).replace([float("inf"), float("-inf"), float("nan")], None).mean()
     if clim is None:
         jets = _gather_normal_da_jets_wrapper(
             jets,
@@ -1436,7 +1437,7 @@ def last_figure(
         )
         for filter_name, filter_ in filters.items():
             full_name = f"{varname}_{filter_name}"
-            results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("spell").agg(**{full_name: pl.col(varname_).mean()})
+            results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("spell").agg(**{full_name: agg})
             to_ret = to_ret.join(results, on="spell", how="left")
         return to_ret
     
@@ -1453,7 +1454,7 @@ def last_figure(
         dn=1.0,
     ) # columns: "sample_index", "inside_index", "time", "spell", ...
     for filter_name, filter_ in filters.items():
-        results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").mean()
+        results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").agg(agg)
         results = squarify(results, ["sample_index", "spell"])
         full_name = f"{varname}_{filter_name}"
         full_name_pvals = f"{full_name}_pvals"
