@@ -150,8 +150,10 @@ def _open_many_da_wrapper(
         da = open_dataset(filename, chunks="auto")
         da = da.unify_chunks()
     da = standardize(da)
-    if varname is None or len(da.data_vars) > 1:
+    if varname is None:
         return da
+    elif len(da.data_vars) > 1 and isinstance(varname, tuple | str | list):
+        return da[varname]
     for potential in [
         varname,
         varname.split("_")[0],
@@ -1895,7 +1897,7 @@ class DataHandler(object):
             da = compute(da, progress_flag=True)
             if reduce_da:
                 if isinstance(da, xr.DataArray):
-                    da = flatten_by(xr.Dataset({varname: da}), varname)[varname]
+                    da = flatten_by(xr.Dataset({varname_in_file: da}), varname_in_file)[varname_in_file]
                 else:
                     da = flatten_by(da, "s")
             to_netcdf(da, da_path, format="NETCDF4")

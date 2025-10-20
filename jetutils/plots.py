@@ -1110,13 +1110,21 @@ def plot_seasonal(
     gb = props_as_df.group_by(
         [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
     )
+    
+    def _squarify(df: pl.DataFrame):
+        return pl.Series("dayofyear", np.arange(1, 367)).to_frame().join(df["jet"].unique().sort(descending=True).to_frame(), how="cross").join(df, how="left", on=["dayofyear", "jet"])
+    
     means = gb.agg([pl.col(col).mean() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
+    means = _squarify(means)
     means = periodic_rolling_pl(means, 15, data_vars)
+    
+        
     x = means["dayofyear"].unique()
     medians = gb.agg([pl.col(col).median() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
+    medians = _squarify(medians)
     medians = periodic_rolling_pl(medians, 15, data_vars)
-    q025 = gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True])
-    q075 = gb.quantile(0.75).sort("dayofyear", "jet", descending=[False, True])
+    q025 = _squarify(gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True]))
+    q075 = _squarify(gb.quantile(0.75).sort("dayofyear", "jet", descending=[False, True]))
     if njets == 3:
         color_order = [2, 3, 1]
     else:

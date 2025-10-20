@@ -12,7 +12,7 @@ authors = [
 ]
 description = "JEt STream and EXtreme events analysis"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

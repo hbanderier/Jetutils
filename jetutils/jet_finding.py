@@ -353,6 +353,8 @@ def compute_alignment(
 def find_all_jets(
     ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
+    n_coarsen: int = 3, 
+    smooth_s: int = 5,
     base_s_thresh: float = 0.5,
     alignment_thresh: float = 0.6,
     int_thresh_factor: float = 0.6,
@@ -366,7 +368,7 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_ds(ds, n_coarsen=3, smooth_s=5)
+    ds = preprocess_ds(ds, n_coarsen=n_coarsen, smooth_s=smooth_s)
     smoothed_to_remove = ("u", "v", "s")
     df = xarray_to_polars(
         ds.drop_vars(smoothed_to_remove).rename(
@@ -548,7 +550,7 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
     def dl(col):
         return pl.col(col).max() - pl.col(col).min()
 
-    mean_lon = circular_mean("lon", "s")
+    mean_lon = circular_mean("lon", "s").alias("mean_lon")
 
     diff_lon = pl.col("lon").diff()
     diff_lon = (
@@ -1165,7 +1167,7 @@ def one_gmix(
         n_components=n_components, init_params=init_params, n_init=n_init
     )
     if "ratio" in X.columns:
-        X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
+        X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0).fill_nan(1.0))
     model = model.fit(X)
     if X.columns[1] == "theta":
         return 1 - model.predict_proba(X)[:, np.argmax(model.means_[:, 1])]
@@ -1315,7 +1317,7 @@ def add_feature_for_cat(
     jets: DataFrame,
     feature: str,
     ds: xr.Dataset | None = None,
-    ds_low: xr.Dataset | None = None,
+    ds_low: xr.Dataset | xr.DataArray | None = None,
     ofile_ajdf: Path | None = None,
     force: bool = False,
 ):
@@ -1324,9 +1326,12 @@ def add_feature_for_cat(
     if feature in jets.columns:
         jets = jets.drop(feature)
     if feature == "ratio":
-        da = ds_low["s"]
+        if isinstance(ds_low, xr.Dataset):
+            da = ds_low["s"]
+        else:
+            da = ds_low
         if "s_low" in jets.columns:
-            jets.drop("s_low")
+            jets = jets.drop("s_low")
         jets = join_wrapper(jets, da, suffix="_low")
         jets = jets.with_columns(ratio=pl.col("s_low") / pl.col("s"))
     else:
@@ -2321,8 +2326,21 @@ class JetFindingExperiment(object):
             props_as_df.write_parquet(ofile_pad)
             return props_as_df
         props_as_df = self.compute_jet_props(force=force > 1)
+        if force == 1:
+            jets = self.categorize_jets()
+            index_columns = get_index_columns(jets)
+            is_polar = (
+                jets
+                .group_by(index_columns, maintain_order=True)
+                .agg(pl.col("is_polar").mean())
+            )
+            props_as_df = (
+                props_as_df
+                .drop("is_polar")
+                .join(is_polar, on=index_columns)
+            )
         props_as_df.write_parquet(ofile_padu)
-        props_as_df_cat = average_jet_categories(props_as_df)
+        props_as_df_cat = average_jet_categories(props_as_df) 
         props_as_df_cat.write_parquet(ofile_pad)
         if categorize:
             return props_as_df_cat
