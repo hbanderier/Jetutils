@@ -1,24 +1,28 @@
-Cartopy
-cf_xarray
-colormaps
-contourpy
-dask
-distributed
-intake
-ipython
-matplotlib
-numpy
-pandas
-polars
-polars-ols
-polars-ds
-pyarrow
-scikit-learn
-scipy
-shap
-simpsom-dask
-tqdm
-xarray
-xgboost
-numpydoc
-pydata-sphinx-theme
+# Cartopy
+# cf_xarray
+# colormaps
+# contourpy
+# dask
+# distributed
+# intake
+# ipython
+# matplotlib
+# numpy
+# pandas
+# polars
+# polars-ds
+# pyarrow
+# rustworkx
+# scikit-learn
+# scipy
+# shap
+# simpsom-dask
+# tqdm
+# xarray
+# xgboost
+
+markdown-include
+mkdocs
+mkdocs-material
+mkdocstrings
+mkdocstrings-python

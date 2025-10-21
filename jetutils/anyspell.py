@@ -1,5 +1,4 @@
 # coding: utf-8
-from statistics import LinearRegression
 from typing import Mapping, Literal, Callable, Sequence
 from functools import partial
 from multiprocessing import set_start_method as set_mp_start_method
@@ -22,7 +21,7 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     brier_score_loss,
 )
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 try:

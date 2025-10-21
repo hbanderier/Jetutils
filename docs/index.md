@@ -1,6 +1,7 @@
-# Jetutils
+# Welcome to Jetutil's documentation!
 
-An everything package with my jet stream utilities and other related things.
+Jetutils is an everything package with my jet stream utilities and other related things.
+
 It can do:
 
 **Jet extraction** from lon-lat fields
@@ -23,33 +24,7 @@ It can do:
 
 **Predictor importance studies**: Which jet metrics are important for predicting heat waves in France at a 10 day lag?
 
-**And more**: see [the documentation](https://jet-stream.readthedocs.io/en/latest/index.html).
-
-## Configuration
-
-A few functions depend on global variables than can be configured. By default, the configuration file simply lets the code guess them, but it's probably not great guesses.
-```ini
-[PATHS]
-DATADIR = guess
-FIGURES = guess
-RESULTS = guess
-
-[COMPUTE]
-N_WORKERS = guess
-MEMORY_LIMIT = guess
-```
-The behaviour can be overriden by creating a config file `~/$HOME/.jetutils.ini` with the same sections and fields. For example, on my laptop, I have:
-
-```ini
-[PATHS]
-DATADIR = $HOME/Documents/code_local/data
-FIGURES = $HOME/Documents/code_local/local_figs
-RESULTS = $HOME/Documents/code_local/data/results
-
-[COMPUTE]
-N_WORKERS = 8
-MEMORY_LIMIT = 8GiB
-```
+It's heavily reliant on the [`polars`](https://docs.pola.rs/api/python/stable/reference/index.html) package, and can serve as a proof of concept that you can do a lot of `xarray` stuff with `polars` if you twist it hard enough. Usually for gains, sometimes it's a pure waste of time.
 
 ## Citation
 If any of this is useful to you, please cite:

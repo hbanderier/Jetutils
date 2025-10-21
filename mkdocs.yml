@@ -1,0 +1,14 @@
+site_name: JetUtils Documentation
+theme:
+  name: material
+  highlightjs: true
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        # See: https://mkdocstrings.github.io/python/usage/
+        python:
+          options:
+            docstring_style: numpy
+markdown_extensions:
+  - admonition
