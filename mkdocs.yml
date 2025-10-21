@@ -1,7 +1,34 @@
 site_name: JetUtils Documentation
+site_url: https://jet-stream.readthedocs.io
 theme:
   name: material
   highlightjs: true
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - navigation.footer
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/link
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch-off
+        name: Switch to system preference
 plugins:
   - search
   - mkdocstrings:
@@ -10,5 +37,9 @@ plugins:
         python:
           options:
             docstring_style: numpy
+extra:
+  social:
+    - icon: fontawesome/brands/bluesky 
+      link: https://bsky.app/profile/bandelol.bsky.social
 markdown_extensions:
   - admonition
