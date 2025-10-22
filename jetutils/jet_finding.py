@@ -927,23 +927,17 @@ def categorize_jets(
 
 def average_jet_categories_v2(props_as_df: DataFrame):
     """
-    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
-
-    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical or eddy driven, summarizing this property for all the jets in this snapshot that fit this category. This version does it as a weighted mean over all jets, with weights either ?`is_polar` or `1 - is_polar`.
 
     Parameters
     ----------
     props_as_df : DataFrame
         Uncategorized jet properties, that contain at least the `jet ID` column.
-    polar_cutoff : float | None, optional
-        Cutoff, by default None
-    allow_hybrid : bool, optional
-        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
 
     Returns
     -------
     props_as_df
-        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
+        Categorized jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
     """
 
     def polar_weights(is_polar: bool = False):
@@ -1147,7 +1141,26 @@ def average_jet_categories(
 
 def track_jets_one_year(
     jets: DataFrame, year: int, member: str | None = None, n_next: int = 1
-):
+) -> DataFrame:
+    """
+    Performs one year of explicit jet tracking
+
+    Parameters
+    ----------
+    jets : DataFrame
+        _description_
+    year : int
+        _description_
+    member : str | None, optional
+        _description_, by default None
+    n_next : int, optional
+        _description_, by default 1
+
+    Returns
+    -------
+    cross: DataFrame
+        cross-jet distance metrics from a jet and its best successor
+    """
     if "len_right" in jets.columns:
         jets = jets.drop("len_right")
     deltas = ["u", "v", "s", "theta"]
@@ -1261,7 +1274,22 @@ def track_jets_one_year(
     return cross
 
 
-def track_jets(all_jets_one_df: DataFrame, n_next: int = 1):
+def track_jets(all_jets_one_df: DataFrame, n_next: int = 1) -> DataFrame:
+    """
+    Iterates over years and maybe members and performs explicit jet tracking.
+
+    Parameters
+    ----------
+    all_jets_one_df : DataFrame
+        Data source
+    n_next : int, optional
+        How many timesteps forward to look for best explicit jet successor, by default 1
+
+    Returns
+    -------
+    DataFrame
+        _description_
+    """
     cross = []
     gb = ["time", "jet ID"]
     iterator = all_jets_one_df["time"].dt.year().unique()

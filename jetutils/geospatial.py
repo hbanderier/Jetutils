@@ -153,7 +153,23 @@ def directional_diff(
     df: DataFrame, col: str, by: str, periodic: bool = False
 ) -> DataFrame:
     """
-    Wraps around `central_diff` and `diff_maybe_periodic` to generate an Expression that differentiates a column `col` by another `by`. The output Expression will create a column with name `f"d{col}d{by}"`.
+    Wraps around `central_diff` and `diff_maybe_periodic` to generate an Expression that differentiates a column `col` by another `by` and executes it. The output Expression will create a column with name `f"d{col}d{by}"`.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Data source
+    col : str
+        what to derive
+    by : str
+        by what to derive
+    periodic : bool, optional
+        is the `"by"` column periodic, by default False
+
+    Returns
+    -------
+    DataFrame
+        Data augmented with one extra column.
     """
     others = {
         "lon": "lat",
