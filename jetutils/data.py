@@ -6,7 +6,6 @@ from typing import Optional, Mapping, Tuple, Literal, Callable
 from itertools import product
 from pathlib import Path
 
-import cf_xarray
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -1000,7 +999,7 @@ def window_smoothing(
 
 def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.DataArray | xr.Dataset:
     """
-    Probably broken for now fft_smoothing. FFT means Fast Fourier Transform, which is the central function we use to perforn this smoothing, whose more correct name would be a low-pass filter. Transforms the data along `dim` in the frequency domain, zeroes out the elements corresponding to the `winsize` highest frequencies, and transforms this back into real space.
+    Probably broken for now. FFT means Fast Fourier Transform, which is the central function we use to perforn this smoothing, whose more correct name would be a low-pass filter. Transforms the data along `dim` in the frequency domain, zeroes out the elements corresponding to the `winsize` highest frequencies, and transforms this back into real space.
 
     Parameters
     ----------
@@ -1043,31 +1042,6 @@ def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.D
     for i, extra_dim in enumerate(extra_dims):
         newda.assign_coords({extra_dim: extra_coords[i]})
     return newda
-
-
-def spharm_smoothing(da: xr.DataArray | xr.Dataset, dim: str, trunc: int) -> xr.DataArray | xr.Dataset: 
-    """
-    One day i'll implement this. This is meant to be another type of spectral smoothing like fft, but with spherical harmonics instead.
-
-    Parameters
-    ----------
-    da : xr.DataArray or xr.Dataset
-        _description_
-    dim : str
-        _description_
-    trunc : int
-        _description_
-
-    Raises
-    ------
-    NotImplementedError
-        Always for now
-    """    
-    raise NotImplementedError("Spharmt is broken for now")
-    # spharmt = Spharmt(len(da.lon), len(da.lat))
-    # fieldspec = spharmt.grdtospec(da.values, ntrunc=trunc)
-    # fieldtrunc = spharmt.spectogrd(fieldspec)
-    # return fieldtrunc
 
 
 def smooth(
@@ -1368,43 +1342,7 @@ def compute_all_dailymeans(
         da = standardize(open_dataarray(source)).chunk("auto")
         da = da.resample(time="1d").reduce(reduction_function)  
         da = compute(da, progress=True)  
-        da.to_netcdf(dest)
-    
-
-def time_mask(time_da: xr.DataArray, filename: str) -> np.ndarray:
-    """
-    I don't think I ever use this
-    """
-    if filename == "full.nc":
-        return np.ones(len(time_da)).astype(bool)
-
-    filename = int(filename.rstrip(".nc"))
-    try:
-        t1, t2 = (
-            pd.to_datetime(filename, format="%Y%M"),
-            pd.to_datetime(filename + 1, format="%Y%M"),
-        )
-    except ValueError:
-        t1, t2 = (
-            pd.to_datetime(filename, format="%Y"),
-            pd.to_datetime(filename + 1, format="%Y"),
-        )
-    return ((time_da >= t1) & (time_da < t2)).values
-
-
-def get_nao(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Broken too
-    """
-    nao = pl.read_csv(f"{DATADIR}/ERA5/daily_nao.csv")
-    nao = (
-        nao.with_columns(
-            time=pl.datetime(pl.col("year"), pl.col("month"), pl.col("day"))
-        )
-        .drop(["year", "month", "day"])
-        .cast({"time": df["time"].dtype})
-    )
-    return df.join_asof(nao, on="time")
+        to_netcdf(da, dest)
 
 
 def compute_extreme_climatology(da: xr.DataArray, opath: Path):
@@ -1436,7 +1374,7 @@ def compute_anomalies_ds(
         A dataset wuth the "`time`" dimension
     clim_type : str
         Type of climatology, like "dayofyear", by default None
-    normalized : bool, optional
+    standardized : bool, optional
         Optionally, one can create standardize the anomalies by the standard deviation of the data. By default False
     return_clim : bool, optional
         Optionally, also return the climatology, by default False

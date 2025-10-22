@@ -3,12 +3,162 @@ from pathlib import Path
 from typing import Tuple
 from functools import partial
 from multiprocessing import Pool
+from typing import Union
 import pickle as pkl
 
 import numpy as np
 import xarray as xr
+import polars as pl
 from scipy.stats import norm
-from .definitions import N_WORKERS, infer_direction
+from .definitions import N_WORKERS, SEASONS, infer_direction
+import polars_ds as pds
+
+
+def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 1) -> pl.DataFrame:
+    rng = np.random.default_rng()
+    orig_times = times.clone()
+    boostrap_len = orig_times["time"].n_unique()
+    spell_cols = ["spell", "relative_index", "relative_time", "len"] if "spell" in times.columns else []
+    times = (
+        times[["time", *spell_cols]]
+        .with_row_index("inside_index")
+        .with_columns(sample_index=pl.lit(n_bootstraps, dtype=pl.UInt32))
+    )
+    if "spell" in orig_times.columns:  # then per-spell bootstrapping
+        min_rel_index = times["relative_index"].min()
+        unique_spells, lens = times.group_by("spell").agg(len=pl.col("time").len()).sort("spell")
+        ts_bootstrapped = []
+        for spell, len_ in zip(unique_spells, lens):
+            bootstraps = rng.choice(all_times.shape[0] - len_, size=(n_bootstraps, 1)) # should be -len per year....
+            bootstraps = bootstraps + np.arange(len_)[None, :]
+            this_ts = all_times[bootstraps.flatten()].to_frame()
+            this_ts = this_ts.with_columns(
+                len=pl.lit(len_).cast(pl.UInt32()),
+                sample_index=pl.row_index() // len_,
+                inside_index=pl.row_index() % len_,
+                relative_index=pl.row_index().cast(pl.Int32()) % len_ + min_rel_index,
+                spell=pl.lit(spell).cast(pl.UInt32()),
+            ).join(times[["spell", "relative_index", "relative_time"]], on=["spell", "relative_index"])
+            ts_bootstrapped.append(this_ts)
+        ts_bootstrapped = pl.concat(ts_bootstrapped)
+    else:
+        bootstraps = rng.choice(all_times.shape[0], size=(n_bootstraps, boostrap_len))
+        ts_bootstrapped = all_times[bootstraps.flatten()].to_frame()
+        ts_bootstrapped = ts_bootstrapped.with_columns(
+            sample_index=pl.row_index() // boostrap_len,
+            inside_index=pl.row_index() % boostrap_len,
+        )
+    columns = ["sample_index", "inside_index", "time", *spell_cols]
+    ts_bootstrapped = pl.concat(
+        [
+            ts_bootstrapped[columns],
+            times[columns],
+        ]
+    )
+    return ts_bootstrapped
+
+
+def cdf(timeseries: Union[xr.DataArray, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """Computes the cumulative distribution function of a 1D DataArray
+
+    Args:
+        timeseries (xr.DataArray or npt.np.ndarray): will be cast to ndarray if DataArray.
+
+    Returns:
+        x (npt.np.ndarray): x values for plotting,
+        y (npt.np.ndarray): cdf of the timeseries,
+    """
+    if isinstance(timeseries, xr.DataArray):
+        timeseries = timeseries.values
+    idxs = np.argsort(timeseries)
+    y = np.cumsum(idxs) / np.sum(idxs)
+    x = timeseries[idxs]
+    return x, y
+
+
+def trends_and_pvalues(
+    props_as_df: pl.DataFrame,
+    data_vars: list,
+    season: str | None = None,
+    std: bool = False,
+    bootstrap_len: int = 4,
+    n_boostraps: int = 10000,
+):
+    ncat = props_as_df["jet"].n_unique()
+
+    if season is not None and season != "Year":
+        month_list = SEASONS[season]
+        props_as_df = props_as_df.filter(pl.col("time").dt.month().is_in(month_list))
+    else:
+        season = "all_year"
+
+    def agg_func(col):
+        return pl.col(col).std() if std else pl.col(col).mean()
+
+    aggs = [agg_func(col) for col in data_vars]
+    props_as_df = props_as_df.group_by(
+        pl.col("time").dt.year().alias("year"), pl.col("jet"), maintain_order=True
+    ).agg(*aggs)
+
+    x = props_as_df["year"].unique()
+    n = len(x)
+    num_blocks = n // bootstrap_len
+
+    rng = np.random.default_rng()
+
+    sample_indices = rng.choice(
+        n - bootstrap_len, size=(n_boostraps, n // bootstrap_len)
+    )
+    sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
+    sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
+    sample_indices = np.append(
+        sample_indices, np.arange(sample_indices.shape[1])[None, :], axis=0
+    )
+    sample_indices = ncat * np.repeat(sample_indices.flatten(), ncat)
+    for k in range(ncat):
+        sample_indices[k::ncat] = sample_indices[k::ncat] + k
+
+    ts_bootstrapped = props_as_df[sample_indices]
+    ts_bootstrapped = ts_bootstrapped.with_columns(
+        sample_index=np.arange(len(ts_bootstrapped))
+        // (ncat * num_blocks * bootstrap_len),
+        inside_index=np.arange(len(ts_bootstrapped))
+        % (ncat * num_blocks * bootstrap_len),
+    )
+
+    slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
+        **{
+            data_var: pds.lin_reg_report(
+                    pl.int_range(0, pl.col("year").len()).alias("year"), 
+                    target=pl.col(data_var), 
+                    add_bias=True
+                ).struct.field("beta").first()
+            for data_var in data_vars
+        }
+    )
+
+    constants = props_as_df.group_by("jet", maintain_order=True).agg(
+        **{
+            data_var: pds.lin_reg_report(
+                pl.col("year"), 
+                target=pl.col(data_var), 
+                add_bias=True
+            ).struct.field("beta").last()
+            for data_var in data_vars
+        }
+    )
+
+    pvals = slopes.group_by("jet", maintain_order=True).agg(
+        **{
+            data_var: pl.col(data_var)
+            .head(n_boostraps)
+            .sort()
+            .search_sorted(pl.col(data_var).get(-1)).first()
+            / n_boostraps
+            for data_var in data_vars
+        }
+    )
+    return x, props_as_df, slopes, constants, pvals
 
 
 def autocorrelation(path: Path, time_steps: int = 50) -> Path:

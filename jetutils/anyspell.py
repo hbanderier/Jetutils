@@ -108,13 +108,6 @@ def brier_score(y_true, y_proba=None, *, sample_weight=None, pos_label=None):
         * otherwise, `pos_label` defaults to the greater label,
           i.e. `np.unique(y_true)[-1]`.
 
-    y_prob : array-like of shape (n_samples,)
-        Probabilities of the positive class.
-
-        .. deprecated:: 1.5
-            `y_prob` is deprecated and will be removed in 1.7. Use
-            `y_proba` instead.
-
     Returns
     -------
     score : float
@@ -424,8 +417,6 @@ def get_spells(
     group_by: Sequence[str] | Sequence[pl.Expr] | str | pl.Expr | None = None,
     fill_holes: datetime.timedelta = datetime.timedelta(hours=12),
     minlen: datetime.timedelta = datetime.timedelta(days=3),
-    time_before: datetime.timedelta = datetime.timedelta(0),
-    time_after: datetime.timedelta = datetime.timedelta(0),
     daily: bool = False,
 ) -> DataFrame:
     if isinstance(group_by, str | pl.Expr):
@@ -882,29 +873,6 @@ def predict_all(
     n_folds: int = 1,
     **kwargs,
 ):
-    """
-    One model per region, lag and fold. One model for all times and members if applicable
-
-    Parameters
-    ----------
-    predictors : pl.DataFrame
-        _description_
-    orig_targets : pl.DataFrame
-        _description_
-    base_pred : pl.DataFrame | None, optional
-        _description_, by default None
-    model_type : Literal[&quot;rf&quot;, &quot;lr&quot;, &quot;xgb&quot;], optional
-        _description_, by default "rf"
-    compute_shap : bool, optional
-        _description_, by default False
-    n_folds : int, optional
-        _description_, by default 1
-
-    Returns
-    -------
-    _type_
-        _description_
-    """
     index_columns_targets = get_index_columns(
         orig_targets, ["region", "member", "time"]
     )

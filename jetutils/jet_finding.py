@@ -5,8 +5,7 @@ This probably too big module contains all the utilities relative to jet extracti
 import datetime
 import warnings
 from itertools import product
-from typing import Callable, Iterable, Sequence, Tuple, Literal
-from multiprocessing import Pool
+from typing import Sequence, Literal
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +23,6 @@ import rustworkx as rx
 import dask
 
 from .definitions import (
-    N_WORKERS,
     RADIUS,
     compute,
     do_rle,
@@ -33,6 +31,8 @@ from .definitions import (
     extract_season_from_df,
     explode_rle,
     squarify,
+    map_maybe_parallel,
+    to_expr,
 )
 from .data import (
     compute_extreme_climatology,
@@ -44,57 +44,13 @@ from .data import (
     coarsen_da,
 )
 from .anyspell import get_spells
-
-
-def haversine(lon1: Expr, lat1: Expr, lon2: Expr, lat2: Expr) -> Expr:
-    """
-    Generates a polars Expression to compute the haversine distance, in meters, between points defined with the columns (lon1, lat1) and the points defined with the columns (lon2, lat2).
-    TODO: support other planets by passing the radius as an argument.
-    """
-    lon1 = lon1.radians()
-    lat1 = lat1.radians()
-    lon2 = lon2.radians()
-    lat2 = lat2.radians()
-
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-
-    a = (dlat / 2.0).sin().pow(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().pow(2)
-    return 2 * a.sqrt().arcsin() * RADIUS
-
-
-def haversine_from_dl(lat: Expr, dlon: Expr, dlat: Expr) -> Expr:
-    """
-    Alternative definition of the haversine distance, in meters, this time using the latitude of the first point, and the *differences* in longitues and latitudes between points.
-    """
-    lat = lat.radians()
-    dlon = dlon.radians()
-    dlat = dlat.radians()
-
-    a = (dlat / 2.0).sin().pow(2) * (dlon / 2.0).cos().pow(2) + lat.cos().pow(2) * (
-        dlon / 2.0
-    ).sin().pow(2)
-    return 2 * a.sqrt().arcsin() * RADIUS
-
-
-def jet_integral_haversine(
-    lon: Expr = pl.col("lon"),
-    lat: Expr = pl.col("lon"),
-    s: Expr | None = pl.col("s"),
-    x_is_one: bool = False,
-) -> Expr:
-    """
-    Generates an expression to integrate the column `s` along a path on the sphere defined by `lon`and `lat`. Assumes we are on Earth since `haversine` uses the Earth's radius.
-    """
-    ds: Expr = haversine(
-        lon,
-        lat,
-        lon.shift(),
-        lat.shift(),
-    )
-    if x_is_one:
-        return ds.sum()
-    return 0.5 * (ds * (s + s.shift())).sum()
+from .geospatial import (
+    haversine,
+    jet_integral_haversine, 
+    central_diff,
+    diff_maybe_periodic,
+    gather_normal_da_jets,
+)
 
 
 def has_periodic_x(df: DataFrame | xr.Dataset | xr.DataArray) -> bool:
@@ -142,52 +98,6 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     Generates an Expression that rounds the given column to a given base, one over the factor.
     """
     return (pl.col(col) * factor).round() / factor
-
-
-def central_diff(by: str | pl.Expr) -> Expr:
-    """
-    Generates Expression to implement central differences for the given columns; and adds sensical numbers to the first and last element of the differentiation.
-    """
-    if isinstance(by, str):
-        by = pl.col(by)
-    diff_2 = by.diff(2, null_behavior="ignore").slice(2)
-    diff_1 = by.diff(1, null_behavior="ignore")
-    return diff_1.gather(1).append(diff_2).append(diff_1.gather(-1))
-
-
-def diff_maybe_periodic(by: str, periodic: bool = False) -> Expr:
-    """
-    Wraps around `central_diff` to generate an Expression that implements central differences over a potentially periodic column like longitude.
-    """
-    if not periodic:
-        return central_diff(by)
-    max_by = pl.col(by).max() - pl.col(by).min()
-    diff_by = central_diff(by).abs()
-    return pl.when(diff_by > max_by / 2).then(max_by - diff_by).otherwise(diff_by)
-
-
-def directional_diff(
-    df: DataFrame, col: str, by: str, periodic: bool = False
-) -> DataFrame:
-    """
-    Wraps around `central_diff` and `diff_maybe_periodic` to generate an Expression that differentiates a column `col` by another `by`. The output Expression will create a column with name `f"d{col}d{by}"`.
-    """
-    others = {
-        "lon": "lat",
-        "lat": "lon",
-        "x": "y",
-        "y": "x",
-    }
-    other = others[by]
-    index_columns = get_index_columns(df)
-    name = f"d{col}d{by}"
-    diff_by = diff_maybe_periodic(by, periodic)
-    agg = {name: central_diff(col) / diff_by, by: pl.col(by)}
-    return (
-        df.group_by([*index_columns, other], maintain_order=True)
-        .agg(**agg)
-        .explode(name, by)
-    )
 
 
 def preprocess_ds(
@@ -340,11 +250,6 @@ def compute_alignment(
     align_x = pl.col("u") / pl.col("s") * dlon / ds
     align_y = pl.col("v") / pl.col("s") * dlat / ds
     alignment = align_x + align_y
-    # alignment = (
-    #     all_contours.group_by([*index_columns, "contour"], maintain_order=True)
-    #     .agg(alignment=alignment)
-    #     .explode("alignment")
-    # )
     return all_contours.with_columns(
         alignment=alignment.over([*index_columns, "contour"])
     )
@@ -519,12 +424,6 @@ def find_all_jets(
     return jets
 
 
-def to_expr(expr: Expr | str):
-    if isinstance(expr, str):
-        expr = pl.col(expr)
-    return expr
-
-
 def weighted_mean_pl(col: Expr | str, by: Expr | str | None = None):
     col = to_expr(col)
     if by is None:
@@ -635,214 +534,6 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
     return props_as_df
 
 
-def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str):
-    """
-    Bilinear interpolation. Values in `da_df[varname]` will be bilinearly interpolated to the jet points' `lon`-`lat` coordinates, resulting in a new column in `jets` with a name constructed as `f"{varname}_interp"`.
-    """
-    # assumes regular grid
-    index_columns = get_index_columns(da_df)
-    lon = da_df["lon"].unique().sort()
-    lat = da_df["lat"].unique().sort()
-    dlon = lon.diff().filter(lon.diff() > 0).min()
-    dlat = lat.diff().filter(lat.diff() > 0).min()
-    da_df = da_df.rename({"lon": "lon_", "lat": "lat_"})
-    if varname in jets.columns:
-        jets = jets.rename({varname: f"{varname}_core"})
-        revert_rename = True
-    else:
-        revert_rename = False
-    indices_right = lon.search_sorted(jets["normallon"], side="right").clip(
-        1, len(lon) - 1
-    )
-    indices_above = lat.search_sorted(jets["normallat"], side="right").clip(
-        1, len(lat) - 1
-    )
-    jets = jets.with_columns(
-        left=lon[indices_right - 1],
-        right=lon[indices_right],
-        below=lat[indices_above - 1],
-        above=lat[indices_above],
-    )
-    da_df = da_df[[*index_columns, "lon_", "lat_", varname]]
-    for pair in [
-        ["left", "below"],
-        ["left", "above"],
-        ["right", "below"],
-        ["right", "above"],
-    ]:
-        jets = jets.join(
-            da_df,
-            left_on=[*index_columns, *pair],
-            right_on=[*index_columns, "lon_", "lat_"],
-        ).rename({varname: "".join(pair)})
-    below = (pl.col("right") - pl.col("normallon")) * pl.col("leftbelow") / dlon + (
-        pl.col("normallon") - pl.col("left")
-    ) * pl.col("rightbelow") / dlon
-    above = (pl.col("right") - pl.col("normallon")) * pl.col("leftabove") / dlon + (
-        pl.col("normallon") - pl.col("left")
-    ) * pl.col("rightabove") / dlon
-    jets = jets.with_columns(r1=below, r2=above).drop(
-        "leftbelow", "leftabove", "rightbelow", "rightabove", "left", "right"
-    )
-    center = (pl.col("above") - pl.col("normallat")) * pl.col("r1") / dlat + (
-        pl.col("normallat") - pl.col("below")
-    ) * pl.col("r2") / dlat
-    jets = jets.with_columns(**{f"{varname}_interp": center}).drop(
-        "below", "above", "r1", "r2"
-    )
-    if revert_rename:
-        jets = jets.rename({f"{varname}_core": varname})
-    return jets
-
-
-def add_normals(
-    jets: DataFrame,
-    half_length: float = 12.0,
-    dn: float = 1.0,
-    delete_middle: bool = False,
-) -> DataFrame:
-    is_polar = ["is_polar"] if "is_polar" in jets.columns else []
-    ns_df = np.arange(-half_length, half_length + dn, dn)
-    if delete_middle:
-        ns_df = np.delete(ns_df, int(half_length // dn))
-    ns_df = Series("n", ns_df).to_frame()
-
-    # Expr angle
-    if "u" in jets.columns and "v" in jets.columns:
-        angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
-        wind_speed = ["u", "v", "s"]
-    else:
-        angle = (
-            pl.arctan2(
-                pl.col("lat").shift() - pl.col("lat"),
-                pl.col("lon").shift() - pl.col("lon"),
-            ).interpolate("linear")
-            + np.pi / 2
-        )
-        angle = angle.fill_null(0)
-        angle = (angle.shift(2, fill_value=0) + angle) / 2
-        wind_speed = []
-
-    # Expr normals
-    normallon = pl.col("lon") + pl.col("angle").cos() * pl.col("n")
-    normallon = (normallon + 180) % 360 - 180
-    normallat = pl.col("lat") + pl.col("angle").sin() * pl.col("n")
-
-    index_columns = get_index_columns(
-        jets,
-        (
-            "member",
-            "time",
-            "cluster",
-            "spell",
-            "relative_index",
-            "relative_time",
-            "jet ID",
-            "sample_index",
-            "inside_index",
-        ),
-    )
-
-    jets = jets[[*index_columns, "lon", "lat", *wind_speed, *is_polar]]
-
-    jets = jets.with_columns(
-        jets.group_by(index_columns, maintain_order=True)
-        .agg(angle=angle, index=pl.int_range(pl.len()))
-        .explode(["index", "angle"])
-    )
-    jets = jets.join(ns_df, how="cross")
-
-    jets = jets.with_columns(normallon=normallon, normallat=normallat)
-    jets = jets[
-        [
-            *index_columns,
-            "index",
-            "lon",
-            "lat",
-            *wind_speed,
-            "n",
-            "normallon",
-            "normallat",
-            *is_polar,
-        ]
-    ]
-    return jets
-
-
-def gather_normal_da_jets(
-    jets: DataFrame,
-    da: xr.DataArray,
-    half_length: float = 12.0,
-    dn: float = 1.0,
-    delete_middle: bool = False,
-) -> DataFrame:
-    """
-    Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
-    """
-    index_columns = get_index_columns(
-        jets,
-        (
-            "member",
-            "time",
-            "cluster",
-            "spell",
-            "relative_index",
-            "relative_time",
-            "jet ID",
-            "sample_index",
-            "inside_index",
-        ),
-    )
-    jets = add_normals(jets, half_length, dn, delete_middle)
-    dlon = (da.lon[1] - da.lon[0]).item()
-    dlat = (da.lat[1] - da.lat[0]).item()
-    lon = Series("normallon_rounded", da.lon.values).to_frame()
-    lat = Series("normallat_rounded", da.lat.values).to_frame()
-    jets = (
-        jets.with_row_index("big_index")
-        .sort("normallon")
-        .join_asof(
-            lon,
-            left_on="normallon",
-            right_on="normallon_rounded",
-            strategy="nearest",
-            tolerance=dlon,
-        )
-        .sort("normallat")
-        .join_asof(
-            lat,
-            left_on="normallat",
-            right_on="normallat_rounded",
-            strategy="nearest",
-            tolerance=dlat,
-        )
-        .sort("big_index")
-        .drop("big_index")
-        .drop_nulls(["normallon_rounded", "normallat_rounded"])
-    )
-
-    lonslice = jets["normallon_rounded"].unique()
-    latslice = jets["normallat_rounded"].unique()
-    da = da.sel(
-        lon=lonslice,
-        lat=latslice,
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        if "time" in da.dims:
-            if da["time"].dtype == np.dtype("object"):
-                da["time"] = da.indexes["time"].to_datetimeindex(time_unit="ms")
-            da = da.sel(time=jets["time"].unique().sort().to_numpy())
-    da_df = xarray_to_polars(da)
-    if "time" in da_df.columns:
-        da_df = da_df.cast({"time": jets.schema["time"]})
-
-    varname = da.name
-    jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
-    jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
-    return jets
-
-
 def compute_widths(jets: DataFrame, da: xr.DataArray):
     """
     Computes the width of each jet using normally interpolated wind speed on either side of the jet.
@@ -908,56 +599,6 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     return jets.collect()
 
 
-def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
-    """
-    Expands the jets by appending segments before the start and after the end, following the tangent angle at the start and the end of the original jet, respectively.
-
-    Parameters
-    ----------
-    jets : DataFrame
-        Jets to extend
-    max_t : float
-        Length of the added segments
-    dt : float
-        Spacing of the added segment
-
-    Returns
-    -------
-    DataFrame
-        Jets DataFrame with all the index dimensions kept original, only lon and lat as additional columns (the rest is dropped), and longer jets with added segments.
-    """
-    index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
-    jets = jets.sort(*index_columns, "lon", "lat")
-    angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear")
-    tangent_n = pl.linear_space(0, max_t, int(max_t / dt) + 1)
-
-    tangent_lon_before_start = (
-        pl.col("lon").first() - angle.head(5).mean().cos() * tangent_n.reverse()
-    )
-    tangent_lat_before_start = (
-        pl.col("lat").first() - angle.head(5).mean().sin() * tangent_n.reverse()
-    )
-
-    tangent_lon_after_end = (
-        pl.col("lon").last() + angle.tail(5).mean().cos() * tangent_n
-    )
-    tangent_lat_after_end = (
-        pl.col("lat").last() + angle.tail(5).mean().sin() * tangent_n
-    )
-
-    bigger_lon = tangent_lon_before_start.append(pl.col("lon")).append(
-        tangent_lon_after_end
-    )
-    bigger_lat = tangent_lat_before_start.append(pl.col("lat")).append(
-        tangent_lat_after_end
-    )
-
-    jets = (
-        jets.group_by(index_columns, maintain_order=True).agg(bigger_lon, bigger_lat)
-    ).explode("lon", "lat")
-    return jets
-
-
 def join_wrapper(
     df: DataFrame, da: xr.DataArray | xr.Dataset, suffix: str = "_right", **kwargs
 ):
@@ -992,114 +633,6 @@ def join_wrapper(
         df_upd.append(these_jets)
     df = pl.concat(df_upd)
     return df
-
-
-def map_maybe_parallel(
-    iterator: Iterable,
-    func: Callable,
-    len_: int,
-    processes: int = N_WORKERS,
-    chunksize: int | None = None,
-    progress: bool = True,
-    pool_kwargs: dict | None = None,
-    ctx=None,
-) -> list:
-    """
-    Maps a function on the components of an Iterable. Can be parallel if processes is greater than one. In this case the other arguments are used to create a `multiprocessing.Pool`. In most cases, I recommend using `ctx = get_context("spawn")` instead of the default (on linux) `fork`.
-
-    Parameters
-    ----------
-    iterator : Iterable
-        Data
-    func : Callable
-        Function to apply to each element of `iterator`
-    len_ : int
-        len of the `iterator`, so we can display a progress bar.
-    processes : int, optional
-        Number of parallel processes, will not create a `Pool` if 1, by default N_WORKERS
-    chunksize : int, optional
-        How many elements to send to a worker at once, by default 100
-    progress : bool, optional
-        Show a progress bar using `tqdm`, by default True
-    pool_kwargs : dict | None, optional
-        Keyword arguments passed to `multiprocessing.Pool`, by default None
-    ctx : optional
-        Multiporcessing context, created using `multiprocessing.get_context()`, by default None, will be `spawn` on windowd and mac, and `fork` on linux at time of writing, but it should change in python 3.15.
-
-    Returns
-    -------
-    list
-        result of the map coerced into a list.
-    """
-    processes = min(processes, len_)
-    if processes == 1 and progress:
-        return list(tqdm(map(func, iterator), total=len_))
-    if processes == 1:
-        return list(map(func, iterator))
-    if pool_kwargs is None:
-        pool_kwargs = {}
-    if chunksize is None:
-        chunksize = min(int(len_ // processes), 200)
-    pool_func = Pool if ctx is None else ctx.Pool
-    if not progress:
-        with pool_func(processes=processes, **pool_kwargs) as pool:
-            to_ret = pool.imap(func, iterator, chunksize=chunksize)
-            return list(to_ret)
-    with pool_func(processes=processes, **pool_kwargs) as pool:
-        to_ret = tqdm(
-            pool.imap(func, iterator, chunksize=chunksize),
-            total=len_,
-        )
-        return list(to_ret)
-
-
-def create_mappable_iterator(
-    df: DataFrame,
-    das: Sequence | None = None,
-    others: Sequence | None = None,
-    potentials: Tuple = ("member", "time", "cluster"),
-) -> Tuple:
-    """
-    I' not sure about this one anymore. I don't think I use it ?
-
-    Parameters
-    ----------
-    df : DataFrame
-        _description_
-    das : Sequence | None, optional
-        _description_, by default None
-    others : Sequence | None, optional
-        _description_, by default None
-    potentials : Tuple, optional
-        _description_, by default ("member", "time", "cluster")
-
-    Returns
-    -------
-    Tuple
-        _description_
-    """
-    if das is None:
-        das = []
-    if others is None:
-        others = []
-    iter_dims = []
-    for potential in potentials:
-        if potential in df.columns:
-            iter_dims.append(potential)
-    gb = df.group_by(iter_dims, maintain_order=True)
-    len_ = len(gb.first())
-
-    def _extract_da(da, index):
-        return compute(
-            da.sel(
-                {dim: values for dim, values in zip(iter_dims, index) if dim in da.dims}
-            )
-        )
-
-    iterator = (
-        (jets, *[_extract_da(da, index) for da in das], *others) for index, jets in gb
-    )
-    return len_, iterator
 
 
 def round_half(x):
