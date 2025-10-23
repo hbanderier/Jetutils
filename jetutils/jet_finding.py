@@ -750,7 +750,7 @@ def one_gmix_v2(
         x = X.to_numpy() - mean[None, :]
         score = np.linalg.norm(np.einsum("jk,ik->ij", covar, x), axis=1)
         scores.append(score)
-    if X.columns[1] == "theta":
+    if X.columns[1] in ["theta", "theta300"]:
         order = np.argsort(model.means_[:, 1])
     else:
         order = np.argsort(model.means_[:, 1])[::-1]
