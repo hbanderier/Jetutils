@@ -134,6 +134,7 @@ if "DATADIR" not in globals():
         "mean_s:var": "Speed var.",
         "mean_lat_var": "Rolling latitude var.",
         "mean_s_var": "Rolling speed var.",
+        "pers": "Persistence",
     }
 
     UNITS = {
@@ -165,6 +166,7 @@ if "DATADIR" not in globals():
         "mean_s:var": r"$\mathrm{m^2\cdot s^{-2}}$",
         "mean_lat_var": r"$~^{\circ} \mathrm{E} ^2$",
         "mean_s_var": r"$\mathrm{m^2\cdot s^{-2}}$",
+        "pers": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
     }
 
     DEFAULT_VALUES = {
@@ -196,6 +198,7 @@ if "DATADIR" not in globals():
         "n_jets": 0,
         "flag": 0,
         "ratio": 0.3,
+        "pers": 0.0,
     }
 
     LATEXY_VARNAME = {
@@ -220,6 +223,7 @@ if "DATADIR" not in globals():
         "int_over_europe": r"$\int_{\mathrm{Eur.}} s \mathrm{d}\lambda$",
         "persistence": r"$\Delta t$",
         "ratio": r"$\frac{s^*}{s_{500}}$",
+        "pers": "$P$",
     }
 
     SEASONS = {
@@ -365,6 +369,9 @@ def load_pickle(filename: str | Path) -> Any:
     with open(filename, "rb") as handle:
         to_ret = pkl.load(handle)
     return to_ret
+
+
+
 
 
 def to_zero_one(X: np.ndarray | pl.DataFrame):

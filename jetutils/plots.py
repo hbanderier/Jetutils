@@ -50,6 +50,7 @@ from .definitions import (
     UNITS,
     SEASONS,
     JJADOYS,
+    DEFAULT_VALUES,
     maybe_circular_mean,
     get_index_columns,
     infer_direction,
@@ -992,7 +993,7 @@ def plot_seasonal(
     def _squarify(df: pl.DataFrame):
         return pl.Series("dayofyear", np.arange(1, 367)).to_frame().join(df["jet"].unique().sort(descending=True).to_frame(), how="cross").join(df, how="left", on=["dayofyear", "jet"])
     
-    means = gb.agg([pl.col(col).mean() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
+    means = gb.agg([pl.col(col).replace([float("-inf"), float("inf"), float("nan")], None).mean() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
     means = _squarify(means)
     means = periodic_rolling_pl(means, 15, data_vars)
     
