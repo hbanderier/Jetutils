@@ -33,6 +33,7 @@ from .definitions import (
     squarify,
     map_maybe_parallel,
     to_expr,
+    iterate_over_year_maybe_member,
 )
 from .data import (
     compute_extreme_climatology,
@@ -1540,7 +1541,7 @@ def spells_from_cross_catd_simple(
     cross = squarify(cross, ["time", "spell_of"])
 
     spells_list: dict[str, DataFrame] = {
-        spell_of: get_spells(cross.filter(pl.col("spell_of") == spell_of), pl.col("pers") > pl.col("pers").quantile(base_q), minlen=minlen)
+        spell_of: get_spells(cross.filter(pl.col("spell_of") == spell_of), pl.col("pers") > pl.col("pers").quantile(q), minlen=minlen).with_columns(spell_of=pl.lit(spell_of))
         for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
     }
     return spells_list
@@ -1614,90 +1615,6 @@ def get_double_jet_index(props_as_df: DataFrame, jet_pos_da: xr.DataArray):
     )
     props_as_df = props_as_df.join(dji, on=index_columns, how="left")
     return props_as_df
-
-
-def iterate_over_year_maybe_member(
-    df: DataFrame | None = None,
-    da: xr.DataArray | xr.Dataset | None = None,
-    several_years: int = 1,
-    several_members: int = 1,
-):
-    """
-    Constructs iterators over time and member, for up to a polars DataFrame and a xarray DataArray that have the same indices.
-    """
-    if df is None and da is None:
-        return 0
-    if da is None and df is not None:
-        years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
-        try:
-            year_lists = np.array_split(years, len(years) // several_years)
-        except ValueError:
-            year_lists = [years]
-        indexer_polars = (
-            pl.col("time").dt.year().is_in(year_list) for year_list in year_lists
-        )
-        if "member" not in df.columns:
-            return zip(indexer_polars)
-        members = df["member"].unique(maintain_order=True).to_numpy()
-        member_lists = np.array_split(members, len(members) // several_members)
-        indexer_polars_2 = (
-            pl.col("member").is_in(member_list) for member_list in member_lists
-        )
-        indexer_polars = product(indexer_polars, indexer_polars_2)
-        return indexer_polars
-    elif da is not None and df is None:
-        years = np.unique(da["time"].dt.year.values)
-        try:
-            year_lists = np.array_split(years, len(years) // several_years)
-        except ValueError:
-            # ValueError when too few years. Then a one list should suffice
-            year_lists = [years]
-        indexer_xarray = (
-            {"time": np.isin(da["time"].dt.year.values, year_list)}
-            for year_list in year_lists
-        )
-        if "member" not in da.dims:
-            return indexer_xarray
-        members = np.unique(da["member"].values)
-        member_lists = np.array_split(members, len(members) // several_members)
-        indexer_xarray_2 = (
-            {"member": np.isin(da["member"].values, member_list)}
-            for member_list in member_lists
-        )
-        indexer_xarray = product(indexer_xarray, indexer_xarray_2)
-        indexer_xarray = (indexer[0] | indexer[1] for indexer in indexer_xarray)
-        return indexer_xarray
-    years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
-    year_lists = np.array_split(years, len(years) // several_years)
-    indexer_polars = (
-        pl.col("time").dt.year().is_in(year_list) for year_list in year_lists
-    )
-    indexer_xarray = (
-        {"time": np.isin(da["time"].dt.year.values, year_list)}
-        for year_list in year_lists
-    )
-    if "member" not in df.columns:
-        return zip(zip(indexer_polars), indexer_xarray)
-    """
-        weird inner zip: don't worry lol. I want to always be able call::
-        
-            for idx in indexer: df.filter(*idx)
-            
-        so I need to put it in zip by itself if it's not out of product, so it's always a tuple.
-    """
-    members = df["member"].unique(maintain_order=True).to_numpy()
-    member_lists = np.array_split(members, len(members) // several_members)
-    indexer_polars_2 = (
-        pl.col("member").is_in(member_list) for member_list in member_lists
-    )
-    indexer_polars = product(indexer_polars, indexer_polars_2)
-    indexer_xarray_2 = (
-        {"member": np.isin(da["member"].values, member_list)}
-        for member_list in member_lists
-    )
-    indexer_xarray = product(indexer_xarray, indexer_xarray_2)
-    indexer_xarray = (indexer[0] | indexer[1] for indexer in indexer_xarray)
-    return zip(indexer_polars, indexer_xarray)
 
 
 class JetFindingExperiment(object):

@@ -3,8 +3,9 @@ import warnings
 import numpy as np
 import xarray as xr
 import polars as pl
+from tqdm import tqdm
 from polars import DataFrame, Series, Expr
-from .definitions import RADIUS, get_index_columns, xarray_to_polars, to_expr
+from .definitions import YEARS, RADIUS, get_index_columns, xarray_to_polars, to_expr, iterate_over_year_maybe_member
 
 
 def haversine(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str) -> Expr:
@@ -641,3 +642,58 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
         jets.group_by(index_columns, maintain_order=True).agg(bigger_lon, bigger_lat)
     ).explode("lon", "lat")
     return jets
+
+
+def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 20.):
+    jets = jets.with_columns(pl.col("time").dt.round("1d"))
+    jets = jets.with_columns(jets.group_by("time", maintain_order=True).agg(pl.col("jet ID").rle_id())["jet ID"].explode())
+    indexer = iterate_over_year_maybe_member(jets, da)
+    to_average = []
+    varname = da.name + "_interp"
+    for idx1, idx2 in tqdm(indexer, total=len(YEARS)):
+        jets_ = jets.filter(*idx1)
+        da_ = da.sel(**idx2)
+        try:
+            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length)
+        except (KeyError, ValueError) as e:
+            print(e)
+            break
+        jets_with_interp = interp_jets_to_zero_one(jets_with_interp, [varname, "is_polar"], n_interp=30)
+        jets_with_interp = jets_with_interp.group_by("time", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n", maintain_order=True).agg(pl.col(varname).mean())
+        to_average.append(jets_with_interp)
+    pl.concat(to_average).write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
+    return
+
+
+def compute_relative_clim(df: pl.DataFrame, varname: str): 
+    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "is_polar").agg(pl.col(f"{varname}_interp").mean()).sort("is_polar", "dayofyear", "norm_index", "n")
+
+
+def compute_relative_std(df: pl.DataFrame, varname: str): 
+    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "is_polar").agg(pl.col(f"{varname}_interp").std()).sort("is_polar", "dayofyear", "norm_index", "n")
+
+
+def compute_relative_sm(clim: pl.DataFrame, varname: str, season_doy: pl.Series | None = None): 
+    return clim.with_columns(**{f"{varname}_interp": pl.col(f"{varname}_interp").filter(pl.col("dayofyear").is_in(season_doy.implode())).mean().over("is_polar", "n", "norm_index")})
+
+
+def compute_relative_anom(df: pl.DataFrame, varname: str, clim: pl.DataFrame, clim_std: pl.DataFrame | None = None): 
+    varname_ = f"{varname}_interp"
+    if clim_std is None:
+        return (
+            df
+            .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+            .join(clim, on=["is_polar", "dayofyear", "norm_index", "n"])
+            .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
+            .drop(f"{varname_}_right", "dayofyear")
+        )
+    return (
+        df
+        .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+        .join(clim, on=["is_polar", "dayofyear", "norm_index", "n"])
+        .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
+        .drop(f"{varname_}_right")
+        .join(clim_std, on=["is_polar", "dayofyear", "norm_index", "n"])
+        .with_columns(pl.col(varname_) / pl.col(f"{varname_}_right"))
+        .drop(f"{varname_}_right", "dayofyear")
+    )
