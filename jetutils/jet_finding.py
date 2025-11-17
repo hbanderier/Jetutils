@@ -104,6 +104,8 @@ def preprocess_ds(
     ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13
 ) -> xr.Dataset:
     ds = coarsen_da(ds, n_coarsen=n_coarsen)
+    if "s" not in ds:
+        ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
 
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
@@ -750,7 +752,7 @@ def one_gmix_v2(
         x = X.to_numpy() - mean[None, :]
         score = np.linalg.norm(np.einsum("jk,ik->ij", covar, x), axis=1)
         scores.append(score)
-    if X.columns[1] in ["theta", "theta300"]:
+    if X.columns[1][:5] == "theta":
         order = np.argsort(model.means_[:, 1])
     else:
         order = np.argsort(model.means_[:, 1])[::-1]
@@ -1527,7 +1529,7 @@ def pers_from_cross_catd(cross: DataFrame, season: Series | None = None) -> Data
     return cross
 
 
-def spells_from_cross_catd(
+def spells_from_cross_catd_simple(
     cross: DataFrame,
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
@@ -1536,7 +1538,25 @@ def spells_from_cross_catd(
 ) -> dict[str, DataFrame]:
     cross = pers_from_cross_catd(cross, season)
     cross = squarify(cross, ["time", "spell_of"])
-    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(0.6), group_by="spell_of", minlen=minlen)
+
+    spells_list: dict[str, DataFrame] = {
+        spell_of: get_spells(cross.filter(pl.col("spell_of") == spell_of), pl.col("pers") > pl.col("pers").quantile(base_q), minlen=minlen)
+        for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
+    }
+    return spells_list
+
+
+def spells_from_cross_catd(
+    cross: DataFrame,
+    base_q: float = 0.5,
+    q_STJ: float = 0.99,
+    q_EDJ: float = 0.95,
+    season: Series | None = None,
+    minlen: datetime.timedelta = datetime.timedelta(days=5)
+) -> dict[str, DataFrame]:
+    cross = pers_from_cross_catd(cross, season)
+    cross = squarify(cross, ["time", "spell_of"])
+    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(base_q), group_by="spell_of", minlen=minlen)
     stats: DataFrame = spells_base.group_by(["spell_of", "spell"], maintain_order=True).agg(pl.col("len").first(), pl.col("pers").sum())
 
     spells_list: dict[str, DataFrame] = {
@@ -1845,6 +1865,8 @@ class JetFindingExperiment(object):
         all_jets_one_df = self.find_jets()
         props_as_df = compute_jet_props(all_jets_one_df)
         width = []
+        if "s" not in self.ds:
+            self.ds["s"] = np.sqrt(self.ds["u"] ** 2 + self.ds["v"] ** 2)
         da = self.ds["s"]
         indexer = iterate_over_year_maybe_member(all_jets_one_df, da)
         for idx1, idx2 in tqdm(list(indexer)):

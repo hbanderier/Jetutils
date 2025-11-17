@@ -1,4 +1,5 @@
 # coding: utf-8
+from math import e
 import warnings
 from os.path import commonpath
 
@@ -151,21 +152,18 @@ def _open_many_da_wrapper(
     da = standardize(da)
     if varname is None:
         return da
-    elif len(da.data_vars) > 1 and isinstance(varname, tuple | str | list):
-        return da[varname]
-    for potential in [
-        varname,
-        varname.split("_")[0],
-        "dummy",
-        DEFAULT_VARNAME,
-        list(da.data_vars)[0],
-    ]:
-        try:
-            da = da[potential].rename(varname)
-            break
-        except KeyError:
-            pass
-    return da
+    # for potential in [
+    #     varname,
+    #     "dummy",
+    #     DEFAULT_VARNAME,
+    #     list(da.data_vars)[0],
+    # ]:
+    #     try:
+    #         da = da[potential].rename(varname)
+    #         break
+    #     except KeyError:
+    #         pass
+    return da[varname]
 
 
 def get_land_mask() -> xr.DataArray:
@@ -1825,7 +1823,7 @@ class DataHandler(object):
         da_path = path.joinpath("da.nc")
         if da_path.is_file():
             da = open_dataset(
-                da_path, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1}
+                da_path, chunks={"time": None, "lat": -1, "lon": -1, "lev": -1}
             )
             if len(da.data_vars) == 1:
                 da = da[list(da.data_vars)[0]]
