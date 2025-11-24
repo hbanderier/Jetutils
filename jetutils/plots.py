@@ -86,7 +86,7 @@ COLORS10 = [  # https://coolors.co/palette/f94144-f3722c-f8961e-f9844a-f9c74f-90
     "#90BE6D",  # Lettuce green
     "#43AA8B",  # Bright Parrot Green
     "#4D908E",  # Abyss Green
-    "#577590",  # Night Blue
+    "#577590",  # Dusty Blue
     "#277DA1",  # Night Blue
 ]
 
@@ -128,11 +128,13 @@ PINKPURPLE = LinearSegmentedColormap.from_list("pinkpurple", [COLORS[2], COLORS[
 BLUEWHITERED = LinearSegmentedColormap.from_list(
     "bluewhitered", [COLORS_EXT[11], COLORS[3], "#f2f2f2", COLORS[0], COLORS_EXT[2]]
 )
+# from franziska's case study paper
 WERNLI_FLAIR: LinearSegmentedColormap = LinearSegmentedColormap.from_list(
     "wernli_flair", 
-    ["#7D96CA", "#99B8DE", "#BBCEE7", "#DBE8F1", "#F3E1AB", "#F1C48B", "#EF8851", "#E8442E", "#F2A347", "#FBE96B", "#B0D175", "#88C267"]
+    ["#6F88F4", "#96ABEE", "#B4C5E8", "#D8C4C3", "#D29998", "#D95B3F", "#EA7F30", "#F0B73F", "#F4D448", "#FDF552", "#C4DB48", "#8BC63F", "#6F9531", "#3C8029"]
 )
-WERNLI_FLAIR_LEVELS: list[float] = [-1., 0., 0.2, 0.5, 0.8, 1., 1.5, 2., 4., 6., 8., 10., 20.]
+WERNLI_FLAIR.set_extremes(bad="#ffffff", under="#2962F6", over="#183610")
+WERNLI_FLAIR_LEVELS: list[float] = [-.5, 0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
 
 COASTLINE = feat.NaturalEarthFeature(
