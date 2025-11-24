@@ -152,6 +152,8 @@ def _open_many_da_wrapper(
     da = standardize(da)
     if varname is None:
         return da
+    if len(list(da.data_vars)) == 1:
+        return da[list(da.data_vars)[0]].rename(varname)
     # for potential in [
     #     varname,
     #     "dummy",
@@ -1337,7 +1339,7 @@ def compute_all_dailymeans(
     for source, dest in zip(sources, tqdm(dests)):
         if dest.is_file():
             continue
-        da = standardize(open_dataarray(source)).chunk("auto")
+        da = standardize(open_dataset(source)).chunk("auto")
         da = da.resample(time="1d").reduce(reduction_function)  
         da = compute(da, progress=True)  
         to_netcdf(da, dest)
