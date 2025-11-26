@@ -34,6 +34,7 @@ from .definitions import (
     map_maybe_parallel,
     to_expr,
     iterate_over_year_maybe_member,
+    degcos,
 )
 from .data import (
     compute_extreme_climatology,
@@ -47,6 +48,7 @@ from .data import (
 from .anyspell import get_spells
 from .geospatial import (
     haversine,
+    haversine_from_dl,
     jet_integral_haversine, 
     central_diff,
     diff_maybe_periodic,
@@ -101,6 +103,30 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     return (pl.col(col) * factor).round() / factor
 
 
+def compute_norm_derivative(ds: xr.Dataset, of: str = "s"):
+    lon, lat = ds["lon"].values, ds["lat"].values
+    xlon, ylat = np.meshgrid(lon, lat)
+
+    dlaty, dlatx = np.gradient(ylat)
+    dlony, dlonx = np.gradient(xlon)
+
+    dy = RADIUS * np.radians(dlaty)
+    dx = RADIUS * np.radians(dlaty) * degcos(ylat)
+    
+    axis_y = np.where(np.array(ds["s"].dims) == "lat")[0].item()
+    axis_x = np.where(np.array(ds["s"].dims) == "lon")[0].item()
+    
+    u = ds["u"]
+    v = ds["v"]
+    s = np.hypot(u, v)
+    da = ds[of]
+    
+    ddady = da.copy(data=np.gradient(da, axis=axis_y)) / dy[None, :, :]
+    ddadx = da.copy(data=np.gradient(da, axis=axis_x)) / dx[None, :, :]
+    
+    return (- u * ddady + v * ddadx) / s
+
+
 def preprocess_ds(
     ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13
 ) -> xr.Dataset:
@@ -108,30 +134,18 @@ def preprocess_ds(
     if "s" not in ds:
         ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
 
+    to_smooth = ["u", "v", "s", "theta"]
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
         smooth_map = {"lon": smooth_map, "lat": smooth_map}
-        ds = ds.rename({var: f"{var}_orig" for var in ["u", "v", "s"]})
-        for var in ["u", "v", "s"]:
+        ds = ds.rename({var: f"{var}_orig" for var in to_smooth})
+        for var in to_smooth:
             to_smooth = ds[f"{var}_orig"]
             ds[var] = to_smooth.copy(data=smooth(to_smooth, smooth_map=smooth_map))
-    ds = ds.assign_coords(
-        {
-            "x": np.radians(ds["lon"]) * RADIUS,
-            "y": RADIUS
-            * np.log(
-                (1 + np.sin(np.radians(ds["lat"])) / np.cos(np.radians(ds["lat"])))
-            ),
-        }
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        ds["sigma"] = (
-            -ds["u"] * ds["s"].differentiate("y") + ds["v"] * ds["s"].differentiate("x")
-        ) / ds["s"]
-    # fft_smoothing = 1.0 if ds["sigma"].min() < -0.0001 else 0.8
-    ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
-    return ds.reset_coords(["x", "y"], drop=True)
+    ds["sigma"] = compute_norm_derivative(ds, "s")
+    ds["sigma_theta"] = compute_norm_derivative(ds, "theta")
+    # ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
+    return ds
 
 
 def nearest_mapping(df1: DataFrame, df2: DataFrame, col: str):
@@ -249,9 +263,9 @@ def compute_alignment(
     )
     dlon = diff_maybe_periodic("lon", periodic)
     dlat = central_diff("lat")
-    ds = (dlon.pow(2) + dlat.pow(2)).sqrt()
-    align_x = pl.col("u") / pl.col("s") * dlon / ds
-    align_y = pl.col("v") / pl.col("s") * dlat / ds
+    ds = haversine_from_dl(pl.col("lat"), dlon, dlat)
+    align_x = pl.col("u") / pl.col("s") * RADIUS * pl.col("lat").radians().cos() * dlon.radians() / ds
+    align_y = pl.col("v") / pl.col("s") * RADIUS * dlat.radians() / ds
     alignment = align_x + align_y
     return all_contours.with_columns(
         alignment=alignment.over([*index_columns, "contour"])
@@ -344,6 +358,10 @@ def find_all_jets(
     newindex = (pl.col("index").cast(pl.Int32()) - diff_exp.arg_max()) % (
         pl.col("index").max() + 1
     )
+    int_expr = jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s"))
+    int_expr = int_expr.over([*index_columns, "jet ID"])
+    distance_ends_expr = haversine(pl.col("lon").first(), pl.col("lat").first(), pl.col("lon").last(), pl.col("lat").last())
+    distance_ends_expr = distance_ends_expr.over([*index_columns, "jet ID"])
 
     all_contours = (
         all_contours.with_columns(len=pl.len().over([*index_columns, "contour"]))
@@ -413,11 +431,11 @@ def find_all_jets(
         .unique([*index_columns, "jet ID", "index"])
         .sort([*index_columns, "jet ID", "index"])
         .with_columns(
-            int=jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s")).over(
-                [*index_columns, "jet ID"]
-            )
+            int=int_expr,
+            distance_ends=distance_ends_expr,
         )
-        .filter(condition_expr2)
+        .filter(condition_expr2, pl.col("distance_ends") > 1e6)
+        .drop("distance_ends")
         .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
         .with_columns(newindex.over([*index_columns, "jet ID"]))
         .unique([*index_columns, "jet ID", "index"])
