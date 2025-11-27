@@ -128,7 +128,7 @@ def compute_norm_derivative(ds: xr.Dataset, of: str = "s"):
 
 
 def preprocess_ds(
-    ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 13
+    ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 5
 ) -> xr.Dataset:
     ds = coarsen_da(ds, n_coarsen=n_coarsen)
     if "s" not in ds:
@@ -144,7 +144,8 @@ def preprocess_ds(
             ds[var] = to_smooth.copy(data=smooth(to_smooth, smooth_map=smooth_map))
     ds["sigma"] = compute_norm_derivative(ds, "s")
     ds["sigma_theta"] = compute_norm_derivative(ds, "theta")
-    # ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
+    ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
+    ds["sigma_theta"] = smooth(ds["sigma_theta"], smooth_map=smooth_map)
     return ds
 
 
@@ -948,7 +949,7 @@ def categorize_jets(
 
 def average_jet_categories_v2(props_as_df: DataFrame):
     """
-    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical or eddy driven, summarizing this property for all the jets in this snapshot that fit this category. This version does it as a weighted mean over all jets, with weights either ?`is_polar` or `1 - is_polar`.
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical or eddy driven, summarizing this property for all the jets in this snapshot that fit this category. This version does it as a weighted mean over all jets, with weights either ?`is_polar` or `1 - is_polar`. Honestly nonsensical, don't use except to prove that v1 is better.
 
     Parameters
     ----------
@@ -1261,12 +1262,7 @@ def track_jets_one_year(
     forward = (
         cross.explode("index", "index_right", "dist", *deltas2)
         .group_by(*typical_group_by, "index")
-        .agg(
-            *[
-                pl.col(col).get(distargmin)
-                for col in [*[f"d{d}" for d in deltas], "dist"]
-            ]
-        )
+        .agg(*[pl.col(col).get(distargmin) for col in [*deltas2, "dist"]])
         .group_by(typical_group_by)
         .agg(pl.col(col).mean().alias(f"{col}_forward") for col in [*deltas2, "dist"])
     )
@@ -1518,9 +1514,7 @@ def spells_from_cross(
     return spells_list
 
 
-def pers_from_cross_catd(cross: DataFrame, season: Series | None = None) -> DataFrame:
-    if season is not None:
-        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
+def pers_from_cross_catd(cross: DataFrame) -> DataFrame:
     cross = (
         cross
         .filter(pl.col("jet ID") == pl.col("jet ID_right"))
@@ -1555,7 +1549,11 @@ def spells_from_cross_catd_simple(
     season: Series | None = None,
     minlen: datetime.timedelta = datetime.timedelta(days=5)
 ) -> dict[str, DataFrame]:
-    cross = pers_from_cross_catd(cross, season)
+    cross = pers_from_cross_catd(cross)
+    
+    if season is not None:
+        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
+    
     cross = squarify(cross, ["time", "spell_of"])
 
     spells_list: dict[str, DataFrame] = {
@@ -1568,13 +1566,25 @@ def spells_from_cross_catd_simple(
 def spells_from_cross_catd(
     cross: DataFrame,
     base_q: float = 0.5,
-    q_STJ: float = 0.99,
-    q_EDJ: float = 0.95,
+    n_STJ: int = 30,
+    n_EDJ: int = 30,
     season: Series | None = None,
-    minlen: datetime.timedelta = datetime.timedelta(days=5)
+    minlen: datetime.timedelta = datetime.timedelta(days=5),
+    smooth: datetime.timedelta | None = None,
 ) -> dict[str, DataFrame]:
-    cross = pers_from_cross_catd(cross, season)
+    cross = pers_from_cross_catd(cross)
     cross = squarify(cross, ["time", "spell_of"])
+    
+    if smooth is not None:
+        cross = cross.rolling(
+            pl.col("time"),
+            period=smooth,
+            group_by=["spell_of"],
+        ).agg(*[pl.col(col).mean() for col in ["overlap_forward", "overlap_backward", "ds", "dtheta", "dis_polar", "dist", "pers"]])
+    
+    if season is not None:
+        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
+        
     spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(base_q), group_by="spell_of", minlen=minlen)
     stats: DataFrame = spells_base.group_by(["spell_of", "spell"], maintain_order=True).agg(pl.col("len").first(), pl.col("pers").sum())
 
@@ -1582,7 +1592,7 @@ def spells_from_cross_catd(
         spell_of: (
             stats
             .filter(pl.col("spell_of") == spell_of)
-            .filter(pl.col("pers") > pl.col("pers").quantile(q))
+            .top_k(n, by="pers")
             .rename({"pers": "pers_sum"})
             .join(
                 spells_base.filter(pl.col("spell_of") == spell_of).drop("len", "value"),
@@ -1590,7 +1600,7 @@ def spells_from_cross_catd(
             )
             .with_columns(spell=pl.col("spell").rle_id())
         )
-        for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
+        for spell_of, n in zip(["STJ", "EDJ"], [n_STJ, n_EDJ])
     }
     return spells_list
 
