@@ -54,6 +54,7 @@ from .geospatial import (
     diff_maybe_periodic,
     gather_normal_da_jets,
 )
+from .frechet import fdfd_matrix, earth_haversine_numba
 
 
 def has_periodic_x(df: DataFrame | xr.Dataset | xr.DataArray) -> bool:
@@ -1161,8 +1162,27 @@ def average_jet_categories(
     return props_as_df_cat
 
 
+def _frechet_of_row(row):
+    if any(r is None for r in row):
+        return 0
+    p = np.asarray(row[0])
+    q = np.asarray(row[1])
+    return fdfd_matrix(p, q, earth_haversine_numba) 
+
+
+def _lons_from_points(points: str | pl.Expr = "points") -> pl.Expr:
+    points = to_expr(points)
+    return points.list.eval(pl.element().arr.first())
+
+
+def _lon_overlap(points: str | pl.Expr = "points", points_right: str | pl.Expr = "points_right") -> pl.Expr:
+    overlap = _lons_from_points(points).list.set_intersection(_lons_from_points(points_right))
+    overlap = overlap.list.len() * (1 / _lons_from_points(points_right).list.len() + 1 / _lons_from_points(points_right).list.len()) / 2
+    return overlap
+
+
 def track_jets_one_year(
-    jets: DataFrame, year: int, member: str | None = None, n_next: int = 1
+    jets: DataFrame, year: int, member: str | None = None
 ) -> DataFrame:
     """
     Performs one year of explicit jet tracking
@@ -1175,18 +1195,16 @@ def track_jets_one_year(
         _description_
     member : str | None, optional
         _description_, by default None
-    n_next : int, optional
-        _description_, by default 1
 
     Returns
     -------
     cross: DataFrame
         cross-jet distance metrics from a jet and its best successor
     """
+    jets = jets.cast({"time": pl.Datetime("ms")})
     if "len_right" in jets.columns:
         jets = jets.drop("len_right")
-    deltas = ["u", "v", "s", "theta"]
-    distargmin = pl.col("dist").arg_min()
+    deltas = ["s", "theta"]
     if "is_polar" in jets.columns:
         deltas.append("is_polar")
     deltas2 = [f"d{col}" for col in deltas]
@@ -1197,7 +1215,7 @@ def track_jets_one_year(
             pl.col("time")
             .filter(pl.col("time").dt.year() == year + 1)
             .unique()
-            .bottom_k(n_next)
+            .bottom_k(1)
             .implode()
         )
     if "member" in jets.columns and member is not None:
@@ -1210,88 +1228,32 @@ def track_jets_one_year(
         len=pl.col("lon").len().over(["time", "jet ID"]),
         index=pl.int_range(0, pl.col("lon").len()).over(["time", "jet ID"]),
     )
-    jets_next = []
     dt = jets_current["time"].unique().bottom_k(2).sort()
     dt = dt[1] - dt[0]
-    for n_nex in range(1, n_next + 1):
-        jets_next.append(
-            jets_current.with_columns(time_shifted=pl.col("time") - n_nex * dt)
-        )
-    jets_next = pl.concat(jets_next)
+    jets_next = jets_current.with_columns(time_shifted=pl.col("time") - dt)
     jets_current = jets_current.filter(pl.col("time").dt.year() == year)
+    
+    aggs_first = {"points": pl.concat_arr("lon", "lat"), "s": weighted_mean_pl("s")} | {d: weighted_mean_pl(d, "s") for d in deltas[1:]}
+    
+    jets_current= jets_current.group_by("time", "jet ID").agg(**aggs_first)
+    jets_next = jets_next.group_by("time", "time_shifted", "jet ID").agg(**aggs_first)
+    cross = jets_current.join(jets_next, left_on="time", right_on="time_shifted", how="left")
+    overlap = _lon_overlap()
+    more_aggs = {
+        "dist": cross["points", "points_right"].map_rows(_frechet_of_row)["map"],
+        "lon_overlap": overlap,
+    } | {d2: (pl.col(d1) - pl.col(f"{d1}_right")).abs() for d1, d2 in zip(deltas, deltas2)}
     cross = (
-        jets_current.join(
-            jets_next, left_on="time", right_on="time_shifted", how="left"
-        )
-        .with_columns(
-            **{
-                f"d{col}": (pl.col(col) - pl.col(f"{col}_right")).abs()
-                for col in deltas
-            },
-            dist=haversine(
-                pl.col("lon"), pl.col("lat"), pl.col("lon_right"), pl.col("lat_right")
-            ),
-        )
-        .with_columns(overlap=pl.col("dist") < 5e5)
-    )
-    cross = (
-        cross.group_by(typical_group_by)
-        .agg(
-            pl.col("len").first(),
-            pl.col("len_right").first(),
-            pl.col("index").filter("overlap"),
-            pl.col("index_right").filter("overlap"),
-            pl.col("dist").filter("overlap"),
-            overlap_forward=pl.col("index").filter("overlap").n_unique()
-            / pl.col("len").first(),
-            overlap_backward=pl.col("index_right").filter("overlap").n_unique()
-            / pl.col("len_right").first(),
-            **{
-                f"d{col}": (pl.col(col) - pl.col(f"{col}_right"))
-                .abs()
-                .filter("overlap")
-                for col in deltas
-            },
-        )
-        .with_columns(
-            overlap_min=pl.min_horizontal("overlap_forward", "overlap_backward"),
-            overlap_max=pl.max_horizontal("overlap_forward", "overlap_backward"),
-        )
-    )
-
-    forward = (
-        cross.explode("index", "index_right", "dist", *deltas2)
-        .group_by(*typical_group_by, "index")
-        .agg(*[pl.col(col).get(distargmin) for col in [*deltas2, "dist"]])
-        .group_by(typical_group_by)
-        .agg(pl.col(col).mean().alias(f"{col}_forward") for col in [*deltas2, "dist"])
-    )
-    backward = (
-        cross.explode("index", "index_right", "dist", *deltas2)
-        .group_by(*typical_group_by, "index_right")
-        .agg(*[pl.col(col).get(distargmin) for col in [*deltas2, "dist"]])
-        .group_by(typical_group_by)
-        .agg(pl.col(col).mean().alias(f"{col}_backward") for col in [*deltas2, "dist"])
-    )
-    cross = (
-        cross.drop("index", "index_right", "dist", *deltas2)
-        .join(forward, on=typical_group_by)
-        .join(backward, on=typical_group_by)
-        .drop_nulls(["du_forward"])
+        cross
+        .with_columns(**more_aggs)
+        .drop(*[f"{name}{suffix}" for name in ["points"] for suffix in ["", "_right"]])
+        .drop_nulls("lon_overlap")
         .sort(*typical_group_by)
-        .with_columns(
-            pl.mean_horizontal(f"{col}_backward", f"{col}_forward").alias(col)
-            for col in [*deltas2, "dist"]
-        )
-        .drop(
-            *[f"{col}_backward" for col in [*deltas2, "dist"]],
-            *[f"{col}_forward" for col in [*deltas2, "dist"]],
-        )
     )
     return cross
 
 
-def track_jets(all_jets_one_df: DataFrame, n_next: int = 1) -> DataFrame:
+def track_jets(all_jets_one_df: DataFrame) -> DataFrame:
     """
     Iterates over years and maybe members and performs explicit jet tracking.
 
@@ -1299,8 +1261,6 @@ def track_jets(all_jets_one_df: DataFrame, n_next: int = 1) -> DataFrame:
     ----------
     all_jets_one_df : DataFrame
         Data source
-    n_next : int, optional
-        How many timesteps forward to look for best explicit jet successor, by default 1
 
     Returns
     -------
@@ -1325,7 +1285,6 @@ def track_jets(all_jets_one_df: DataFrame, n_next: int = 1) -> DataFrame:
                 all_jets_one_df,
                 year,
                 member,
-                n_next=n_next,
             )
         )
     cross = pl.concat(cross)
@@ -1336,16 +1295,15 @@ def connected_from_cross(
     all_jets_one_df: DataFrame,
     cross: DataFrame | None = None,
     dist_thresh: float = 2e5,
-    overlap_min_thresh: float = 0.5,
-    overlap_max_thresh: float = 0.6,
+    overlap_thresh: float = 0.5,
     dis_polar_thresh: float | None = 1.0,
 ) -> DataFrame:
+    all_jets_one_df = all_jets_one_df.cast({"time": pl.Datetime("ms")})
     if cross is None:
         cross = track_jets(all_jets_one_df)
     cross = cross.filter(
         pl.col("dist") < dist_thresh,
-        pl.col("overlap_min") > overlap_min_thresh,
-        pl.col("overlap_max") > overlap_max_thresh,
+        pl.col("lon_overlap") > overlap_thresh,
         pl.col("dis_polar") < dis_polar_thresh,
     )
     gb = ["time", "jet ID"]
@@ -1359,7 +1317,7 @@ def connected_from_cross(
         mem_k = ["member_k"]
     summary = (
         all_jets_one_df.group_by("time", "jet ID", maintain_order=True)
-        .agg(pl.col("is_polar").mean())
+        .agg()
         .with_row_index()
     )
     cross = (
@@ -1395,7 +1353,7 @@ def connected_from_cross(
         .drop(*mem_k)
         .rename({"index": "b"})
     )
-    deltas = ["u", "v", "s", "theta"]
+    deltas = ["s", "theta"]
     if "is_polar" in all_jets_one_df.columns:
         deltas.append("is_polar")
 
@@ -1404,8 +1362,7 @@ def connected_from_cross(
             "a",
             "b",
             "dist",
-            "overlap_min",
-            "overlap_max",
+            "lon_overlap",
             *[f"d{col}" for col in deltas],
         ]
     ].to_dicts()
@@ -1431,7 +1388,7 @@ def connected_from_cross(
     summary_comp = (
         index_df.join(summary, on="index")
         .join(
-            cross.drop("time_right", "jet ID_right", "len", "len_right"),
+            cross.drop("time_right", "jet ID_right"),
             how="left",
             on=["time", "jet ID"],
         )
@@ -1442,15 +1399,14 @@ def connected_from_cross(
 
 
 def persistence_expr() -> Expr:
-    return pl.col("overlap_min") / pl.col("dist").replace(0, RADIUS * 0.1) * pl.col("time").diff().mode().first().cast(pl.Duration("ms")).cast(pl.Float64()) / 1000
+    return pl.col("lon_overlap") / pl.col("dist").replace(0, RADIUS * 0.1) * pl.col("time").diff().mode().first().cast(pl.Duration("ms")).cast(pl.Float64()) / 1000
 
 
 def spells_from_cross(
     all_jets_one_df: DataFrame,
     cross: DataFrame,
     dist_thresh: float = 2e5,
-    overlap_min_thresh: float = 0.5,
-    overlap_max_thresh: float = 0.6,
+    overlap_thresh: float = 0.5,
     dis_polar_thresh: float | None = 1.0,
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
@@ -1462,15 +1418,14 @@ def spells_from_cross(
         all_jets_one_df,
         cross,
         dist_thresh=dist_thresh,
-        overlap_min_thresh=overlap_min_thresh,
-        overlap_max_thresh=overlap_max_thresh,
+        overlap_thresh=overlap_thresh,
         dis_polar_thresh=dis_polar_thresh,
     )
     if season is not None:
         summary_comp = summary_comp.filter(
-            (pl.col("time").is_in(season.implode()).mean() > 0.8).over("spell")
+            pl.col("time").is_in(pl.lit(season.implode().first(), pl.List(pl.Datetime('ms')))).over("spell")
         )
-    summer_spells = (
+    spells = (
         summary_comp.filter(pl.col("len") > 2)
         .with_columns(pers=persistence_expr())
         .group_by("spell", maintain_order=True)
@@ -1478,8 +1433,7 @@ def spells_from_cross(
             pl.col("time"),
             pl.col("jet ID"),
             pl.col("len").first(),
-            pl.col("overlap_min"),
-            pl.col("overlap_max"),
+            pl.col("lon_overlap"),
             pl.col("pers"),
             pl.col("dis_polar"),
             pl.col("is_polar"),
@@ -1490,9 +1444,9 @@ def spells_from_cross(
 
     spells_list = {}
     spells_list["STJ"] = (
-        summer_spells.filter(pl.col("mean_is_polar") < subtropical_cutoff)
+        spells.filter(pl.col("mean_is_polar") < subtropical_cutoff)
         .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_STJ))
-        .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
+        .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
         .with_columns(
             spell_of=pl.lit("STJ"),
             spell2=pl.col("spell").rle_id(),
@@ -1501,9 +1455,9 @@ def spells_from_cross(
         .drop("is_polar")
     )
     spells_list["EDJ"] = (
-        summer_spells.filter(pl.col("mean_is_polar") > polar_cutoff)
+        spells.filter(pl.col("mean_is_polar") > polar_cutoff)
         .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_EDJ))
-        .explode("time", "jet ID", "pers", "is_polar", "overlap_min", "overlap_max", "dis_polar")
+        .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
         .with_columns(
             spell_of=pl.lit("EDJ"),
             spell2=pl.col("spell").rle_id(),
@@ -1525,20 +1479,20 @@ def pers_from_cross_catd(cross: DataFrame) -> DataFrame:
             pers=persistence_expr()
         )
     )
-    cross = (
-        cross
-        .with_columns(
-            dt=((pl.col("time_right") - pl.col("time")) / (pl.col("time_right") - pl.col("time")).min()).cast(pl.Int32())
-        )
-        .with_columns(pers2=pl.col("pers") / pl.col("dt"))
-        .group_by("time", "jet ID", maintain_order=True)
-        .agg(
-            pl.col("time_right").get(pl.col("pers").arg_max()),
-            pl.col("jet ID_right").get(pl.col("pers").arg_max()),
-            pl.col("dt").get(pl.col("pers").arg_max())
-        )
-        .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
-    )
+    # cross = (
+    #     cross
+    #     .with_columns(
+    #         dt=((pl.col("time_right") - pl.col("time")) / (pl.col("time_right") - pl.col("time")).min()).cast(pl.Int32())
+    #     )
+    #     .with_columns(pers2=pl.col("pers") / pl.col("dt"))
+    #     .group_by("time", "jet ID", maintain_order=True)
+    #     .agg(
+    #         pl.col("time_right").get(pl.col("pers").arg_max()),
+    #         pl.col("jet ID_right").get(pl.col("pers").arg_max()),
+    #         pl.col("dt").get(pl.col("pers").arg_max())
+    #     )
+    #     .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
+    # )
     return cross
 
 
@@ -1571,21 +1525,23 @@ def spells_from_cross_catd(
     season: Series | None = None,
     minlen: datetime.timedelta = datetime.timedelta(days=5),
     smooth: datetime.timedelta | None = None,
+    fill_holes: datetime.timedelta | int = 0,
 ) -> dict[str, DataFrame]:
     cross = pers_from_cross_catd(cross)
     cross = squarify(cross, ["time", "spell_of"])
+    cross = cross.with_columns(**{"jet ID": (pl.col("spell_of") == "EDJ").cast(pl.UInt32())})
     
     if smooth is not None:
         cross = cross.rolling(
             pl.col("time"),
             period=smooth,
-            group_by=["spell_of"],
-        ).agg(*[pl.col(col).mean() for col in ["overlap_forward", "overlap_backward", "ds", "dtheta", "dis_polar", "dist", "pers"]])
+            group_by=["jet ID", "spell_of"],
+        ).agg(*[pl.col(col).mean() for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "pers"]])
     
     if season is not None:
         cross = season.rename("time").to_frame().join(cross, on="time", how="left")
         
-    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(base_q), group_by="spell_of", minlen=minlen)
+    spells_base = get_spells(cross, pl.col("pers") > pl.col("pers").quantile(base_q), group_by=["spell_of"], minlen=minlen, fill_holes=fill_holes)
     stats: DataFrame = spells_base.group_by(["spell_of", "spell"], maintain_order=True).agg(pl.col("len").first(), pl.col("pers").sum())
 
     spells_list: dict[str, DataFrame] = {
