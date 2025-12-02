@@ -1501,17 +1501,31 @@ def spells_from_cross_catd_simple(
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
     season: Series | None = None,
-    minlen: datetime.timedelta = datetime.timedelta(days=5)
+    minlen: datetime.timedelta = datetime.timedelta(days=5),
+    smooth: datetime.timedelta | None = None,
+    fill_holes: datetime.timedelta | int = 0
 ) -> dict[str, DataFrame]:
     cross = pers_from_cross_catd(cross)
+    cross = squarify(cross, ["time", "spell_of"])
+    cross = cross.with_columns(**{"jet ID": (pl.col("spell_of") == "EDJ").cast(pl.UInt32())})
+    
+    if smooth is not None:
+        cross = cross.rolling(
+            pl.col("time"),
+            period=smooth,
+            group_by=["jet ID", "spell_of"],
+        ).agg(*[pl.col(col).mean() for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "pers"]])
     
     if season is not None:
         cross = season.rename("time").to_frame().join(cross, on="time", how="left")
-    
-    cross = squarify(cross, ["time", "spell_of"])
 
     spells_list: dict[str, DataFrame] = {
-        spell_of: get_spells(cross.filter(pl.col("spell_of") == spell_of), pl.col("pers") > pl.col("pers").quantile(q), minlen=minlen).with_columns(spell_of=pl.lit(spell_of))
+        spell_of: get_spells(
+            cross.filter(pl.col("spell_of") == spell_of), 
+            pl.col("pers") > pl.col("pers").quantile(q), 
+            minlen=minlen,
+            fill_holes=fill_holes,
+        ).with_columns(spell_of=pl.lit(spell_of))
         for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
     }
     return spells_list
