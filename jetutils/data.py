@@ -1,9 +1,8 @@
 # coding: utf-8
-from math import e
 import warnings
 from os.path import commonpath
 
-from typing import Optional, Mapping, Tuple, Literal, Callable
+from typing import Optional, Literal, Callable
 from itertools import product
 from pathlib import Path
 
@@ -215,7 +214,7 @@ def determine_file_structure(path: Path) -> str:
     raise RuntimeError
 
 
-def determine_sample_dims(da: xr.DataArray) -> Mapping:
+def determine_sample_dims(da: xr.DataArray) -> dict:
     """
     Returns which dimensions, among "member", "time" or "megatime", are present in `da`, along with the coordinates as indices.
 
@@ -226,14 +225,14 @@ def determine_sample_dims(da: xr.DataArray) -> Mapping:
 
     Returns
     -------
-    Mapping
+    dict
         Dictionary whose keys are dimension names and values are the corresponding indices.
     """ 
     included = ["member", "time", "megatime"]
     return {key: da[key].to_index() for key in da.dims if key in included}
 
 
-def determine_feature_dims(da: xr.DataArray) -> Mapping:
+def determine_feature_dims(da: xr.DataArray) -> dict:
     """
     Returns all dimensions, except for "member", "time", "cluster" or "megatime", are present in `da`, along with the coordinates as indices.
 
@@ -244,7 +243,7 @@ def determine_feature_dims(da: xr.DataArray) -> Mapping:
 
     Returns
     -------
-    Mapping
+    dict
         Dictionary whose keys are dimension names and values are the corresponding indices.
     """    
     excluded = ["member", "time", "cluster", "megatime"]
@@ -253,18 +252,14 @@ def determine_feature_dims(da: xr.DataArray) -> Mapping:
 
 def data_path(
     dataset: str,
-    level_type: Literal["plev"]
-    | Literal["thetalev"]
-    | Literal["surf"]
-    | Literal["2PVU"]
-    | None = None,
+    level_type: str | None = None,
     varname: str | None = None,
     resolution: str | None = None,
     clim_type: str | None = None,
-    clim_smoothing: Mapping | None = None,
-    smoothing: Mapping | None = None,
+    clim_smoothing: dict | None = None,
+    smoothing: dict | None = None,
     for_compute_anomaly: bool = False,
-) -> Path | Tuple[Path, Path, Path]:
+) -> Path | tuple[Path, Path, Path]:
     """
     Constructs a path from various, mostly optional, path elements. Note that the name of the path elements refer to the data structure used by the author, but only their order matter, since this function essentially does::
     
@@ -282,16 +277,16 @@ def data_path(
         Time resolution, typically "6H" or "dailymean", by default None
     clim_type : str | None, optional
         Type of climatology, like "dayofyear", by default None
-    clim_smoothing : Mapping | None, optional
+    clim_smoothing : dict | None, optional
         Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
-    smoothing : Mapping | None, optional
+    smoothing : dict | None, optional
         Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
     for_compute_anomaly : bool, optional
         Is this function called by `compute_anomaly` or not, by default False
 
     Returns
     -------
-    Path | Tuple[Path, Path, Path]
+    Path | tuple[Path, Path, Path]
         path to the folder containing the data fitting the description
 
     Raises
@@ -548,7 +543,7 @@ def extract_region(
     return da
 
 
-def unpack_levels(levels: int | str | tuple | list) -> Tuple[list, list]:
+def unpack_levels(levels: int | str | tuple | list) -> tuple[list, list]:
     """
     Unpacks a level specifications that can be an int, a str, a tuple, specifying a range to average, a list, or a list of tuples specifying several ranges to average separately. 
     Outputs a modified and sorted `levels` and another list `level_names` that names the levels created by averaging.
@@ -746,9 +741,9 @@ def open_da(
     maxlat: Optional[int | float] = None,
     levels: int | str | list | tuple | Literal["all"] = "all",
     clim_type: str | None = None,
-    clim_smoothing: Mapping | None = None,
-    smoothing: Mapping | None = None,
-) -> xr.DataArray:
+    clim_smoothing: dict | None = None,
+    smoothing: dict | None = None,
+) -> xr.DataArray | xr.Dataset:
     """
     Applies `data_path()`, `_open_many_da_wrapper()`, and `extract()` one after the other.
 
@@ -781,9 +776,9 @@ def open_da(
             f"{level[0]}-{len(level)}-{level[-1]}"
     clim_type : str | None, optional
         Type of climatology, like "dayofyear", by default None
-    clim_smoothing : Mapping | None, optional
+    clim_smoothing : dict | None, optional
         Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
-    smoothing : Mapping | None, optional
+    smoothing : dict | None, optional
         Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
 
     Returns
@@ -791,11 +786,11 @@ def open_da(
     da: xr.DataArray or xr.Dataset
         The Xarray object fitting all the specifications. A DataArray if possible (one data variable), a Dataset otherwise.
     """    
-    if isinstance(varname, Tuple):
+    if isinstance(varname, tuple):
         varname_in_path, varname_in_file = varname
     else:
         varname_in_path, varname_in_file = varname, varname
-    path = data_path(
+    path: Path = data_path(
         dataset,
         level_type,
         varname_in_path,
@@ -804,7 +799,7 @@ def open_da(
         clim_smoothing,
         smoothing,
         False,
-    )
+    ) # pyrefly: ignore
     file_structure = determine_file_structure(path)
 
     if isinstance(period, tuple):
@@ -841,6 +836,8 @@ def open_da(
                         np.isin(sample_tr.dayofyear, np.arange(season[0], season[1]))
                     ].month
                 )
+            else:
+                monthlist = [6]
             files_to_load = [
                 path.joinpath(f"{year}{str(month).zfill(2)}.nc")
                 for month in monthlist
@@ -863,13 +860,13 @@ def open_da(
     return da
 
 
-def unpack_smooth_map(smooth_map: Mapping) -> str:
+def unpack_smooth_map(smooth_map: dict) -> str:
     """
     Creates a unique string out of a smoothing map, useful for path creation
 
     Parameters
     ----------
-    smooth_map : Mapping
+    smooth_map : dict
         Dictionnary whose keys are dimensions and whose values are 2-tuples. The first element of the tuple if the type of smoothing ("win" or "fft") and the second is the strength of the smoothing, the window size for window smoothing and the number of frequencies to zero out for fft. Special case is detrending in time, specified with the **key** `"detrended"` and any value that will be ignored.
 
     Returns
@@ -918,9 +915,9 @@ def pad_wrap(da: xr.DataArray | xr.Dataset, dim: str) -> bool:
     bool
         Whether or not to wrap-pad
     """   
-    resolution = da[dim][1] - da[dim][0]
+    resolution = (da[dim][1] - da[dim][0]).item()
     if dim in ["lon", "longitude"]:
-        return 360 >= da[dim][-1] >= 360 - resolution and da[dim][0] == 0.0
+        return (360 >= da[dim][-1].item() >= 360 - resolution) and (da[dim][0].item() == 0.0)
     return dim in ["dayofyear", "hourofyear", "month", "week"]
 
 
@@ -955,7 +952,7 @@ def _window_smoothing(
         dim = "time"
     for group in groups.groups.values():
         to_concat.append(
-            da.isel(**{dim: group})
+            da.isel(**{dim: group}) # pyrefly: ignore
             .rolling({dim: winsize // 4}, center=center, min_periods=1)
             .mean()
         )
@@ -1046,7 +1043,7 @@ def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.D
 
 def smooth(
     da: xr.DataArray | xr.Dataset,
-    smooth_map: Mapping | None,
+    smooth_map: dict | None,
 ) -> xr.DataArray | xr.Dataset:
     """
     Unpacks the smooth_map and calls the appropriate functions along each dimension specified.
@@ -1055,7 +1052,7 @@ def smooth(
     ----------
     da : xr.DataArray or xr.Dataset
         Xarray object to smooth. Must contain the dimensions specified in `smooth_map`. Must contain the `"time"` dimension if `"detrended"` is a key of `smooth_map`. If a xr.Dataset, all variables are smoothed identically.
-    smooth_map : Mapping | None
+    smooth_map : dict | None
         Dictionnary whose keys are dimensions and whose values are 2-tuples. The first element of the tuple if the type of smoothing ("win" or "fft") and the second is the strength of the smoothing, the window size for window smoothing and the number of frequencies to zero out for fft. Special case is detrending in time, specified with the **key** `"detrended"` and any value that will be ignored.
 
     Returns
@@ -1080,8 +1077,6 @@ def smooth(
             da = fft_smoothing(da, dim, winsize)
         elif smooth_type.lower() in ["win", "window", "window_smoothing"]:
             da = window_smoothing(da, dim, winsize)
-        elif smooth_type.lower() in ["trunc", "spherical", "truncation", "windspharm"]:
-            da = spharm_smoothing(da, winsize)
     return da
 
 
@@ -1223,8 +1218,8 @@ def compute_all_smoothed_anomalies(
     varname: str | None = None,
     resolution: str | None = None,
     clim_type: str | None = None,
-    clim_smoothing: Mapping = None,
-    smoothing: Mapping = None,
+    clim_smoothing: dict = None,
+    smoothing: dict = None,
 ) -> None:
     """
     Computes a (potentially smoothed) climatology and (potentially smoothed) anomalies for the absolute data specified by the first four arguments.
@@ -1241,9 +1236,9 @@ def compute_all_smoothed_anomalies(
         Time resolution, typically "6H" or "dailymean", by default None
     clim_type : str | None, optional
         Type of climatology, like "dayofyear", by default None
-    clim_smoothing : Mapping | None, optional
+    clim_smoothing : dict | None, optional
         Time-smoothing of the climatology as a 1-key mapping whose key if the `clim_type` and the value is a tuple (smoothing_type, window_size), see `smooth()`, by default None
-    smoothing : Mapping | None, optional
+    smoothing : dict | None, optional
         Smoothing of the anomalies as a mapping whose keys are dimension names and values are tuples (smoothing_type, window_size), see `smooth()`, by default None
 
     """
@@ -1315,15 +1310,12 @@ def compute_all_smoothed_anomalies(
         
 def compute_all_dailymeans(
     dataset: str,
-    level_type: Literal["plev"]
-    | Literal["thetalev"]
-    | Literal["surf"]
-    | Literal["2PVU"]
-    | None = None,
+    level_type: str | None = None,
     varname: str | None = None,
     reduction_function: Callable = np.mean
 ):
-    path = Path(DATADIR, dataset, level_type, varname)
+    args = [arg for arg in [DATADIR, dataset, level_type, varname] if arg is not None]
+    path = Path(*args)
     path_from = path.joinpath("6H")
     path_to = path.joinpath(f"daily{reduction_function.__name__}")
     path_to.mkdir(exist_ok=True)
@@ -1458,7 +1450,7 @@ def periodic_rolling_pl(
 
 def compute_anomalies_pl(
     df: pl.DataFrame,
-    other_index_columns: Tuple = ("jet",),
+    other_index_columns: tuple = ("jet",),
     smooth_clim: int = 0,
     standardize: bool = False,
     # mode: Literal["dayofyear"] | Literal["season"] = "dayofyear",
@@ -1470,7 +1462,7 @@ def compute_anomalies_pl(
     ----------
     df : pl.DataFrame
         _description_
-    other_index_columns : Tuple, optional
+    other_index_columns : tuple, optional
         Columns to group by, by default ("jet",)
     smooth_clim : int, optional
         Window size for rolling window smoothing, by default 0
@@ -1522,7 +1514,7 @@ def _fix_dict_lists(dic: dict) -> dict:
     return dic
 
 
-def find_spot(basepath: Path, metadata: Mapping) -> Path:
+def find_spot(basepath: Path, metadata: dict) -> Path:
     """
     Finds a subfolder of `basepath` with a `metadata.pkl` file identical to `metadata`. If none are found, create a new subfolder and write `metadata` in it.
 
@@ -1530,7 +1522,7 @@ def find_spot(basepath: Path, metadata: Mapping) -> Path:
     ----------
     basepath : Path
         Base folder in which to look for subfolders
-    metadata : Mapping
+    metadata : dict
         metadata of a `DataHandler`
 
     Returns
@@ -1726,19 +1718,19 @@ class DataHandler(object):
     def load_da(self, progress: bool = False, **kwargs):
         self.da = compute(self.da, progress_flag=progress, **kwargs)
 
-    def get_metadata(self) -> Mapping:
+    def get_metadata(self) -> dict[str, str | int | list]:
         return self.metadata
 
-    def get_sample_dims(self) -> Mapping:
+    def get_sample_dims(self) -> dict:
         return self.sample_dims
 
-    def get_feature_dims(self) -> Mapping:
+    def get_feature_dims(self) -> dict:
         return self.feature_dims
 
-    def get_extra_dims(self) -> Mapping:
+    def get_extra_dims(self) -> dict:
         return self.extra_dims
 
-    def get_flat_shape(self) -> Mapping:
+    def get_flat_shape(self) -> dict:
         return self.flat_shape
 
     @classmethod
@@ -1760,18 +1752,18 @@ class DataHandler(object):
         maxlat: Optional[int | float] = None,
         levels: int | str | tuple | list | Literal["all"] = "all",
         clim_type: str = None,
-        clim_smoothing: Mapping = None,
-        smoothing: Mapping = None,
+        clim_smoothing: dict = None,
+        smoothing: dict = None,
         reduce_da: bool = True,
     ) -> "DataHandler":
         """
         Creates a new DataHandler by opening and subsetting an Xarray object using `open_da()`. Only works if the file structure within the global `DATADIR` is compatible. Otherwise, use `from_basepath_and_da()`.
         """
-        if isinstance(varname, Tuple):
+        if isinstance(varname, tuple):
             varname_in_path, varname_in_file = varname
         else:
             varname_in_path, varname_in_file = varname, varname
-        path = data_path(
+        path: Path = data_path(
             dataset,
             level_type,
             varname_in_path,
@@ -1780,7 +1772,7 @@ class DataHandler(object):
             clim_smoothing,
             smoothing,
             False,
-        ).joinpath("results")
+        ).joinpath("results") # pyrefly: ignore
         path.mkdir(exist_ok=True)
         if level_type == "surf":
             levels = None
@@ -1844,7 +1836,7 @@ class DataHandler(object):
     @classmethod
     def from_several_dhs(
         cls,
-        data_handlers: Mapping[str, "DataHandler"],
+        data_handlers: dict[str, "DataHandler"],
         flatten_ds: bool = True,
     ):
         """
@@ -1865,7 +1857,7 @@ class DataHandler(object):
             mda.pop("varname")
         assert all([mda == all_mdas[0] for mda in all_mdas])
 
-        metadata = {
+        metadata: dict[str, str | int | list[str]] = {
             "varname": varnames,
         } | all_mdas[0]
 
@@ -1879,7 +1871,7 @@ class DataHandler(object):
             ds = open_dataset(
                 dspath, chunks={"time": 100, "lat": -1, "lon": -1, "lev": -1}
             )
-            return cls(ds, path.parent)
+            return cls(path.parent, ds)
 
         ds = {}
         for varname, dh in data_handlers.items():
@@ -1942,7 +1934,7 @@ class DataHandler(object):
         da_path = path.joinpath("da.zarr")
         if da_path.exists():
             da = open_dataarray(da_path, engin="zarr")
-            return cls(da, path.parent)
+            return cls(path.parent, da)
 
         catalog = intake.open_esm_datastore(url)
         catalog_subset = catalog.search(

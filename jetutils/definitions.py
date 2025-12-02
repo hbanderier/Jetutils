@@ -263,7 +263,7 @@ if "DATADIR" not in globals():
     R_SPECIFIC_AIR = 287.0500676
 
 
-def degcos(x: float) -> float:
+def degcos(x: float | np.ndarray) -> float:
     """
     Cosine of an angle expressed in degrees
 

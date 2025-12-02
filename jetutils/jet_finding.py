@@ -82,7 +82,7 @@ def coarsen_pl(df: DataFrame, coarsen_map: dict[str, float]) -> DataFrame:
     """
     Coarsening for polars DataFrame
     """
-    index_columns = get_index_columns(df)
+    index_columns: list[str] = get_index_columns(df)
     other_columns = [
         col for col in df.columns if col not in [*index_columns, *list(coarsen_map)]
     ]

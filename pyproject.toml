@@ -29,3 +29,16 @@ dependencies = [
 "Homepage" = "https://github.com/hbanderi/jestex"
 "Bug Tracker" = "https://github.com/hbanderi/jestex/issues"
 
+[tool.pyrefly]
+
+project-includes = ["jetutils", "../simpsom-dask/simpsom_dask"]
+site-package-path = ["../local_code/.venv/lib/python3.13/site-packages", "../persistent-extremes-era5/.venv/lib/python3.13/site-packages"]
+python-version = "3.13"
+
+[tool.pyrefly.error]
+
+bad-assignment = false
+invalid-argument = false
+no-matching-overload = false
+bad-argument-type = false
+bad-return = false
