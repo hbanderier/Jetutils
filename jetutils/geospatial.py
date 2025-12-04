@@ -121,7 +121,7 @@ def central_diff(by: str | pl.Expr) -> pl.Expr:
         Result
     """
     by = to_expr(by)
-    diff_2 = by.diff(2, null_behavior="ignore").slice(2)
+    diff_2 = by.diff(2, null_behavior="ignore").slice(2) / 2
     diff_1 = by.diff(1, null_behavior="ignore")
     return diff_1.gather(1).append(diff_2).append(diff_1.gather(-1))
 
