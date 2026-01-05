@@ -10,6 +10,7 @@ import os
 import pickle as pkl
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, Optional, Sequence, Iterable
+from itertools import product
 from multiprocessing import Pool
 from itertools import groupby
 from dataclasses import dataclass, field

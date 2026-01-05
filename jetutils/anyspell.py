@@ -423,6 +423,7 @@ def get_spells(
         group_by = [group_by]
     if group_by is None:
         group_by = []
+    df = df.cast({"time": pl.Datetime("ms")})
     if daily:
         df = make_daily(df, group_by)
     times = df["time"].unique()
