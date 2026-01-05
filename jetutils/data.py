@@ -410,6 +410,11 @@ def standardize(da):
         da = da.sortby("lon")
     if np.diff(da.lat.values)[0] < 0:
         da = da.reindex(lat=da.lat[::-1])
+    first_lat = np.amin(da.lat).item()
+    if len(str(first_lat).split('.')[1]) > 2: # if too many decimal points like cesm output, clean up lat. crass.
+        first_lat = np.round(first_lat, 2)
+        dlat = np.round(np.mean(np.diff(da.lat)), 2).item()
+        da = da.assign_coords(lat=first_lat + np.arange(len(da.lat), dtype=np.float32) * dlat)
     if isinstance(da, xr.Dataset):
         for var in da.data_vars:
             if "chunksizes" in da[var].encoding and da[var].chunks is None:
@@ -1419,7 +1424,7 @@ def periodic_rolling_pl(
     """
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
-    other_columns = get_index_columns(df, ("member", "jet"))
+    other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy"))
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df[col].unique().len() for col in other_columns]
     len_ = int(np.prod(len_))
