@@ -931,10 +931,10 @@ def do_rle(
         .unnest("rle")
         .group_by(group_by, maintain_order=True)
         .agg(
-            len=pl.col("len"),
-            start=pl.lit(0).append(
+            start=pl.lit(pl.Series([0], dtype=pl.UInt32())).append(
                 pl.col("len").cum_sum().slice(0, pl.col("len").len() - 1)
             ),
+            len=pl.col("len"),
             value=pl.col("value"),
         )
         .explode(["len", "start", "value"])
