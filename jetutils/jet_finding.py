@@ -1182,7 +1182,7 @@ def _lon_overlap(points: str | pl.Expr = "points", points_right: str | pl.Expr =
 
 
 def track_jets_one_year(
-    jets: DataFrame, year: int, member: str | None = None
+    jets: DataFrame, year: int, month: int | None = None, member: str | None = None
 ) -> DataFrame:
     """
     Performs one year of explicit jet tracking
@@ -1210,7 +1210,9 @@ def track_jets_one_year(
     deltas2 = [f"d{col}" for col in deltas]
     typical_group_by = ["time", "time_right", "jet ID", "jet ID_right"]
     filter_ = pl.col("time").dt.year() == year
-    if (year + 1) in jets["time"].dt.year().unique():
+    if month is not None:
+        filter_ = filter_ & (pl.col("time").dt.month() == month)
+    if (year + 1) in jets["time"].dt.year().unique() and (month is None or month == 12):
         filter_ = filter_ | pl.col("time").is_in(
             pl.col("time")
             .filter(pl.col("time").dt.year() == year + 1)
@@ -1223,15 +1225,16 @@ def track_jets_one_year(
         typical_group_by_ = ["member"]
         typical_group_by_.extend(typical_group_by)
         typical_group_by = typical_group_by_
-
-    jets_current = jets.filter(filter_).with_columns(
+        
+    cols_i_want = get_index_columns(jets, ["member", "time", "jet ID", "lon", "lat"])
+    jets_current = jets.filter(filter_).select(*cols_i_want, *deltas).with_columns(
         len=pl.col("lon").len().over(["time", "jet ID"]),
         index=pl.int_range(0, pl.col("lon").len()).over(["time", "jet ID"]),
     )
     dt = jets_current["time"].unique().bottom_k(2).sort()
     dt = dt[1] - dt[0]
     jets_next = jets_current.with_columns(time_shifted=pl.col("time") - dt)
-    jets_current = jets_current.filter(pl.col("time").dt.year() == year)
+    jets_current = jets_current.filter(filter_)
     
     aggs_first = {"points": pl.concat_arr("lon", "lat"), "s": weighted_mean_pl("s")} | {d: weighted_mean_pl(d, "s") for d in deltas[1:]}
     
@@ -1253,7 +1256,7 @@ def track_jets_one_year(
     return cross
 
 
-def track_jets(all_jets_one_df: DataFrame) -> DataFrame:
+def track_jets(all_jets_one_df: DataFrame, monthly: bool = False) -> DataFrame:
     """
     Iterates over years and maybe members and performs explicit jet tracking.
 
@@ -1270,6 +1273,10 @@ def track_jets(all_jets_one_df: DataFrame) -> DataFrame:
     cross = []
     gb = ["time", "jet ID"]
     iterator = all_jets_one_df["time"].dt.year().unique()
+    if monthly:
+        iterator = list(product(iterator, all_jets_one_df["time"].dt.month().unique()))
+    else:
+        iterator = zip(iterator, [None] * len(iterator))
     total = len(iterator)
     if "member" in all_jets_one_df.columns:
         members = all_jets_one_df["member"].unique()
@@ -1279,11 +1286,11 @@ def track_jets(all_jets_one_df: DataFrame) -> DataFrame:
     else:
         iterator = zip([None] * len(iterator), iterator)
 
-    for member, year in tqdm(iterator, total=total):
+    for member, time in tqdm(iterator, total=total):
         cross.append(
             track_jets_one_year(
                 all_jets_one_df,
-                year,
+                *time,
                 member,
             )
         )
@@ -1878,7 +1885,7 @@ class JetFindingExperiment(object):
         summary_opath = self.path.joinpath("summary.parquet")
         all_jets_one_df = self.find_jets().cast({"time": pl.Datetime("ms")})
         if not cross_opath.is_file() or force > 1:
-            cross = track_jets(all_jets_one_df, n_next=n_next)
+            cross = track_jets(all_jets_one_df)
             cross.write_parquet(cross_opath)
         else:
             cross = pl.read_parquet(cross_opath)

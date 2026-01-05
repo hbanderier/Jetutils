@@ -692,6 +692,8 @@ class Clusterplot:
         da: DataArray,
         mask: np.ndarray,
         FDR: bool = False,
+        invert: bool = False,
+        linewidth: float = 0.4,
         color: str = "black",
         hatch: str = "xx",
     ) -> None:
@@ -714,12 +716,17 @@ class Clusterplot:
             )
 
         for ax, signif in zip(self.axes, significances):
+            if invert:
+                signif = ~signif
             cs = ax.pcolor(
                 lon,
                 lat,
                 da[0].where(signif),
                 hatch=hatch,
-                alpha=0.,
+                facecolor="none", 
+                edgecolor=color, 
+                hatch_linewidth=linewidth, 
+                linewidth=0.,
             )
 
             # cs.set_edgecolor(color)
@@ -730,13 +737,15 @@ class Clusterplot:
         da: DataArray,
         mask: np.ndarray,
         type: str = "contourf",
-        stippling: bool | str = False,
+        stippling: bool = False,
         reduction_function: Callable = np.mean,
+        stippling_kwargs: dict | None = None,
         **kwargs,
     ) -> ScalarMappable | None:
         to_plot = []
         time_name = "time" if "time" in da.dims else da.dims[0]
-        hatch = kwargs.pop("hatch", "xx")
+        if stippling_kwargs is None:
+            stippling_kwargs = {}
         for mas in tqdm(mask.T, total=mask.shape[1]):
             if np.sum(mas) < 1:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
@@ -767,11 +776,7 @@ class Clusterplot:
                 f'Wrong {type=}, choose among "contourf", "contour" or "both"'
             )
         if stippling:
-            if isinstance(stippling, str):
-                color = stippling
-            else:
-                color = "black"
-            self.add_stippling(da, mask, color=color, hatch=hatch)
+            self.add_stippling(da, mask, **stippling_kwargs)
         return im
 
     def cluster_on_fig(
