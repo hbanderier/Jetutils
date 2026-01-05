@@ -190,6 +190,9 @@ def earth_haversine_numba(p: np.ndarray, q: np.ndarray) -> float:
     return haversine_numba(np.radians(p), np.radians(q)) * earth_radius
 
 
+fdfd_matrix(np.array([[1, 0]]), np.array([[1, 0]]), earth_haversine_numba)
+
+
 def polars_frechet_wip_broken(df):
     """
     wip, does not work, cannot figure out a good expr_ij

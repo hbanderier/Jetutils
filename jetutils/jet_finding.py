@@ -386,6 +386,7 @@ def find_all_jets(
 
     # jets from contours
     ## consecutive runs of contour points respecting both point wise conditions, allowing holes of size up to three
+    # return all_contours, condition_expr, index_columns, hole_size
     valids = (
         explode_rle(
             do_rle(
@@ -422,7 +423,6 @@ def find_all_jets(
         .rename({"contour": "jet ID"})
         .drop("cyclic", "len", "len_right")
     )
-
     jets = (
         jets.with_columns(len=pl.len().over([*index_columns, "jet ID"]))
         .filter(pl.col("len") > 6)
@@ -443,7 +443,6 @@ def find_all_jets(
         .unique([*index_columns, "jet ID", "index"])
         .sort([*index_columns, "jet ID", "index"])
     )
-
     return jets
 
 
@@ -1164,7 +1163,7 @@ def average_jet_categories(
 
 def _frechet_of_row(row):
     if any(r is None for r in row):
-        return 0
+        return 0.
     p = np.asarray(row[0])
     q = np.asarray(row[1])
     return fdfd_matrix(p, q, earth_haversine_numba) 
