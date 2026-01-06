@@ -1275,7 +1275,7 @@ def track_jets(all_jets_one_df: DataFrame, monthly: bool = False) -> DataFrame:
     if monthly:
         iterator = list(product(iterator, all_jets_one_df["time"].dt.month().unique()))
     else:
-        iterator = zip(iterator, [None] * len(iterator))
+        iterator = list(zip(iterator, [None] * len(iterator)))
     total = len(iterator)
     if "member" in all_jets_one_df.columns:
         members = all_jets_one_df["member"].unique()
