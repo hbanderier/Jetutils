@@ -666,15 +666,15 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
 
 
 def compute_relative_clim(df: pl.DataFrame, varname: str): 
-    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "is_polar").agg(pl.col(f"{varname}_interp").mean()).sort("is_polar", "dayofyear", "norm_index", "n")
+    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").mean()).sort("jet ID", "dayofyear", "norm_index", "n")
 
 
 def compute_relative_std(df: pl.DataFrame, varname: str): 
-    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "is_polar").agg(pl.col(f"{varname}_interp").std()).sort("is_polar", "dayofyear", "norm_index", "n")
+    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").std()).sort("jet ID", "dayofyear", "norm_index", "n")
 
 
 def compute_relative_sm(clim: pl.DataFrame, varname: str, season_doy: pl.Series | None = None): 
-    return clim.with_columns(**{f"{varname}_interp": pl.col(f"{varname}_interp").filter(pl.col("dayofyear").is_in(season_doy.implode())).mean().over("is_polar", "n", "norm_index")})
+    return clim.with_columns(**{f"{varname}_interp": pl.col(f"{varname}_interp").filter(pl.col("dayofyear").is_in(season_doy.implode())).mean().over("jet ID", "n", "norm_index")})
 
 
 def compute_relative_anom(df: pl.DataFrame, varname: str, clim: pl.DataFrame, clim_std: pl.DataFrame | None = None): 
@@ -683,17 +683,17 @@ def compute_relative_anom(df: pl.DataFrame, varname: str, clim: pl.DataFrame, cl
         return (
             df
             .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-            .join(clim, on=["is_polar", "dayofyear", "norm_index", "n"])
+            .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
             .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
             .drop(f"{varname_}_right", "dayofyear")
         )
     return (
         df
         .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-        .join(clim, on=["is_polar", "dayofyear", "norm_index", "n"])
+        .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right")
-        .join(clim_std, on=["is_polar", "dayofyear", "norm_index", "n"])
+        .join(clim_std, on=["jet ID", "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) / pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right", "dayofyear")
     )

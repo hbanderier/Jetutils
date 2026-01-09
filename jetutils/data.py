@@ -1401,7 +1401,7 @@ def compute_anomalies_ds(
 
 
 def periodic_rolling_pl(
-    df: pl.DataFrame, winsize: int, data_vars: list, dim: str = "dayofyear"
+    df: pl.DataFrame, winsize: int, data_vars: list, dim: str = "dayofyear", other_columns: list | None = None
 ):
     """
     Window smoothing for a polars DataFrame, for a dimension that is periodic like `"dayofyear"`.
@@ -1424,7 +1424,8 @@ def periodic_rolling_pl(
     """
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
-    other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy"))
+    if other_columns is None:
+        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy"))
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df[col].unique().len() for col in other_columns]
     len_ = int(np.prod(len_))
