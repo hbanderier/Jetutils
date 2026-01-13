@@ -263,6 +263,111 @@ def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str) -> DataFr
     return jets
 
 
+def add_normals_meters(
+    jets: DataFrame,
+    half_length: float = 1.2e6,
+    dn: float = 5e4,
+    delete_middle: bool = False,
+) -> DataFrame:
+    """
+    Augments a `DataFrame` containing `"lon"`, `"lat"`, `"u"` and `"v"` columns with new columns `"normallon"` and `"normallat"`. 
+    
+    For each unique jet point, adds segments normal to the wind direction at this point in the same plane and in both directions. Each half-segment has a length of `half_length`, in m, and is discretized by a point every `dn` m. 
+
+    Parameters
+    ----------
+    jets : DataFrame
+        Must contain `"lon"`, `"lat"`, `"u"` and `"v"` columns.
+    half_length : float, optional
+        Length of each half segment, above and under the jet at each point, by default 1e6
+    dn : float, optional
+        Half-segments are discretized every `dn`, by default 5e4
+    delete_middle : bool, optional
+        Whether the half-segments also contain the jet point itself or not, by default False
+
+    Returns
+    -------
+    DataFrame
+        Original DataFrame augmented by new columns and longer by a factor `2 * half_length / dn - delete_middle`
+    """
+    is_polar = ["is_polar"] if "is_polar" in jets.columns else []
+    ns_df = np.arange(-half_length, half_length + dn, dn)
+    if delete_middle:
+        ns_df = np.delete(ns_df, int(half_length // dn))
+    ns_df = Series("n", ns_df).to_frame()
+
+    # Expr angle
+    if "u" in jets.columns and "v" in jets.columns:
+        angle = (pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2) % np.pi
+        wind_speed = ["u", "v", "s"]
+    else:
+        angle = (
+            pl.arctan2(
+                pl.col("lat").shift() - pl.col("lat"),
+                pl.col("lon").shift() - pl.col("lon"),
+            ).interpolate("linear")
+            + np.pi / 2
+        )
+        angle = angle.fill_null(0)
+        angle = (angle.shift(2, fill_value=0) + angle) / 2
+        wind_speed = []
+
+    # Expr normals from https://www.movable-type.co.uk/scripts/latlong.html
+    lon = pl.col("lon").radians()
+    lat = pl.col("lat").radians()
+    arc_distances = pl.col("n") / RADIUS
+    # bearing = np.pi / 2 - angle
+    normallat = (
+        lat.sin() * arc_distances.cos() + 
+        lat.cos() * arc_distances.sin() * angle.sin()
+    ).arcsin()
+    normallon = lon + pl.arctan2(
+        angle.cos() * arc_distances.sin() * lat.cos(), 
+        arc_distances.cos() - lat.sin() * normallat.sin()
+    )
+    normallat = normallat.degrees().cast(pl.Float32())
+    normallon = ((normallon.degrees() + 540) % 360 - 180).cast(pl.Float32())
+
+    index_columns = get_index_columns(
+        jets,
+        [
+            "member",
+            "time",
+            "cluster",
+            "spell",
+            "relative_index",
+            "relative_time",
+            "jet ID",
+            "sample_index",
+            "inside_index",
+        ]
+    )
+
+    jets = jets[[*index_columns, "lon", "lat", *wind_speed, *is_polar]]
+
+    jets = jets.with_columns(
+        jets.group_by(index_columns, maintain_order=True)
+        .agg(angle=angle, index=pl.int_range(pl.len()))
+        .explode(["index", "angle"])
+    )
+    jets = jets.join(ns_df, how="cross")
+    jets = jets.with_columns(normallon=normallon, normallat=normallat)
+    jets = jets[
+        [
+            *index_columns,
+            "index",
+            "lon",
+            "lat",
+            *wind_speed,
+            "n",
+            "normallon",
+            "normallat",
+            *is_polar,
+        ]
+    ]
+    return jets
+
+
 def add_normals(
     jets: DataFrame,
     half_length: float = 12.0,
@@ -361,9 +466,10 @@ def add_normals(
 def gather_normal_da_jets(
     jets: DataFrame,
     da: xr.DataArray,
-    half_length: float = 12.0,
-    dn: float = 1.0,
+    half_length: float = 1.2e6,
+    dn: float = 5e4,
     delete_middle: bool = False,
+    in_meters: bool = False,
 ) -> DataFrame:
     """
     Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
@@ -380,6 +486,8 @@ def gather_normal_da_jets(
         Half-segments are discretized every `dn`, by default 1.0
     delete_middle : bool, optional
         Whether the half-segments also contain the jet point itself or not, by default False
+    in_meters : bool, optional
+        Whether the half-segments are discretize in meters (True) or in degrees (False), by default False
 
     Returns
     -------
@@ -400,7 +508,10 @@ def gather_normal_da_jets(
             "inside_index",
         ),
     )
-    jets = add_normals(jets, half_length, dn, delete_middle)
+    if in_meters:
+        jets = add_normals_meters(jets, half_length, dn, delete_middle)
+    else:
+        jets = add_normals(jets, half_length, dn, delete_middle)
     dlon = (da.lon[1] - da.lon[0]).item()
     dlat = (da.lat[1] - da.lat[0]).item()
     lon = Series("normallon_rounded", da.lon.values).to_frame()
@@ -495,12 +606,13 @@ def gather_normal_da_jets_wrapper(
     n_interp: int = 30,
     clim: xr.DataArray | None = None,
     clim_std: xr.DataArray | None = None,
-    half_length: float = 20,
-    dn: float = 1,
+    half_length: float = 1.2e6,
+    dn: float = 5e4,
+    in_meters: bool = False,
     grad: bool = False,
 ):
     jets = times.join(jets, on="time", how="left")
-    jets = gather_normal_da_jets(jets, da, half_length=half_length, dn=dn)
+    jets = gather_normal_da_jets(jets, da, half_length=half_length, dn=dn, in_meters=in_meters)
     varname = da.name + "_interp"
 
     jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
@@ -611,6 +723,8 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     -------
     DataFrame
         Jets DataFrame with all the index dimensions kept original, only lon and lat as additional columns (the rest is dropped), and longer jets with added segments.
+        
+    TODO: redo using https://www.movable-type.co.uk/scripts/latlong.html
     """
     index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
     jets = jets.sort(*index_columns, "lon", "lat")
@@ -644,7 +758,7 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
-def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 20.):
+def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 1.2e6, dn: float = 5e4, in_meters: bool = False):
     jets = jets.with_columns(pl.col("time").dt.round("1d"))
     jets = jets.with_columns(jets.group_by("time", maintain_order=True).agg(pl.col("jet ID").rle_id())["jet ID"].explode())
     indexer = iterate_over_year_maybe_member(jets, da)
@@ -654,7 +768,7 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
         jets_ = jets.filter(*idx1)
         da_ = da.sel(**idx2)
         try:
-            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length)
+            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length, in_meters=in_meters)
         except (KeyError, ValueError) as e:
             print(e)
             break
