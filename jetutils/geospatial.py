@@ -100,9 +100,9 @@ def jet_integral_haversine(
         to_expr(lon).shift(),
         to_expr(lat).shift(),
     )
-    s = to_expr(s)
-    if x_is_one:
+    if x_is_one or s is None:
         return ds.sum()
+    s = to_expr(s)
     return 0.5 * (ds * (s + s.shift())).sum()
 
 
@@ -758,7 +758,7 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
-def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 1.2e6, dn: float = 5e4, in_meters: bool = False):
+def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 1.2e6, dn: float = 5e4, n_interp: int = 40, in_meters: bool = True):
     jets = jets.with_columns(pl.col("time").dt.round("1d"))
     jets = jets.with_columns(jets.group_by("time", maintain_order=True).agg(pl.col("jet ID").rle_id())["jet ID"].explode())
     indexer = iterate_over_year_maybe_member(jets, da)
@@ -768,11 +768,11 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
         jets_ = jets.filter(*idx1)
         da_ = da.sel(**idx2)
         try:
-            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length, in_meters=in_meters)
+            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length, dn=dn, in_meters=in_meters)
         except (KeyError, ValueError) as e:
             print(e)
             break
-        jets_with_interp = interp_jets_to_zero_one(jets_with_interp, [varname, "is_polar"], n_interp=30)
+        jets_with_interp = interp_jets_to_zero_one(jets_with_interp, [varname, "is_polar"], n_interp=n_interp)
         jets_with_interp = jets_with_interp.group_by("time", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n", maintain_order=True).agg(pl.col(varname).mean())
         to_average.append(jets_with_interp)
     pl.concat(to_average).write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
