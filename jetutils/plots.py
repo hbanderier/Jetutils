@@ -690,30 +690,34 @@ class Clusterplot:
     def add_stippling(
         self,
         da: DataArray,
-        mask: np.ndarray,
+        mask: np.ndarray | None = None,
         FDR: bool = False,
         invert: bool = False,
         linewidth: float = 0.4,
         color: str = "black",
         hatch: str = "xx",
     ) -> None:
-        to_test = []
-        for mas in mask.T:
-            if np.sum(mas) < 1:
-                to_test.append(da[:1].copy(data=np.zeros((1, *da.shape[1:]))))
-                continue
-            to_test.append(da.isel(time=mas))
-
         lon = da.lon.values
         lat = da.lat.values
         lon = lon - self.central_longitude
-        significances = []
-        da_ = da.values
-        # da = np.sort(da, axis=0)
-        for i in trange(mask.shape[1]):
-            significances.append(
-                field_significance(to_test[i], da_, 200, q=0.1)[int(FDR)]
-            )
+        
+        if mask is not None:
+            to_test = []
+            for mas in mask.T:
+                if np.sum(mas) < 1:
+                    to_test.append(da[:1].copy(data=np.zeros((1, *da.shape[1:]))))
+                    continue
+                to_test.append(da.isel(time=mas))
+
+            significances = []
+            da_ = da.values
+            # da = np.sort(da, axis=0)
+            for i in trange(mask.shape[1]):
+                significances.append(
+                    field_significance(to_test[i], da_, 200, q=0.1)[int(FDR)]
+                )
+        else:
+            significances = da
 
         for ax, signif in zip(self.axes, significances):
             if invert:
