@@ -758,7 +758,7 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
-def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 1.2e6, dn: float = 5e4, n_interp: int = 40, in_meters: bool = True):
+def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 2e6, dn: float = 5e4, n_interp: int = 40, in_meters: bool = True):
     jets = jets.with_columns(pl.col("time").dt.round("1d"))
     jets = jets.with_columns(jets.group_by("time", maintain_order=True).agg(pl.col("jet ID").rle_id())["jet ID"].explode())
     indexer = iterate_over_year_maybe_member(jets, da)
