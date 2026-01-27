@@ -560,7 +560,7 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     """
     Computes the width of each jet using normally interpolated wind speed on either side of the jet.
     """
-    jets = gather_normal_da_jets(jets, da, 12.0, 1.0, delete_middle=True)
+    jets = gather_normal_da_jets(jets, da, 2e6, 5e4, delete_middle=True, in_meters=True)
 
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
