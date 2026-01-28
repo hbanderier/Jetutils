@@ -1095,7 +1095,7 @@ def coarsen_da(
     if pad_wrap(da, "lon"):
         da = da.pad({"lon": n_coarsen // 2}, mode="wrap")
         undo_pad = True
-    coord_func = "first" if undo_pad else "mean"
+    coord_func = "first" if undo_pad or n_coarsen % 2 != 1 else "mean"
     boundary = "pad" if undo_pad else "trim"
     da = da.coarsen({"lon": n_coarsen, "lat": n_coarsen}, boundary=boundary, coord_func=coord_func).reduce(reduce_func)
     if not undo_pad:

@@ -55,6 +55,7 @@ from .geospatial import (
     gather_normal_da_jets,
 )
 from .frechet import fdfd_matrix, earth_haversine_numba
+from .derived_quantities import compute_norm_derivative
 
 
 def has_periodic_x(df: DataFrame | xr.Dataset | xr.DataArray) -> bool:
@@ -102,30 +103,6 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     Generates an Expression that rounds the given column to a given base, one over the factor.
     """
     return (pl.col(col) * factor).round() / factor
-
-
-def compute_norm_derivative(ds: xr.Dataset, of: str = "s"):
-    lon, lat = ds["lon"].values, ds["lat"].values
-    xlon, ylat = np.meshgrid(lon, lat)
-
-    dlaty, dlatx = np.gradient(ylat)
-    dlony, dlonx = np.gradient(xlon)
-
-    dy = RADIUS * np.radians(dlaty)
-    dx = RADIUS * np.radians(dlaty) * degcos(ylat)
-    
-    axis_y = np.where(np.array(ds["s"].dims) == "lat")[0].item()
-    axis_x = np.where(np.array(ds["s"].dims) == "lon")[0].item()
-    
-    u = ds["u"]
-    v = ds["v"]
-    s = np.hypot(u, v)
-    da = ds[of]
-    
-    ddady = da.copy(data=np.gradient(da, axis=axis_y)) / dy[None, :, :]
-    ddadx = da.copy(data=np.gradient(da, axis=axis_x)) / dx[None, :, :]
-    
-    return (- u * ddady + v * ddadx) / s
 
 
 def preprocess_ds(
