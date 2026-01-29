@@ -775,7 +775,12 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
         jets_with_interp = interp_jets_to_zero_one(jets_with_interp, [varname, "is_polar"], n_interp=n_interp)
         jets_with_interp = jets_with_interp.group_by("time", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n", maintain_order=True).agg(pl.col(varname).mean())
         to_average.append(jets_with_interp)
-    pl.concat(to_average).write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
+    (
+        pl
+        .concat(to_average)
+        .cast({"norm_index": pl.Float32(), "n": pl.Float32(), varname: pl.Float32()})
+        .write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
+    )
     return
 
 
