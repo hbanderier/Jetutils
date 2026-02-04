@@ -569,13 +569,13 @@ def unpack_levels(levels: int | str | tuple | list) -> tuple[list, list]:
     level_names: list
         giving names to level-means created by the tuples
     """    
-    if isinstance(levels, int | str | tuple | np.int64 | np.int32):
+    if isinstance(levels, int | str | tuple | float | np.int64 | np.int32):
         levels = [levels]
     to_sort = []
     for level in levels:
         to_sort.append(
             float(level)
-            if isinstance(level, int | str | np.int64 | np.int32)
+            if isinstance(level, int | str | np.int64 | np.int32 | float)
             else level[0]
         )
     levels = [levels[i] for i in np.argsort(to_sort)]
