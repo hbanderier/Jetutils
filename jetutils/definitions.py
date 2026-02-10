@@ -90,6 +90,7 @@ if "DATADIR" not in globals():
     TIMERANGE = pd.date_range("19590101", "20230101", freq="6h", inclusive="left")
     LEAPYEAR = pd.date_range("19600101", "19601231")
     JJADOYS = LEAPYEAR[np.isin(LEAPYEAR.month, [6, 7, 8])].dayofyear
+    JJASDOYS = LEAPYEAR[np.isin(LEAPYEAR.month, [6, 7, 8, 9])].dayofyear
     YEARS = np.unique(DATERANGE.year)
     DATERANGE_SUMMER = DATERANGE[np.isin(DATERANGE.month, [6, 7, 8])]
 

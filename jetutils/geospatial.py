@@ -5,7 +5,7 @@ import xarray as xr
 import polars as pl
 from tqdm import tqdm
 from polars import DataFrame, Series, Expr
-from .definitions import YEARS, RADIUS, get_index_columns, xarray_to_polars, to_expr, iterate_over_year_maybe_member
+from .definitions import YEARS, RADIUS, get_index_columns, xarray_to_polars, to_expr, iterate_over_year_maybe_member, JJADOYS
 
 
 def haversine(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str) -> Expr:
@@ -784,19 +784,21 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
     return
 
 
-def compute_relative_clim(df: pl.DataFrame, varname: str): 
+def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str): 
     return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").mean()).sort("jet ID", "dayofyear", "norm_index", "n")
 
 
-def compute_relative_std(df: pl.DataFrame, varname: str): 
+def compute_relative_std(df: pl.DataFrame | pl.LazyFrame, varname: str): 
     return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").std()).sort("jet ID", "dayofyear", "norm_index", "n")
 
 
-def compute_relative_sm(clim: pl.DataFrame, varname: str, season_doy: pl.Series | None = None): 
+def compute_relative_sm(clim: pl.DataFrame | pl.LazyFrame, varname: str, season_doy: pl.Series | None = None): 
+    if season_doy is None:
+        season_doy = JJADOYS
     return clim.with_columns(**{f"{varname}_interp": pl.col(f"{varname}_interp").filter(pl.col("dayofyear").is_in(season_doy.implode())).mean().over("jet ID", "n", "norm_index")})
 
 
-def compute_relative_anom(df: pl.DataFrame, varname: str, clim: pl.DataFrame, clim_std: pl.DataFrame | None = None): 
+def compute_relative_anom(df: pl.DataFrame | pl.LazyFrame, varname: str, clim: pl.DataFrame | pl.LazyFrame, clim_std: pl.DataFrame | None = None): 
     varname_ = f"{varname}_interp"
     if clim_std is None:
         return (

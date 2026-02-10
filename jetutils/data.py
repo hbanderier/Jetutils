@@ -731,11 +731,7 @@ def determine_period(path: Path):
 
 def open_da(
     dataset: str,
-    level_type: Literal["plev"]
-    | Literal["thetalev"]
-    | Literal["surf"]
-    | Literal["2PVU"]
-    | None = None,
+    level_type: str | None = None,
     varname: str | None = None,
     resolution: str | None = None,
     period: list | tuple | Literal["all"] | int | str = "all",
@@ -804,7 +800,7 @@ def open_da(
         clim_smoothing,
         smoothing,
         False,
-    ) # pyrefly: ignore
+    ) 
     file_structure = determine_file_structure(path)
 
     if isinstance(period, tuple):
@@ -957,7 +953,7 @@ def _window_smoothing(
         dim = "time"
     for group in groups.groups.values():
         to_concat.append(
-            da.isel(**{dim: group}) # pyrefly: ignore
+            da.isel(**{dim: group}) 
             .rolling({dim: winsize // 4}, center=center, min_periods=1)
             .mean()
         )
@@ -1067,7 +1063,7 @@ def smooth(
     """    
     def detrend(da):
         p = da.polyfit(dim="time", deg=1)
-        fit = xr.polyval("time", p.polyfit_coefficients)
+        fit = xr.polyval(da["time"], p.polyfit_coefficients)
         return da - fit
 
     if smooth_map is None:
@@ -1086,10 +1082,10 @@ def smooth(
 
 
 def coarsen_da(
-    da: xr.Dataset | xr.DataArray, n_coarsen: float, reduce_func: Callable = np.amax
+    da: xr.Dataset | xr.DataArray, n_coarsen: int, reduce_func: Callable = np.amax
 ) -> xr.Dataset | xr.DataArray:
     """
-    Thin wrapper around `da.coarsen()` that possibly pad wraps over lon. Disgusting func but it works.
+    Thin wrapper around `da.coarsen()` that possibly pad wraps over lon. 
     """
     undo_pad = False
     if pad_wrap(da, "lon"):
@@ -1223,8 +1219,8 @@ def compute_all_smoothed_anomalies(
     varname: str | None = None,
     resolution: str | None = None,
     clim_type: str | None = None,
-    clim_smoothing: dict = None,
-    smoothing: dict = None,
+    clim_smoothing: dict | None = None,
+    smoothing: dict | None = None,
 ) -> None:
     """
     Computes a (potentially smoothed) climatology and (potentially smoothed) anomalies for the absolute data specified by the first four arguments.
@@ -1743,23 +1739,19 @@ class DataHandler(object):
     def from_specs(
         cls,
         dataset: str,
-        level_type: Literal["plev"]
-        | Literal["thetalev"]
-        | Literal["surf"]
-        | Literal["2PVU"]
-        | None = None,
+        level_type: str | None = None,
         varname: str | None = None,
         resolution: str | None = None,
         period: list | tuple | Literal["all"] | int | str = "all",
-        season: list | str = None,
+        season: list | str | None = None,
         minlon: Optional[int | float] = None,
         maxlon: Optional[int | float] = None,
         minlat: Optional[int | float] = None,
         maxlat: Optional[int | float] = None,
-        levels: int | str | tuple | list | Literal["all"] = "all",
-        clim_type: str = None,
-        clim_smoothing: dict = None,
-        smoothing: dict = None,
+        levels: int | str | tuple | list | Literal["all"] | None = "all",
+        clim_type: str | None = None,
+        clim_smoothing: dict | None = None,
+        smoothing: dict | None = None,
         reduce_da: bool = True,
     ) -> "DataHandler":
         """
@@ -1900,7 +1892,7 @@ class DataHandler(object):
         frequency: Literal["daily", "monthly"] = "daily",
         forcing_variant: Literal["cmip6", "smbb"] = "cmip6",
         period: list | tuple | Literal["all"] | int | str = "all",
-        season: list | str = None,
+        season: list | str | None = None,
         minlon: Optional[int | float] = None,
         maxlon: Optional[int | float] = None,
         minlat: Optional[int | float] = None,

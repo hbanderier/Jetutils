@@ -653,7 +653,7 @@ def round_half(x):
 
 def extract_features(
     df: DataFrame,
-    feature_names: Sequence = None,
+    feature_names: Sequence | None = None,
     season: list | str | tuple | int | None = None,
 ) -> DataFrame:
     """
@@ -1827,57 +1827,57 @@ class JetFindingExperiment(object):
             return props_as_df_cat
         return props_as_df
 
-    def track_jets(
-        self,
-        dist_thresh: float = 2,
-        overlap_min_thresh: float = 0.5,
-        overlap_max_thresh: float = 0.6,
-        dis_polar_thresh: float | None = 1.0,
-        n_next: int = 1,
-        force: int = 0,
-    ) -> DataFrame:
-        """
-        Wraps cross and summary
+    # def track_jets(
+    #     self,
+    #     dist_thresh: float = 2,
+    #     overlap_min_thresh: float = 0.5,
+    #     overlap_max_thresh: float = 0.6,
+    #     dis_polar_thresh: float | None = 1.0,
+    #     n_next: int = 1,
+    #     force: int = 0,
+    # ) -> DataFrame:
+    #     """
+    #     Wraps cross and summary
 
-        Parameters
-        ----------
-        dist_thresh : float, optional
-            _description_, by default 2
-        overlap_min_thresh : float, optional
-            _description_, by default 0.5
-        overlap_max_thresh : float, optional
-            _description_, by default 0.6
-        dis_polar_thresh : float | None, optional
-            _description_, by default 1.0
-        force : int, optional
-            _description_, by default 0
+    #     Parameters
+    #     ----------
+    #     dist_thresh : float, optional
+    #         _description_, by default 2
+    #     overlap_min_thresh : float, optional
+    #         _description_, by default 0.5
+    #     overlap_max_thresh : float, optional
+    #         _description_, by default 0.6
+    #     dis_polar_thresh : float | None, optional
+    #         _description_, by default 1.0
+    #     force : int, optional
+    #         _description_, by default 0
 
-        Returns
-        -------
-        DataFrame
-            _description_
-        """
-        cross_opath = self.path.joinpath("cross.parquet")
-        summary_opath = self.path.joinpath("summary.parquet")
-        all_jets_one_df = self.find_jets().cast({"time": pl.Datetime("ms")})
-        if not cross_opath.is_file() or force > 1:
-            cross = track_jets(all_jets_one_df)
-            cross.write_parquet(cross_opath)
-        else:
-            cross = pl.read_parquet(cross_opath)
-        if not summary_opath.is_file() or force:
-            cross, summary = connected_from_cross(
-                all_jets_one_df,
-                cross,
-                dist_thresh,
-                overlap_min_thresh,
-                overlap_max_thresh,
-                dis_polar_thresh,
-            )
-            summary.write_parquet(summary_opath)
-        else:
-            summary = pl.read_parquet(summary_opath)
-        return cross, summary
+    #     Returns
+    #     -------
+    #     DataFrame
+    #         _description_
+    #     """
+    #     cross_opath = self.path.joinpath("cross.parquet")
+    #     summary_opath = self.path.joinpath("summary.parquet")
+    #     all_jets_one_df = self.find_jets().cast({"time": pl.Datetime("ms")})
+    #     if not cross_opath.is_file() or force > 1:
+    #         cross = track_jets(all_jets_one_df)
+    #         cross.write_parquet(cross_opath)
+    #     else:
+    #         cross = pl.read_parquet(cross_opath)
+    #     if not summary_opath.is_file() or force:
+    #         cross, summary = connected_from_cross(
+    #             all_jets_one_df,
+    #             cross,
+    #             dist_thresh,
+    #             overlap_min_thresh,
+    #             overlap_max_thresh,
+    #             dis_polar_thresh,
+    #         )
+    #         summary.write_parquet(summary_opath)
+    #     else:
+    #         summary = pl.read_parquet(summary_opath)
+    #     return cross, summary
 
     def jet_position_as_da(self, force: bool = False):
         """

@@ -213,18 +213,12 @@ def make_boundary_path(
 
 
 def figtitle(
-    minlon: str,
-    maxlon: str,
-    minlat: str,
-    maxlat: str,
+    minlon: float,
+    maxlon: float,
+    minlat: float,
+    maxlat: float,
     season: str,
 ) -> str:
-    minlon, maxlon, minlat, maxlat = (
-        float(minlon),
-        float(maxlon),
-        float(minlat),
-        float(maxlat),
-    )
     title = f'${np.abs(minlon):.1f}°$ {"W" if minlon < 0 else "E"} - '
     title += f'${np.abs(maxlon):.1f}°$ {"W" if maxlon < 0 else "E"}, '
     title += f'${np.abs(minlat):.1f}°$ {"S" if minlat < 0 else "N"} - '
@@ -242,7 +236,7 @@ def honeycomb_panel(
     row_height: float = 2.0,
     fig: Figure | SubFigure | None = None,
     **subplot_kw,
-) -> Tuple[Figure, np.ndarray]:
+) -> Tuple[Figure | SubFigure, np.ndarray]:
     if fig is None:
         fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
     elif isinstance(fig, Figure):
@@ -262,7 +256,7 @@ def honeycomb_panel(
 
 def make_transparent(
     cmap: str | Colormap,
-    nlev: int = None,
+    nlev: int | None = None,
     alpha_others: float = 1,
     n_transparent: int = 1,
     direction: int = 1,
@@ -340,7 +334,7 @@ def doubleit(thing: list | str | None, length: int, default: str) -> list:
 
 
 def setup_lon_lat(
-    to_plot: list[xr.DataArray],
+    to_plot: list[xr.DataArray] | xr.DataArray,
     lon: np.ndarray | None,
     lat: np.ndarray | None,
 ):
@@ -379,7 +373,7 @@ class Clusterplot:
         self,
         nrow: int,
         ncol: int,
-        region: np.ndarray | list | tuple = None,
+        region: np.ndarray | list | tuple | None = None,
         lambert_projection: bool = False,
         honeycomb: bool = False,
         numbering: bool | Callable | Sequence = False,
@@ -464,7 +458,7 @@ class Clusterplot:
                     usetex=False,
                 )
 
-    def _add_gridlines(self, step: int | tuple = None) -> None:
+    def _add_gridlines(self, step: int | tuple | None = None) -> None:
         for ax in self.axes:
             gl = ax.gridlines(
                 dms=False, x_inline=False, y_inline=False, draw_labels=True
@@ -495,9 +489,9 @@ class Clusterplot:
             #     ea.set_rotation(0)
             #     ea.set_position([current_pos[0], current_pos[1] - 200000])
 
-    def _add_titles(self, titles: Iterable) -> None:
+    def _add_titles(self, titles: Sequence) -> None:
         if len(titles) > len(self.axes):
-            titles = titles[: len(self.axes)]
+            titles = titles[:len(self.axes)]
         for title, ax in zip(titles, self.axes):
             if isinstance(title, float):
                 title = f"{title:.2f}"
@@ -512,14 +506,14 @@ class Clusterplot:
     def add_contour(
         self,
         to_plot: list | xr.DataArray,
-        lon: np.ndarray = None,
-        lat: np.ndarray = None,
+        lon: np.ndarray | None = None,
+        lat: np.ndarray | None = None,
         levels: int | Sequence | None = None,
-        clabels: Union[bool, list] = False,
+        clabels: bool | list = False,
         draw_gridlines: bool = False,
-        titles: Iterable = None,
-        colors: list | str = None,
-        linestyles: list | str = None,
+        titles: Sequence | None = None,
+        colors: list | str | None = None,
+        linestyles: list | str | None = None,
         q: float = 0.99,
         **kwargs,
     ) -> None:
@@ -575,9 +569,9 @@ class Clusterplot:
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
-        clabels: Union[bool, list] = None,
-        cbar_label: str = None,
-        cbar_kwargs: Mapping = None,
+        clabels: bool | list = False,
+        cbar_label: str | None = None,
+        cbar_kwargs: Mapping | None = None,
         q: float = 0.99,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
@@ -632,18 +626,18 @@ class Clusterplot:
     def add_contourf(
         self,
         to_plot: list | xr.DataArray,
-        lon: np.ndarray = None,
-        lat: np.ndarray = None,
+        lon: np.ndarray | None = None,
+        lat: np.ndarray | None = None,
         levels: int | Sequence | None = None,
         cmap: str | Colormap = DEFAULT_COLORMAP,
         transparify: bool | float | int = False,
         contours: bool = False,
-        clabels: Union[bool, list] = None,
+        clabels: bool | list = False,
         draw_gridlines: bool = False,
         draw_cbar: bool = True,
-        cbar_label: str = None,
-        titles: Iterable = None,
-        cbar_kwargs: Mapping = None,
+        cbar_label: str | None = None,
+        titles: Iterable | None = None,
+        cbar_kwargs: Mapping | None = None,
         q: float = 0.99,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
@@ -760,7 +754,7 @@ class Clusterplot:
             im = self.add_contourf(
                 to_plot,
                 contours=False,
-                clabels=None,
+                clabels=False,
                 **kwargs,
             )
         elif type == "contour":
@@ -787,7 +781,7 @@ class Clusterplot:
         self,
         coords: np.ndarray,
         clu_labs: np.ndarray,
-        cmap: str | Colormap = None,
+        cmap: str | Colormap | None = None,
     ) -> None:
         unique_labs = np.unique(clu_labs)
         sym = np.any(unique_labs < 0)
