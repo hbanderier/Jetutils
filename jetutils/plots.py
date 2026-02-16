@@ -606,7 +606,7 @@ class Clusterplot:
         norm = BoundaryNorm(levelscf, cmap.N, extend=extend)
         im = ScalarMappable(norm=norm, cmap=cmap)
 
-        if contours or clabels is not None:
+        if contours or clabels:
             self.add_contour(to_plot, levels, clabels)
 
         return (
