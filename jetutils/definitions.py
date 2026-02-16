@@ -71,7 +71,7 @@ if "DATADIR" not in globals():
     if MEMORY_LIMIT == "guess":
         MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_CPU", None)
         if MEMORY_LIMIT is None:
-            MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", None)
+            MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", 16000)
             MEMORY_LIMIT = int(MEMORY_LIMIT) // N_WORKERS
         MEMORY_LIMIT = f"{int(MEMORY_LIMIT) / 1000}GiB"
         print("Guessed MEMORY_LIMIT per worker : ", MEMORY_LIMIT)
