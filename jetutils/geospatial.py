@@ -1,14 +1,48 @@
 import warnings
+from itertools import product
+from multiprocessing import get_context
 
 import numpy as np
-import xarray as xr
 import polars as pl
+import polars.selectors as cs
+import polars_st as st
+import xarray as xr
+from contourpy import contour_generator
+from numba import njit
+from polars import DataFrame, Expr, Series
 from tqdm import tqdm
-from polars import DataFrame, Series, Expr
-from .definitions import YEARS, RADIUS, get_index_columns, xarray_to_polars, to_expr, iterate_over_year_maybe_member, JJADOYS
+
+from .definitions import (
+    JJADOYS,
+    RADIUS,
+    YEARS,
+    get_index_columns,
+    iterate_over_year_maybe_member,
+    map_maybe_parallel,
+    to_expr,
+    xarray_to_polars,
+    compute,
+    circular_mean,
+    weighted_mean_pl,
+)
 
 
-def haversine(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str) -> Expr:
+def euclidean_geographic(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str) -> Expr:
+    lon1 = to_expr(lon1)
+    lat1 = to_expr(lat1)
+    lon2 = to_expr(lon2)
+    lat2 = to_expr(lat2)
+
+    dlon = (lon2 - lon1).abs()
+    dlon = pl.when(dlon > 180).then(360 - dlon).otherwise(dlon)
+    dlat = lat2 - lat1
+
+    return (dlon.pow(2) + dlat.pow(2)).sqrt()
+    
+
+def haversine(
+    lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str
+) -> Expr:
     """
     Generates a polars Expression to compute the haversine distance, in meters, between points defined with the columns (lon1, lat1) and the points defined with the columns (lon2, lat2).
     TODO: support other planets by passing the radius as an argument.
@@ -190,6 +224,577 @@ def directional_diff(
     )
 
 
+def difflon():
+    expr = pl.col("lon").diff().abs()
+    expr = pl.when(expr > 180).then(360 - expr).otherwise(expr)
+    return expr
+
+
+def diff_exp():
+    expr = difflon()
+    return (expr.abs() + pl.col("lat").diff().abs()).fill_null(10.0)
+
+
+def newindex():
+    return (
+        (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) 
+        % (pl.col("index").max() + 1)
+    )
+
+
+def sort_by_index(df, index_columns, other):
+    return (
+        df.with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, other]))
+        .unique([*index_columns, other, "index"])
+        .sort([*index_columns, other, "index"])
+    )
+
+
+def sort_by_difflon(df, index_columns, other):
+    return (
+        df.with_columns(diff_exp().over([*index_columns, other]))
+        .unique([*index_columns, other, "index"])
+        .sort([*index_columns, other, "index"])
+    )
+
+
+def sort_by_newindex(df, index_columns, other):
+    return (
+        df.with_columns(newindex().over([*index_columns, other]))
+        .unique([*index_columns, other, "index"])
+        .sort([*index_columns, other, "index"])
+    )
+
+
+def sort_by_index_then_difflon(df, index_columns, other):
+    interm = sort_by_index(df, index_columns, other)
+    return sort_by_difflon(interm, index_columns, other)
+
+
+def sort_by_index_then_newindex(df, index_columns, other):
+    interm = sort_by_index(df, index_columns, other)
+    return sort_by_newindex(interm, index_columns, other)
+
+
+def nearest_mapping(df1: DataFrame, df2: DataFrame, col: str):
+    """
+    Uses the amazing polars' `join_asof` to get a mapping from the unique values in `df1[col]` to the nearest element in the unique values in `df2[col]`.
+    """
+    df1 = df1.select(col).unique().sort(col)
+    df2 = df2.select(col).unique().sort(col).rename({col: f"{col}_"})
+    return df1.join_asof(
+        df2, left_on=pl.col(col), right_on=pl.col(f"{col}_"), strategy="nearest"
+    )
+
+
+def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
+    """
+    Coerces a (n, 2) array to the grid defined by `x` and `y`.
+    """
+    x_ = contour[:, 0]
+    y_ = contour[:, 1]
+    x_ = x[np.argmin(np.abs(x[:, None] - x_[None, :]), axis=0)]
+    y_ = y[np.argmin(np.abs(y[:, None] - y_[None, :]), axis=0)]
+    return np.stack([x_, y_], axis=1)
+
+
+@njit
+def distance(x1: float, x2: np.ndarray, y1: float, y2: np.ndarray) -> float:
+    dx = x2 - x1
+    if np.abs(dx) >= 180:
+        dx = 360 - np.abs(dx)  # sign is irrelevant
+    dy = y2 - y1
+    return np.sqrt(dx**2 + np.sum(dy**2))
+
+
+@njit()
+def my_pairwise(X1: np.ndarray, X2: np.ndarray | None = None) -> np.ndarray:
+    x1 = X1[:, 0]
+    y1 = X1[:, 1:]
+    half = False
+    if X2 is None:
+        X2 = X1
+        half = True
+    x2 = X2[:, 0]
+    y2 = X2[:, 1:]
+    output = np.zeros((len(X1), len(X2)))
+    for i in range(X1.shape[0] - int(half)):
+        if half:
+            for j in range(i + 1, X1.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
+                output[j, i] = output[i, j]
+        else:
+            for j in range(X2.shape[0]):
+                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
+    return output
+
+
+def inner_compute_contours(args):
+    """
+    Worker function to compute the zero-sigma-contours in a parallel context
+    """
+    da, levels = args
+    lon = da.lon.values
+    lat = da.lat.values
+    z = da.values
+    l1 = contour_generator(
+        lon, lat, z, line_type="SeparateCode", quad_as_tri=False
+    ).multi_lines(levels)
+    to_ret = [
+        (i, level, round_contour(contour, lon, lat), 79 in types_)
+        for level, (contours, types) in zip(levels, l1)
+        for contour, types_, i in zip(contours, types, range(10000000))
+        if len(contours) > 5
+    ]
+    return tuple(zip(*to_ret))
+
+
+def compute_contours(
+    da: xr.DataArray, levels: list[float], repeat_lons: int = 120, processes: int = 1, ctx: str | None = None
+) -> DataFrame:
+    """
+    Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`. Extend in longitude to capture the contours over the -180 line
+    """
+    if repeat_lons > 0:
+        da = xr.concat(
+            [
+                da,
+                da.isel(lon=slice(repeat_lons)).assign_coords(
+                    lon=da.lon[:repeat_lons].values + 360
+                ),
+            ],
+            dim="lon",
+        )
+    else:
+        da = da.copy()
+
+    extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
+    index_columns = list(extra_dims)
+    extra_dims_values = {key: val.values for key, val in extra_dims.items()}
+    iter1 = list(product(*list(extra_dims.values())))
+    iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
+    iter3 = ((da.loc[indexer], levels) for indexer in iter2)
+    if processes > 1 and ctx is None:
+        ctx = get_context("fork")
+    elif processes > 1:
+        ctx = get_context(ctx)
+    res = map_maybe_parallel(
+        iter3, inner_compute_contours, len(iter2), processes=processes, ctx=ctx
+    )
+    all_is, all_levels, all_contours, all_cyclics = list(zip(*res))
+    index_columns = [*index_columns, "level", "contour"]
+    all_contours = (
+        pl.DataFrame(
+            {
+                "contour": all_is,
+                "level": all_levels,
+                "contours": all_contours,
+                "cyclic": all_cyclics,
+            }
+            | extra_dims_values
+        )
+        .explode("contour", "level", "contours", "cyclic")
+        .explode("contours")
+        .with_columns(
+            lon=pl.col("contours").arr.get(0),
+            lat=pl.col("contours").arr.get(1),
+        )
+        .drop("contours")
+        .unique([*index_columns, "lon", pl.col("lat").round(2)], maintain_order=True)
+        .with_columns(side=(pl.col("lon") >= 180.0).cast(pl.UInt8()))
+        .filter(~(pl.col("side") == 1).all().over(index_columns))
+        .with_columns(len=pl.len().over(index_columns))
+        .filter(pl.col("len") > 10)
+    )
+
+    # filter intersections of fully zeros within nonzero
+    lon_wrapped = (pl.col("lon") + 180) % 360 - 180
+    points = pl.concat_str(
+        lon_wrapped.cast(pl.Int32()), pl.col("lat").cast(pl.Int32()), separator=" "
+    )
+    df = all_contours.group_by(index_columns).agg(
+        points=points, side=pl.col("side").mean(), len=points.len()
+    )
+
+    filters = [
+        pl.col("contour") != pl.col("contour_right"),
+        (pl.col("side") > 0.0) & (pl.col("side_right") == 0.0),
+    ]
+    intersection = pl.col("points").list.set_intersection(pl.col("points_right")).list.len()
+    to_drop = (
+        df.join(df, on=["time", "level"], how="full")
+        .drop("time_right", "level_right")
+        .filter(filters)
+        .with_columns(intersection=intersection)
+        .filter(pl.col("intersection") > 0.97 * pl.col("len_right"))
+        .select(*[*index_columns[:-1], "contour_right"], drop=pl.lit(True))
+        .rename({"contour_right": "contour"})
+        .sort(index_columns)
+    )
+
+    all_contours = (
+        all_contours.join(to_drop, on=index_columns, how="left")
+        .filter(~pl.col("drop").fill_null(False))
+        .drop("drop")
+    )
+
+    # # filter points that appear twice in a mean-side > 0 contours
+    # all_contours = all_contours.with_columns(
+    #     inside_index=pl.int_range(pl.len()).over(index_columns)
+    # )
+    # p1 = pl.concat_arr(pl.col("lon"), pl.col("lat").round(1))
+    # p2 = pl.concat_arr(pl.col("lon") - 360, pl.col("lat").round(1))
+    # to_drop = (
+    #     all_contours
+    #     .filter(pl.col("side").mean().over(index_columns) > 0.0)
+    #     .with_columns(p1=p1, p2=p2)
+    #     .filter((pl.col("lon") - 360).is_in(pl.col("lon").implode()).over(index_columns))
+    #     .filter(pl.col("p1").arr.get(1) == pl.col("p2").arr.get(1))
+    #     .select(*index_columns, "inside_index", drop=True)
+    # )
+    # bring back within -180 -- +180
+    all_contours = (
+        all_contours
+        # .join(to_drop, on=[*index_columns, "inside_index"], how="left")
+        # .filter(~pl.col("drop").fill_null(False))
+        # .drop("drop")
+        .with_columns(lon=lon_wrapped)
+        .unique([*index_columns, "lat", "lon"], maintain_order=True)
+        .with_columns(len=pl.len().over(index_columns))
+        .filter(pl.col("len") > 10)
+    )
+    return sort_by_index_then_newindex(all_contours, index_columns[:-1], "contour")
+
+
+def compute_alignment(all_contours: DataFrame, periodic: bool = False) -> DataFrame:
+    """
+    This function computes the alignment criterion for zero-sigma-contours. It is the scalar product betweeen the vector from a contour point to the next and the horizontal wind speed vector.
+    """
+    index_columns = get_index_columns(
+        all_contours, ("member", "time", "cluster", "spell", "relative_index")
+    )
+    dlon = diff_maybe_periodic("lon", periodic)
+    dlat = central_diff("lat")
+    ds = haversine_from_dl(pl.col("lat"), dlon, dlat)
+    align_x = (
+        pl.col("u")
+        / pl.col("s")
+        * RADIUS
+        * pl.col("lat").radians().cos()
+        * dlon.radians()
+        / ds
+    )
+    align_y = pl.col("v") / pl.col("s") * RADIUS * dlat.radians() / ds
+    alignment = align_x + align_y
+    return all_contours.with_columns(
+        alignment=alignment.over([*index_columns, "contour"])
+    )
+
+
+def gather_normal_da_jets_wrapper(
+    jets: pl.DataFrame,
+    times: pl.DataFrame,
+    da: xr.DataArray,
+    n_interp: int = 30,
+    clim: xr.DataArray | None = None,
+    clim_std: xr.DataArray | None = None,
+    half_length: float = 1.2e6,
+    dn: float = 5e4,
+    in_meters: bool = False,
+    grad: bool = False,
+):
+    jets = times.join(jets, on="time", how="left")
+    jets = gather_normal_da_jets(
+        jets, da, half_length=half_length, dn=dn, in_meters=in_meters
+    )
+    varname = da.name + "_interp"
+
+    jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
+
+    if grad:
+        expr = central_diff(pl.col(varname).sort_by("n")) / central_diff(
+            pl.col("n").sort()
+        )
+        possible_cols = get_index_columns(jets, ["time", "sample_index"])
+        jets = jets.filter(
+            pl.col("n").len().over([*possible_cols, "jet ID", "norm_index"]) > 2
+        )
+        jets = jets.with_columns(
+            **{varname: expr.over([*possible_cols, "jet ID", "norm_index"])}
+        )
+
+    if clim is None:
+        return jets
+    if grad and clim_std is not None:
+        print("Grad and clim_std, not possible")
+        raise NotImplementedError
+    clim = xarray_to_polars(clim)
+    jets = jets.with_columns(
+        dayofyear=pl.col("time").dt.ordinal_day(),
+        is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5,
+    ).cast({"n": pl.Float64})
+    if grad:
+        clim = clim.with_columns(
+            **{varname: expr.over(["dayofyear", "is_polar", "norm_index"])}
+        )
+    jets = (
+        jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
+        .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
+        .drop(f"{varname}_right")
+    )
+    if clim_std is None:
+        return jets.drop("dayofyear")
+    clim_std = xarray_to_polars(clim_std)
+    jets = (
+        jets.join(clim_std, on=["dayofyear", "is_polar", "norm_index", "n"])
+        .with_columns(pl.col(varname) / pl.col(f"{varname}_right"))
+        .drop(f"{varname}_right", "dayofyear")
+    )
+    return jets
+
+
+def compute_overturnings(
+    contours,
+    max_difflon: float = 5,
+    min_lon_ext: float = 5,
+    min_lat_ext: float = 5,
+    min_len: int = 5,
+    mode: str = "envelope",
+):
+    index_columns = get_index_columns(
+        contours, ["member", "time", "lev", "level", "contour"]
+    )
+    dx = contours["lon"].unique().diff().abs().mode().item()
+    unique_counts = (
+        contours.group_by(index_columns)
+        .agg(lon=pl.col("lon").unique(), counts=pl.col("lon").unique_counts())
+        .explode("lon", "counts")
+    )
+    overturnings = contours.join(
+        unique_counts, on=[*index_columns, "lon"], how="left"
+    ).filter(pl.col("counts") >= 3)
+    newindex = (pl.int_range(pl.len()) - pl.col("difflon").arg_max()) % (pl.len() + 1)
+    newindex = pl.when(pl.col("difflon").max() > max_difflon).then(newindex).otherwise(pl.int_range(pl.len()))
+    index_columns = ["time", "level", "contour"]
+    difflon = pl.col("lon").diff().abs()
+    difflon = pl.when(difflon > 180).then(360 - difflon).otherwise(difflon)
+    ot_index = (difflon > max_difflon).fill_null(False).cum_sum()
+    
+    indexer = (
+        overturnings
+        .unique([*index_columns, "lon"])
+        .sort(*index_columns, "lon")
+        .with_columns(difflon=difflon.over(index_columns))
+        .with_columns(newindex=newindex.over(index_columns))
+        .sort(*index_columns, "newindex")
+        .with_columns(ot_index=ot_index.over(index_columns))
+        .drop("difflon")
+    )
+    
+    overturnings = (
+        overturnings
+        .join(indexer[*index_columns, "lon", "ot_index", "newindex"], on=[*index_columns, "lon"], how="left")
+        .group_by(*index_columns, "ot_index", maintain_order=True)
+        .agg(
+            pl.col("lon"),
+            pl.col("lat"),
+            difflat=pl.col("lat").max() - pl.col("lat").min(),
+            difflon=(pl.col("lon").last() - pl.col("lon").first()).abs(),
+            len=pl.len(),
+            side=pl.col("side"),
+            inside_index=pl.col("newindex"),
+        )
+        .filter(
+            pl.col("difflon") > min_lon_ext,
+            pl.col("difflat") > min_lat_ext,
+            pl.col("len") > min_len,
+        )
+        .explode("lon", "lat", "side", "inside_index")
+        .with_columns(side=(pl.col("side") > 0).any().over(*index_columns, "ot_index", pl.col("lon")).cast(pl.UInt8()))
+    )
+
+    phys_len = jet_integral_haversine("lon", "lat", x_is_one=True)
+    phys_len = phys_len.over([*index_columns, "ot_index"])
+    index = pl.concat_arr(
+        pl.col("contour").cast(pl.UInt32()), pl.col("ot_index").cast(pl.UInt32())
+    ).rle_id()
+    index_columns.remove("contour")
+    index = index.over(index_columns)
+    overturnings = overturnings.with_columns(phys_len=phys_len, index=index)
+    index_columns.append("index")
+    
+    index_east = pl.col("inside_index").arg_min()
+    index_west = pl.col("inside_index").arg_max()
+    lon_west = pl.col("lon").get(index_east)
+    lon_east = pl.col("lon").get(index_west)
+    lat_west = pl.col("lat").filter(pl.col("lon") == lon_west).mean()
+    lat_east = pl.col("lat").filter(pl.col("lon") == lon_east).mean()
+    orientation = pl.when(lat_west <= lat_east).then(pl.lit("cyclonic")).otherwise(pl.lit("anticyclonic"))
+    
+    overturnings = overturnings.with_columns(orientation=orientation.over(index_columns))
+    if mode == "convex_hull":
+        geometry = st.linestring("points").st.convex_hull()
+    elif mode == "envelope":
+        geometry = st.linestring("points").st.envelope()
+    else:
+        raise ValueError
+    other_columns = [
+        pl.col(col).first()
+        for col in overturnings.columns
+        if col not in ["lon", "lat", *index_columns, "side"]
+    ]
+    join_geoms = pl.col("geometry").first().st.union(pl.col("geometry").last())
+    join_geoms = (
+        pl.when((pl.len() > 1) & (pl.col("points").list.first().len() > 1))
+        .then(join_geoms)
+        .otherwise(pl.col("geometry").first())
+    )
+    overturnings = (
+        overturnings
+        .group_by([*index_columns, "side"])
+        .agg(points=pl.concat_arr("lon", "lat"), *other_columns)
+        .filter(pl.col("points").list.eval(pl.element().len() > 1).list.all())
+        .with_columns(geometry=geometry)
+        .group_by(index_columns)
+        .agg(join_geoms, "points", "side", *other_columns)
+    )
+    return overturnings
+
+
+def sjoin_to_grid(
+    events: pl.DataFrame,
+    da: xr.DataArray,
+    varname: str = "ones",
+    buffer: float | None = None,
+):
+    if da.name is None:
+        da = da.rename("dummy")
+    da_name = da.name
+    dx = (da.lon[1] - da.lon[0]).item()
+    dy = (da.lat[1] - da.lat[0]).item()
+    if buffer is None:
+        buffer = min(dx, dy) / 2
+    indexer_grid = [slice(None) if dim in ["lon", "lat"] else 0 for dim in da.dims]
+    nogrid = [dim for dim in da.dims if dim not in ["lon", "lat"]]
+    da_df = da[*indexer_grid]
+    dtype = {
+        "ones": pl.UInt32(),
+        "intensity": pl.Float32(),
+        "mean_var": pl.Float32(),
+        "event_area": pl.Float32(),
+    }[varname]
+
+    da_df = (
+        pl.from_pandas(da_df.to_dataframe().reset_index())
+        .drop(da_name, *nogrid)
+        .cast({"lon": pl.Float32, "lat": pl.Float32})
+        .unique(["lat", "lon"])
+        .sort(["lat", "lon"])
+        .with_columns(geometry=st.point(pl.concat_arr("lon", "lat")))
+    )
+
+    index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+    events = events.drop("points").with_columns(pl.col("geometry").st.buffer(buffer))
+    if varname == "ones":
+        events = events.with_columns(ones=pl.lit(1))
+    events = events.cast({varname: dtype})
+    events = events.st.sjoin(
+        da_df, on="geometry", how="inner", predicate="within"
+    ).drop("geometry_right")
+    events = events.sort(*index_columns, "lat", "lon")
+    return events
+
+
+def to_xarray_sjoin(
+    events: pl.DataFrame, da: xr.DataArray, varname: str = "ones", buffer: float = 0.25
+):
+    index_columns = get_index_columns(events, ["member", "time", "level"])
+    index_columns.extend(["lon", "lat"])
+    events = sjoin_to_grid(events, da, varname, buffer)
+    for i, index_column in enumerate(index_columns):
+        if index_column in da.dims:
+            continue
+        unique_vals = events[index_column].unique().to_list()
+        da = da.expand_dims({index_column: unique_vals}, axis=i).copy(deep=True)
+    indexer = {name: xr.DataArray(events[name]) for name in index_columns}
+    value = events[varname].to_numpy()
+    da[:] = 0
+    da.loc[indexer] = value
+    da = da.fillna(0)
+    return da
+
+
+def join_wrapper(
+    df: DataFrame, da: xr.DataArray | xr.Dataset, join_dims: list | None = None, suffix: str = "_right", **kwargs
+):
+    """
+    Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
+
+    Parameters
+    ----------
+    df : DataFrame
+        A DataFrame with columns also found in da
+    da : xr.DataArray | xr.Dataset
+        Xarray object whose values to join to the DataFrame
+    suffix : str, optional
+        join suffix, by default "_right"
+    kwargs :
+        keyword arguments passed to ``iterate_over_year_maybe_member``
+
+    Returns
+    -------
+    DataFrame
+        Original DataFrame with one or several extra columns from da.
+    """
+    indexer = iterate_over_year_maybe_member(df, da, **kwargs)
+    df_upd = []
+    if join_dims is None:
+        join_dims = da.dims
+    for idx1, idx2 in tqdm(list(indexer)):
+        these_jets = df.filter(*idx1)
+        da_ = compute(da.sel(**idx2), progress_flag=False)
+        da_ = xarray_to_polars(da_)
+        these_jets = these_jets.join(da_, on=join_dims, how="left", suffix=suffix)
+        df_upd.append(these_jets)
+    df = pl.concat(df_upd)
+    return df
+
+
+def event_props(events: pl.DataFrame, das: list[xr.DataArray]):
+    index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+    events_on_grid = sjoin_to_grid(events, das[0])
+    
+    dx = (das[0].lon[1] - das[0].lon[0]).item()
+    dy = (das[0].lat[1] - das[0].lat[0]).item()
+    cell_area = (
+        (pl.col("lat") + pl.lit(dy / 2)).radians().sin() 
+        - (pl.col("lat") - pl.lit(dy / 2)).radians().sin() 
+    ) * pl.lit(dx).radians() * RADIUS ** 2
+    cell_area = cell_area.abs().cast(pl.Float32())
+    com_x = circular_mean(pl.col("lat"), "cell_area").cast(pl.Float32())
+    com_y = weighted_mean_pl(pl.col("lon"), "cell_area").cast(pl.Float32())
+    events_on_grid = events_on_grid.with_columns(cell_area=cell_area)
+    
+    aggs = {"area": pl.col("cell_area").sum(), "com_x": com_x, "com_y": com_y}
+    
+    for i, da in enumerate(das):
+        if da.name is None:
+            da.rename(f"da_{i}")
+        events_on_grid = join_wrapper(events_on_grid, da)
+        aggs[da.name] = (pl.col(da.name) * pl.col("cell_area")).sum() / pl.col("cell_area").sum()
+    
+    events_on_grid = events_on_grid.group_by(index_columns).agg(**aggs)
+    
+    events = events.join(events_on_grid, on=index_columns, how="left")
+
+    events = events.with_columns(
+        cs.float().cast(pl.Float32()),
+        cs.signed_integer().cast(pl.Int32()),
+        cs.unsigned_integer().cast(pl.UInt32()),
+    )
+    return events
+
+
 def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str) -> DataFrame:
     """
     Bilinear interpolation. Values in `da_df[varname]` will be bilinearly interpolated to the jet points' `lon`-`lat` coordinates, resulting in a new column in `jets` with a name constructed as `f"{varname}_interp"`.
@@ -270,9 +875,9 @@ def add_normals_meters(
     delete_middle: bool = False,
 ) -> DataFrame:
     """
-    Augments a `DataFrame` containing `"lon"`, `"lat"`, `"u"` and `"v"` columns with new columns `"normallon"` and `"normallat"`. 
-    
-    For each unique jet point, adds segments normal to the wind direction at this point in the same plane and in both directions. Each half-segment has a length of `half_length`, in m, and is discretized by a point every `dn` m. 
+    Augments a `DataFrame` containing `"lon"`, `"lat"`, `"u"` and `"v"` columns with new columns `"normallon"` and `"normallat"`.
+
+    For each unique jet point, adds segments normal to the wind direction at this point in the same plane and in both directions. Each half-segment has a length of `half_length`, in m, and is discretized by a point every `dn` m.
 
     Parameters
     ----------
@@ -298,7 +903,9 @@ def add_normals_meters(
 
     # Expr angle
     if "u" in jets.columns and "v" in jets.columns:
-        angle = (pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2) % np.pi
+        angle = (
+            pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear") + np.pi / 2
+        ) % np.pi
         wind_speed = ["u", "v", "s"]
     else:
         angle = (
@@ -318,12 +925,11 @@ def add_normals_meters(
     arc_distances = pl.col("n") / RADIUS
     # bearing = np.pi / 2 - angle
     normallat = (
-        lat.sin() * arc_distances.cos() + 
-        lat.cos() * arc_distances.sin() * angle.sin()
+        lat.sin() * arc_distances.cos() + lat.cos() * arc_distances.sin() * angle.sin()
     ).arcsin()
     normallon = lon + pl.arctan2(
-        angle.cos() * arc_distances.sin() * lat.cos(), 
-        arc_distances.cos() - lat.sin() * normallat.sin()
+        angle.cos() * arc_distances.sin() * lat.cos(),
+        arc_distances.cos() - lat.sin() * normallat.sin(),
     )
     normallat = normallat.degrees().cast(pl.Float32())
     normallon = ((normallon.degrees() + 540) % 360 - 180).cast(pl.Float32())
@@ -340,7 +946,7 @@ def add_normals_meters(
             "jet ID",
             "sample_index",
             "inside_index",
-        ]
+        ],
     )
 
     jets = jets[[*index_columns, "lon", "lat", *wind_speed, *is_polar]]
@@ -375,9 +981,9 @@ def add_normals(
     delete_middle: bool = False,
 ) -> DataFrame:
     """
-    Augments a `DataFrame` containing `"lon"`, `"lat"`, `"u"` and `"v"` columns with new columns `"normallon"` and `"normallat"`. 
-    
-    For each unique jet point, adds segments normal to the wind direction at this point in the same plane and in both directions. Each half-segment has a length of `half_length`, in degrees, and is discretized by a point every `dn` degrees. 
+    Augments a `DataFrame` containing `"lon"`, `"lat"`, `"u"` and `"v"` columns with new columns `"normallon"` and `"normallat"`.
+
+    For each unique jet point, adds segments normal to the wind direction at this point in the same plane and in both directions. Each half-segment has a length of `half_length`, in degrees, and is discretized by a point every `dn` degrees.
 
     Parameters
     ----------
@@ -599,116 +1205,9 @@ def interp_jets_to_zero_one(
     return jets
 
 
-def gather_normal_da_jets_wrapper(
-    jets: pl.DataFrame,
-    times: pl.DataFrame,
-    da: xr.DataArray,
-    n_interp: int = 30,
-    clim: xr.DataArray | None = None,
-    clim_std: xr.DataArray | None = None,
-    half_length: float = 1.2e6,
-    dn: float = 5e4,
-    in_meters: bool = False,
-    grad: bool = False,
-):
-    jets = times.join(jets, on="time", how="left")
-    jets = gather_normal_da_jets(jets, da, half_length=half_length, dn=dn, in_meters=in_meters)
-    varname = da.name + "_interp"
-
-    jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
-    
-    if grad:
-        expr = central_diff(pl.col(varname).sort_by("n")) / central_diff(pl.col("n").sort())
-        possible_cols = get_index_columns(jets, ["time", "sample_index"])
-        jets = jets.filter(pl.col("n").len().over([*possible_cols, "jet ID", "norm_index"]) > 2)
-        jets = jets.with_columns(**{varname: expr.over([*possible_cols, "jet ID", "norm_index"])})
-        
-    if clim is None:
-        return jets
-    if grad and clim_std is not None:
-        print("Grad and clim_std, not possible")
-        raise NotImplementedError
-    clim = xarray_to_polars(clim)
-    jets = jets.with_columns(
-        dayofyear=pl.col("time").dt.ordinal_day(), is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5
-    ).cast({"n": pl.Float64})
-    if grad:
-        clim = clim.with_columns(**{varname: expr.over(["dayofyear", "is_polar", "norm_index"])})
-    jets = (
-        jets
-        .join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
-        .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
-        .drop(f"{varname}_right")
-    )
-    if clim_std is None:
-        return jets.drop("dayofyear")
-    clim_std = xarray_to_polars(clim_std)
-    jets = (
-        jets
-        .join(clim_std, on=["dayofyear", "is_polar", "norm_index", "n"])
-        .with_columns(pl.col(varname) / pl.col(f"{varname}_right"))
-        .drop(f"{varname}_right", "dayofyear")
-    )
-    return jets
-
-
-# def gather_normal_da_jets_wrapper_wrapper(
-#     jets: pl.DataFrame,
-#     times: pl.DataFrame,
-#     da: xr.DataArray,
-#     all_times: pl.Series | None = None,
-#     half_length: float = 20,
-#     dn: float = 1,
-#     n_interp: int = 30,
-#     n_bootstraps: int = 0,
-#     clim: xr.DataArray | None = None,
-#     clim_std: xr.DataArray | None = None,
-#     grad: bool = False,
-#     time_before: datetime.timedelta = datetime.timedelta(0),
-#     time_after: datetime.timedelta = datetime.timedelta(0),
-# ):
-#     times = extend_spells(times, time_before=time_before, time_after=time_after)
-#     varname = da.name + "_interp"
-#     if not n_bootstraps:
-#         jets = _gather_normal_da_jets_wrapper(jets, times, da, n_interp, clim=clim, clim_std=clim_std, half_length=half_length, dn=dn, grad=grad)
-#         jets = jets.group_by(
-#             [pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n"], maintain_order=True
-#         ).agg(pl.col(varname).mean())
-#         return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
-#     if all_times is None:
-#         all_times = jets["time"].unique().clone()
-#     ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
-#     jets = _gather_normal_da_jets_wrapper(
-#         jets, ts_bootstrapped, da, n_interp=n_interp, clim=clim, clim_std=clim_std, grad=grad
-#     )
-        
-#     jets = (
-#         jets.group_by(
-#             ["sample_index", pl.col("is_polar"), "norm_index", "n"],
-#         )
-#         .agg(pl.col(varname).mean())
-#         .sort("sample_index", "is_polar", "norm_index", "n")
-#     )
-#     jets = (
-#         jets[["sample_index"]]
-#         .unique()
-#         .join(jets[["is_polar"]].unique(), how="cross")
-#         .join(jets[["norm_index"]].unique(), how="cross")
-#         .join(jets[["n"]].unique(), how="cross")
-#         .sort("sample_index", "is_polar", "norm_index", "n")
-#         .join(jets, on=["sample_index", "is_polar", "norm_index", "n"], how="left")
-#     )
-#     pvals = jets.group_by(
-#         ["is_polar", "norm_index", "n"], maintain_order=True
-#     ).agg((pl.col(varname).rank().last() - 1) / n_bootstraps)
-#     jets = jets.filter(pl.col("sample_index") == n_bootstraps).drop("sample_index")
-#     jets = jets.with_columns(pvals=pvals[varname])
-#     return polars_to_xarray(jets, index_columns=["is_polar", "norm_index", "n"])
-
-
 def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     """
-    Expands the jets by appending segments before the start and after the end, following the tangent angle at the start and the end of the original jet, respectively.
+    Expands the jets by appending segments before the start and after the end, following the tangent angle at the start and the end of the original jet, respectively. Broken?
 
     Parameters
     ----------
@@ -723,7 +1222,7 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     -------
     DataFrame
         Jets DataFrame with all the index dimensions kept original, only lon and lat as additional columns (the rest is dropped), and longer jets with added segments.
-        
+
     TODO: redo using https://www.movable-type.co.uk/scripts/latlong.html
     """
     index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
@@ -758,9 +1257,22 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
-def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 2e6, dn: float = 5e4, n_interp: int = 40, in_meters: bool = True):
+def create_jet_relative_dataset(
+    jets,
+    path,
+    da,
+    suffix="",
+    half_length: float = 2e6,
+    dn: float = 5e4,
+    n_interp: int = 40,
+    in_meters: bool = True,
+):
     jets = jets.with_columns(pl.col("time").dt.round("1d"))
-    jets = jets.with_columns(jets.group_by("time", maintain_order=True).agg(pl.col("jet ID").rle_id())["jet ID"].explode())
+    jets = jets.with_columns(
+        jets.group_by("time", maintain_order=True)
+        .agg(pl.col("jet ID").rle_id())["jet ID"]
+        .explode()
+    )
     indexer = iterate_over_year_maybe_member(jets, da)
     to_average = []
     varname = da.name + "_interp"
@@ -768,49 +1280,88 @@ def create_jet_relative_dataset(jets, path, da, suffix="", half_length: float = 
         jets_ = jets.filter(*idx1)
         da_ = da.sel(**idx2)
         try:
-            jets_with_interp = gather_normal_da_jets(jets_, da_, half_length=half_length, dn=dn, in_meters=in_meters)
+            jets_with_interp = gather_normal_da_jets(
+                jets_, da_, half_length=half_length, dn=dn, in_meters=in_meters
+            )
         except (KeyError, ValueError) as e:
             print(e)
             break
-        jets_with_interp = interp_jets_to_zero_one(jets_with_interp, [varname, "is_polar"], n_interp=n_interp)
-        jets_with_interp = jets_with_interp.group_by("time", pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5, "norm_index", "n", maintain_order=True).agg(pl.col(varname).mean())
+        jets_with_interp = interp_jets_to_zero_one(
+            jets_with_interp, [varname, "is_polar"], n_interp=n_interp
+        )
+        jets_with_interp = jets_with_interp.group_by(
+            "time",
+            pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5,
+            "norm_index",
+            "n",
+            maintain_order=True,
+        ).agg(pl.col(varname).mean())
         to_average.append(jets_with_interp)
     (
-        pl
-        .concat(to_average)
+        pl.concat(to_average)
         .cast({"norm_index": pl.Float32(), "n": pl.Float32(), varname: pl.Float32()})
         .write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
     )
     return
 
 
-def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str): 
-    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").mean()).sort("jet ID", "dayofyear", "norm_index", "n")
+def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str):
+    return (
+        df.group_by(
+            pl.col("time").dt.ordinal_day().alias("dayofyear"),
+            "norm_index",
+            "n",
+            "jet ID",
+        )
+        .agg(pl.col(f"{varname}_interp").mean())
+        .sort("jet ID", "dayofyear", "norm_index", "n")
+    )
 
 
-def compute_relative_std(df: pl.DataFrame | pl.LazyFrame, varname: str): 
-    return df.group_by(pl.col("time").dt.ordinal_day().alias("dayofyear"), "norm_index", "n", "jet ID").agg(pl.col(f"{varname}_interp").std()).sort("jet ID", "dayofyear", "norm_index", "n")
+def compute_relative_std(df: pl.DataFrame | pl.LazyFrame, varname: str):
+    return (
+        df.group_by(
+            pl.col("time").dt.ordinal_day().alias("dayofyear"),
+            "norm_index",
+            "n",
+            "jet ID",
+        )
+        .agg(pl.col(f"{varname}_interp").std())
+        .sort("jet ID", "dayofyear", "norm_index", "n")
+    )
 
 
-def compute_relative_sm(clim: pl.DataFrame | pl.LazyFrame, varname: str, season_doy: pl.Series | None = None): 
+def compute_relative_sm(
+    clim: pl.DataFrame | pl.LazyFrame, varname: str, season_doy: pl.Series | None = None
+):
     if season_doy is None:
         season_doy = JJADOYS
-    return clim.with_columns(**{f"{varname}_interp": pl.col(f"{varname}_interp").filter(pl.col("dayofyear").is_in(season_doy.implode())).mean().over("jet ID", "n", "norm_index")})
+    return clim.with_columns(
+        **{
+            f"{varname}_interp": pl.col(f"{varname}_interp")
+            .filter(pl.col("dayofyear").is_in(season_doy.implode()))
+            .mean()
+            .over("jet ID", "n", "norm_index")
+        }
+    )
 
 
-def compute_relative_anom(df: pl.DataFrame | pl.LazyFrame, varname: str, clim: pl.DataFrame | pl.LazyFrame, clim_std: pl.DataFrame | None = None): 
+def compute_relative_anom(
+    df: pl.DataFrame | pl.LazyFrame,
+    varname: str,
+    clim: pl.DataFrame | pl.LazyFrame,
+    clim_std: pl.DataFrame | None = None,
+):
     varname_ = f"{varname}_interp"
     if clim_std is None:
         return (
-            df
-            .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+            df.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
             .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
             .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
             .drop(f"{varname_}_right", "dayofyear")
         )
     return (
-        df
-        .with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+        df.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
         .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right")

@@ -38,10 +38,10 @@ if "DATADIR" not in globals():
     path_override_config = Path.home().joinpath(".jetutils.ini")
     config.read([path_default_config, path_override_config])
 
-    if path_override_config.is_file():
-        print("Found config override file at ", path_override_config)
-    else:
-        print("No config override found at ", path_override_config, "Guessing everything")
+    # if path_override_config.is_file():
+    #     print("Found config override file at ", path_override_config)
+    # else:
+    #     print("No config override found at ", path_override_config, "Guessing everything")
 
     # For what's not found, guesses and prints the guesses
     DATADIR = config.get("PATHS", "DATADIR")
@@ -52,13 +52,13 @@ if "DATADIR" not in globals():
 
     if DATADIR == "guess":
         DATADIR = Path.cwd().joinpath("data")
-        print("Guessed DATADIR : ", DATADIR)
+        # print("Guessed DATADIR : ", DATADIR)
     if FIGURES == "guess":
         FIGURES = Path.cwd().joinpath("figures")
-        print("Guessed FIGURES : ", FIGURES)
+        # print("Guessed FIGURES : ", FIGURES)
     if RESULTS == "guess":
         RESULTS = Path.cwd().joinpath("results")
-        print("Guessed RESULTS : ", RESULTS)
+        # print("Guessed RESULTS : ", RESULTS)
     if N_WORKERS == "guess":
         if "SLURM_NTASKS" not in os.environ and "SLURM_CPUS_ON_NODE" not in os.environ:
             N_WORKERS = os.cpu_count()
@@ -66,7 +66,7 @@ if "DATADIR" not in globals():
             guess_1 = os.environ.get("SLURM_NTASKS", 1)
             guess_2 = os.environ.get("SLURM_CPUS_ON_NODE", 1)
             N_WORKERS = max(guess_1, guess_2)
-        print("Guessed N_WORKERS : ", N_WORKERS)
+        # print("Guessed N_WORKERS : ", N_WORKERS)
     N_WORKERS = int(N_WORKERS)
     if MEMORY_LIMIT == "guess":
         MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_CPU", None)
@@ -74,7 +74,7 @@ if "DATADIR" not in globals():
             MEMORY_LIMIT = os.environ.get("SLURM_MEM_PER_NODE", 16000)
             MEMORY_LIMIT = int(MEMORY_LIMIT) // N_WORKERS
         MEMORY_LIMIT = f"{int(MEMORY_LIMIT) / 1000}GiB"
-        print("Guessed MEMORY_LIMIT per worker : ", MEMORY_LIMIT)
+        # print("Guessed MEMORY_LIMIT per worker : ", MEMORY_LIMIT)
 
     COMPUTE_KWARGS = {
         "processes": True,
@@ -522,20 +522,21 @@ def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
         ds = ds[data_vars[0]]
     return ds
 
+default_index_columns = (
+    "member",
+    "time",
+    "cluster",
+    "jet ID",
+    "spell",
+    "relative_index",
+    "relative_time",
+    "sample_index",
+    "inside_index",
+)
 
 def get_index_columns(
     df,
-    potentials: list[str] | tuple[str] = (
-        "member",
-        "time",
-        "cluster",
-        "jet ID",
-        "spell",
-        "relative_index",
-        "relative_time",
-        "sample_index",
-        "inside_index",
-    ),
+    potentials: list[str] | tuple[str] | None = None,
 ) -> list[str]:
     """
     Finds columns in `df` that represent an index imformation more than a data information in the context of this package.
@@ -552,6 +553,8 @@ def get_index_columns(
     list
         list of columns in `potentials` that are columns in `df`.
     """
+    if potentials is None:
+        potentials: tuple[str] = default_index_columns
     index_columns: list[str] = [ic for ic in potentials if ic in df.columns]
     return index_columns
 
@@ -570,6 +573,22 @@ def extract_season_from_df(
     if isinstance(season, int):
         season = [season]
     return df.filter(pl.col("time").dt.month().is_in(season))
+
+
+def weighted_mean_pl(col: Expr | str, by: Expr | str | None = None):
+    col = to_expr(col)
+    if by is None:
+        return col.mean()
+    by = to_expr(by)
+    return ((col * by).sum() / by.sum()).alias(col.meta.output_name())
+
+
+def circular_mean(col: Expr | str, weights: Expr | str | None = None):
+    col = to_expr(col)
+    col = col.radians()
+    mean_sin = weighted_mean_pl(col.sin(), weights)
+    mean_cos = weighted_mean_pl(col.cos(), weights)
+    return pl.arctan2(mean_sin, mean_cos).degrees().alias(col.meta.output_name())
 
 
 def case_insensitive_equal(str1: str, str2: str) -> bool:
@@ -902,7 +921,7 @@ def gb_index(
     df: pl.DataFrame,
     group_by: list | tuple,
     name: str = "index",
-    dtype: pl.DataType = pl.UInt32,
+    dtype: pl.DataType = pl.UInt32(),
 ):
     if not group_by:
         return df.with_row_index(name=name)
@@ -1127,6 +1146,12 @@ def compute(obj, progress_flag: bool = False, **kwargs):
             return client.compute(obj)  # type: ignore # noqa: F821
     except AttributeError:
         return obj
+    
+from contourpy import contour_generator
+def inner(args):
+    im, lines = args
+    cg = contour_generator(im.lon.values, im.lat.values, im.values, name="serial", line_type="ChunkCombinedCode")
+    return cg.multi_lines(lines)
 
 def map_maybe_parallel(
     iterator: Iterable,

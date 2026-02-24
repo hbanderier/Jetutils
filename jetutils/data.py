@@ -1421,7 +1421,7 @@ def periodic_rolling_pl(
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
     if other_columns is None:
-        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy"))
+        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy", "start")) # needs a better solution!
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df[col].unique().len() for col in other_columns]
     len_ = int(np.prod(len_))
