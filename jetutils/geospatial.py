@@ -260,7 +260,8 @@ def sort_by_difflon(df, index_columns, other):
 
 def sort_by_newindex(df, index_columns, other):
     return (
-        df.with_columns(newindex().over([*index_columns, other]))
+        df.with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, other]))
+        .with_columns(newindex().over([*index_columns, other]))
         .unique([*index_columns, other, "index"])
         .sort([*index_columns, other, "index"])
     )
@@ -379,7 +380,7 @@ def compute_contours(
     elif processes > 1:
         ctx = get_context(ctx)
     res = map_maybe_parallel(
-        iter3, inner_compute_contours, len(iter2), processes=processes, ctx=ctx
+        iter3, inner_compute_contours, len(iter2), processes=processes, ctx=ctx, progress=False,
     )
     all_is, all_levels, all_contours, all_cyclics = list(zip(*res))
     index_columns = [*index_columns, "level", "contour"]
@@ -463,7 +464,7 @@ def compute_contours(
         .with_columns(len=pl.len().over(index_columns))
         .filter(pl.col("len") > 10)
     )
-    return sort_by_index_then_newindex(all_contours, index_columns[:-1], "contour")
+    return sort_by_newindex(all_contours, index_columns[:-1], "contour")
 
 
 def compute_alignment(all_contours: DataFrame, periodic: bool = False) -> DataFrame:
@@ -706,21 +707,24 @@ def sjoin_to_grid(
 
 
 def to_xarray_sjoin(
-    events: pl.DataFrame, da: xr.DataArray, varname: str = "ones", buffer: float = 0.25
+    da: xr.DataArray, events: pl.DataFrame | None = None, events_on_grid: pl.DataFrame | None = None, varname: str = "ones", buffer: float | None = None
 ):
-    index_columns = get_index_columns(events, ["member", "time", "level"])
+    if events_on_grid is None:
+        events_on_grid = sjoin_to_grid(events, da, varname, buffer)
+    index_columns = get_index_columns(events_on_grid, ["member", "time", "level"])
     index_columns.extend(["lon", "lat"])
-    events = sjoin_to_grid(events, da, varname, buffer)
     for i, index_column in enumerate(index_columns):
         if index_column in da.dims:
             continue
-        unique_vals = events[index_column].unique().to_list()
+        unique_vals = events_on_grid[index_column].unique().to_list()
         da = da.expand_dims({index_column: unique_vals}, axis=i).copy(deep=True)
-    indexer = {name: xr.DataArray(events[name]) for name in index_columns}
-    value = events[varname].to_numpy()
+    indexer = {name: xr.DataArray(events_on_grid[name]) for name in index_columns}
+    value = events_on_grid[varname].to_numpy()
+    dtype = np.uint8 if varname == "ones" else np.float32
     da[:] = 0
     da.loc[indexer] = value
     da = da.fillna(0)
+    da = da.astype(dtype)
     return da
 
 
@@ -750,7 +754,7 @@ def join_wrapper(
     df_upd = []
     if join_dims is None:
         join_dims = da.dims
-    for idx1, idx2 in tqdm(list(indexer)):
+    for idx1, idx2 in indexer:
         these_jets = df.filter(*idx1)
         da_ = compute(da.sel(**idx2), progress_flag=False)
         da_ = xarray_to_polars(da_)
@@ -783,16 +787,16 @@ def event_props(events: pl.DataFrame, das: list[xr.DataArray]):
         events_on_grid = join_wrapper(events_on_grid, da)
         aggs[da.name] = (pl.col(da.name) * pl.col("cell_area")).sum() / pl.col("cell_area").sum()
     
-    events_on_grid = events_on_grid.group_by(index_columns).agg(**aggs)
+    events_on_grid_ = events_on_grid.group_by(index_columns).agg(**aggs)
     
-    events = events.join(events_on_grid, on=index_columns, how="left")
+    events = events.join(events_on_grid_, on=index_columns, how="left")
 
     events = events.with_columns(
         cs.float().cast(pl.Float32()),
         cs.signed_integer().cast(pl.Int32()),
         cs.unsigned_integer().cast(pl.UInt32()),
     )
-    return events
+    return events, events_on_grid
 
 
 def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str) -> DataFrame:
