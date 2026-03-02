@@ -1,6 +1,6 @@
 # coding: utf-8
 from jetutils.definitions import squarify
-from jetutils.jet_finding import central_diff
+from jetutils.geospatial import central_diff
 from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor

@@ -1,5 +1,7 @@
+from numba.core.tracing import event
 import warnings
 from itertools import product
+from typing import Literal
 from multiprocessing import get_context
 
 import numpy as np
@@ -27,7 +29,9 @@ from .definitions import (
 )
 
 
-def euclidean_geographic(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str) -> Expr:
+def euclidean_geographic(
+    lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str
+) -> Expr:
     lon1 = to_expr(lon1)
     lat1 = to_expr(lat1)
     lon2 = to_expr(lon2)
@@ -38,7 +42,7 @@ def euclidean_geographic(lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, l
     dlat = lat2 - lat1
 
     return (dlon.pow(2) + dlat.pow(2)).sqrt()
-    
+
 
 def haversine(
     lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str
@@ -236,9 +240,8 @@ def diff_exp():
 
 
 def newindex():
-    return (
-        (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) 
-        % (pl.col("index").max() + 1)
+    return (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) % (
+        pl.col("index").max() + 1
     )
 
 
@@ -330,7 +333,7 @@ def my_pairwise(X1: np.ndarray, X2: np.ndarray | None = None) -> np.ndarray:
     return output
 
 
-def inner_compute_contours(args):
+def inner_detect_contours(args):
     """
     Worker function to compute the zero-sigma-contours in a parallel context
     """
@@ -350,11 +353,15 @@ def inner_compute_contours(args):
     return tuple(zip(*to_ret))
 
 
-def compute_contours(
-    da: xr.DataArray, levels: list[float], repeat_lons: int = 120, processes: int = 1, ctx: str | None = None
+def detect_contours(
+    da: xr.DataArray,
+    levels: list[float],
+    repeat_lons: int = 120,
+    processes: int = 1,
+    ctx: str | None = None,
 ) -> DataFrame:
     """
-    Potentially parallel wrapper around `inner_compute_contours`. Finds all zero-sigma-contours in all timesteps of `df`. Extend in longitude to capture the contours over the -180 line
+    Potentially parallel wrapper around `inner_detect_contours`. Finds all zero-sigma-contours in all timesteps of `df`. Extend in longitude to capture the contours over the -180 line
     """
     if repeat_lons > 0:
         da = xr.concat(
@@ -380,7 +387,12 @@ def compute_contours(
     elif processes > 1:
         ctx = get_context(ctx)
     res = map_maybe_parallel(
-        iter3, inner_compute_contours, len(iter2), processes=processes, ctx=ctx, progress=False,
+        iter3,
+        inner_detect_contours,
+        len(iter2),
+        processes=processes,
+        ctx=ctx,
+        progress=False,
     )
     all_is, all_levels, all_contours, all_cyclics = list(zip(*res))
     index_columns = [*index_columns, "level", "contour"]
@@ -421,7 +433,9 @@ def compute_contours(
         pl.col("contour") != pl.col("contour_right"),
         (pl.col("side") > 0.0) & (pl.col("side_right") == 0.0),
     ]
-    intersection = pl.col("points").list.set_intersection(pl.col("points_right")).list.len()
+    intersection = (
+        pl.col("points").list.set_intersection(pl.col("points_right")).list.len()
+    )
     to_drop = (
         df.join(df, on=["time", "level"], how="full")
         .drop("time_right", "level_right")
@@ -554,18 +568,58 @@ def gather_normal_da_jets_wrapper(
     return jets
 
 
-def compute_overturnings(
+def event_geometry(
+    events: pl.DataFrame,
+    mode: Literal["envelope", "convex_hull", "polygon"] = "envelope",
+    index_columns: list[str] | None = None,
+):
+    if index_columns is None:
+        index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+    if mode == "envelope":
+        geometry = st.linestring("points").st.envelope()
+    elif mode == "convex_hull":
+        geometry = st.linestring("points").st.envelope()
+    elif mode == "polygon":
+        geometry = st.polygon(
+            pl.col("points")
+            .list.concat(pl.col("points").list.gather([0]))
+            .implode()
+            .over([*index_columns, "side"])
+        )  # god
+    else:
+        raise ValueError
+    other_columns = [
+        pl.col(col).first()
+        for col in events.columns
+        if col not in ["lon", "lat", *index_columns, "side"]
+    ]
+    join_geoms = pl.col("geometry").first().st.union(pl.col("geometry").last())
+    join_geoms = (
+        pl.when((pl.len() > 1) & (pl.col("points").list.first().len() > 1))
+        .then(join_geoms)
+        .otherwise(pl.col("geometry").first())
+    )
+    events = (
+        events.group_by([*index_columns, "side"])
+        .agg(points=pl.concat_arr("lon", "lat"), *other_columns)
+        .filter(pl.col("points").list.eval(pl.element().len() > 1).list.all())
+        .with_columns(geometry=geometry)
+        .group_by(index_columns)
+        .agg(join_geoms, "points", "side", *other_columns)
+    )
+    return events
+
+
+def detect_overturnings(
     contours,
     max_difflon: float = 5,
     min_lon_ext: float = 5,
     min_lat_ext: float = 5,
     min_len: int = 5,
-    mode: str = "envelope",
 ):
     index_columns = get_index_columns(
         contours, ["member", "time", "lev", "level", "contour"]
     )
-    dx = contours["lon"].unique().diff().abs().mode().item()
     unique_counts = (
         contours.group_by(index_columns)
         .agg(lon=pl.col("lon").unique(), counts=pl.col("lon").unique_counts())
@@ -575,27 +629,33 @@ def compute_overturnings(
         unique_counts, on=[*index_columns, "lon"], how="left"
     ).filter(pl.col("counts") >= 3)
     newindex = (pl.int_range(pl.len()) - pl.col("difflon").arg_max()) % (pl.len() + 1)
-    newindex = pl.when(pl.col("difflon").max() > max_difflon).then(newindex).otherwise(pl.int_range(pl.len()))
+    newindex = (
+        pl.when(pl.col("difflon").max() > max_difflon)
+        .then(newindex)
+        .otherwise(pl.int_range(pl.len()))
+    )
     index_columns = ["time", "level", "contour"]
     difflon = pl.col("lon").diff().abs()
     difflon = pl.when(difflon > 180).then(360 - difflon).otherwise(difflon)
-    ot_index = (difflon > max_difflon).fill_null(False).cum_sum()
-    
+    subindex = (difflon > max_difflon).fill_null(False).cum_sum()
+
     indexer = (
-        overturnings
-        .unique([*index_columns, "lon"])
+        overturnings.unique([*index_columns, "lon"])
         .sort(*index_columns, "lon")
         .with_columns(difflon=difflon.over(index_columns))
         .with_columns(newindex=newindex.over(index_columns))
         .sort(*index_columns, "newindex")
-        .with_columns(ot_index=ot_index.over(index_columns))
+        .with_columns(subindex=subindex.over(index_columns))
         .drop("difflon")
     )
-    
+
     overturnings = (
-        overturnings
-        .join(indexer[*index_columns, "lon", "ot_index", "newindex"], on=[*index_columns, "lon"], how="left")
-        .group_by(*index_columns, "ot_index", maintain_order=True)
+        overturnings.join(
+            indexer[*index_columns, "lon", "subindex", "newindex"],
+            on=[*index_columns, "lon"],
+            how="left",
+        )
+        .group_by(*index_columns, "subindex", maintain_order=True)
         .agg(
             pl.col("lon"),
             pl.col("lat"),
@@ -611,55 +671,260 @@ def compute_overturnings(
             pl.col("len") > min_len,
         )
         .explode("lon", "lat", "side", "inside_index")
-        .with_columns(side=(pl.col("side") > 0).any().over(*index_columns, "ot_index", pl.col("lon")).cast(pl.UInt8()))
+        .with_columns(
+            side=(pl.col("side") > 0)
+            .any()
+            .over(*index_columns, "subindex", pl.col("lon"))
+            .cast(pl.UInt8())
+        )
     )
 
     phys_len = jet_integral_haversine("lon", "lat", x_is_one=True)
-    phys_len = phys_len.over([*index_columns, "ot_index"])
+    phys_len = phys_len.over([*index_columns, "subindex"])
     index = pl.concat_arr(
-        pl.col("contour").cast(pl.UInt32()), pl.col("ot_index").cast(pl.UInt32())
+        pl.col("contour").cast(pl.UInt32()), pl.col("subindex").cast(pl.UInt32())
     ).rle_id()
     index_columns.remove("contour")
     index = index.over(index_columns)
     overturnings = overturnings.with_columns(phys_len=phys_len, index=index)
     index_columns.append("index")
-    
+
     index_east = pl.col("inside_index").arg_min()
     index_west = pl.col("inside_index").arg_max()
     lon_west = pl.col("lon").get(index_east)
     lon_east = pl.col("lon").get(index_west)
     lat_west = pl.col("lat").filter(pl.col("lon") == lon_west).mean()
     lat_east = pl.col("lat").filter(pl.col("lon") == lon_east).mean()
-    orientation = pl.when(lat_west <= lat_east).then(pl.lit("cyclonic")).otherwise(pl.lit("anticyclonic"))
-    
-    overturnings = overturnings.with_columns(orientation=orientation.over(index_columns))
-    if mode == "convex_hull":
-        geometry = st.linestring("points").st.convex_hull()
-    elif mode == "envelope":
-        geometry = st.linestring("points").st.envelope()
-    else:
-        raise ValueError
-    other_columns = [
-        pl.col(col).first()
-        for col in overturnings.columns
-        if col not in ["lon", "lat", *index_columns, "side"]
-    ]
-    join_geoms = pl.col("geometry").first().st.union(pl.col("geometry").last())
-    join_geoms = (
-        pl.when((pl.len() > 1) & (pl.col("points").list.first().len() > 1))
-        .then(join_geoms)
-        .otherwise(pl.col("geometry").first())
+    orientation = (
+        pl.when(lat_west <= lat_east)
+        .then(pl.lit("cyclonic"))
+        .otherwise(pl.lit("anticyclonic"))
     )
-    overturnings = (
-        overturnings
-        .group_by([*index_columns, "side"])
-        .agg(points=pl.concat_arr("lon", "lat"), *other_columns)
-        .filter(pl.col("points").list.eval(pl.element().len() > 1).list.all())
-        .with_columns(geometry=geometry)
-        .group_by(index_columns)
-        .agg(join_geoms, "points", "side", *other_columns)
+
+    overturnings = overturnings.with_columns(
+        orientation=orientation.over(index_columns)
     )
-    return overturnings
+    return event_geometry(overturnings, "envelope", index_columns)
+
+
+def detect_streamers(
+    contours: pl.DataFrame,
+    max_realdist: float = 8e5,
+    min_contourdist: float = 1e6,
+    max_contourdist: float = 1e7,
+    min_ratio: float = 10,
+) -> pl.DataFrame:
+    index_columns = get_index_columns(contours, ["member", "time", "level", "contour"])
+
+    ds = haversine(
+        "lon",
+        "lat",
+        pl.col("lon").shift(),
+        pl.col("lat").shift(),
+    )
+    ds = ds.fill_null(0.0)
+    s = ds.cum_sum()
+    contours = contours.with_columns(
+        s=s.over(index_columns),
+        max_s=s.max().over(index_columns),
+        max_n=pl.col("index").max().over(index_columns),
+    ).with_columns(cs.signed_integer().cast(pl.Int32()))
+
+    contourslazy = contours.lazy()
+
+    dist_forward = pl.col("s_right") - pl.col("s")
+    dist_backward = pl.col("max_s") - (pl.col("s_right") - pl.col("s"))
+    dist2 = pl.min_horizontal(dist_forward, dist_backward)
+    forward = dist_forward < dist_backward
+
+    streamers = (
+        contourslazy.join(
+            contourslazy.select(*index_columns, "index", "lon", "lat", "s"),
+            on=index_columns,
+        )
+        .filter(pl.col("index_right") > pl.col("index"))
+        .with_columns(
+            dist1=haversine("lon", "lat", "lon_right", "lat_right"),
+            dist2=dist2,
+            forward=forward,
+        )
+        .filter(
+            pl.col("dist1") < max_realdist,
+            pl.col("dist2") > min_contourdist,
+            pl.col("dist2") < max_contourdist,
+            pl.col("dist2") / pl.col("dist1") > min_ratio,
+            pl.col("forward") | (~pl.col("cyclic")),
+        )
+        .collect(streaming=True)  # ty: ignore[unknown-argument]
+    )
+
+    max_right = pl.col("index_right") == pl.col("index_right").max().over(
+        [*index_columns, "index"]
+    )
+    min_right = pl.col("index_right") == pl.col("index_right").min().over(
+        [*index_columns, "index"]
+    )
+    max_right = pl.when("forward").then(max_right).otherwise(min_right)
+
+    min_left = pl.col("index") == pl.col("index").min().over(
+        [*index_columns, "index_right"]
+    )
+    max_left = pl.col("index") == pl.col("index").max().over(
+        [*index_columns, "index_right"]
+    )
+    min_left = pl.when("forward").then(min_left).otherwise(max_left)
+
+    range_ = pl.int_ranges(pl.col("index"), pl.col("index_right") + 1)
+    other_range = pl.int_ranges(
+        pl.col("index_right"), pl.col("index") + 1 + pl.col("max_n")
+    ) % pl.col("max_n")
+    range_ = pl.when("forward").then(range_).otherwise(other_range)
+
+    streamers = (
+        streamers[*index_columns, "index", "index_right", "forward", "max_n"]
+        .filter(max_right)
+        .filter(min_left)
+        .with_columns(range=range_)
+    )
+
+    to_drop = (
+        streamers.join(streamers, on=index_columns, suffix="_other", how="left")
+        .filter(pl.col("range").list.len() < pl.col("range_other").list.len())
+        .with_columns(
+            drop=pl.col("range_other").list.contains(pl.col("index"))
+            & pl.col("range_other").list.contains(pl.col("index_right"))
+        )
+        .group_by([*index_columns, "index", "index_right"])
+        .agg(pl.col("drop").any())
+    )
+
+    subindex = (
+        pl.concat_arr(
+            pl.col("index").cast(pl.UInt32()),
+            pl.col("index_right").cast(pl.UInt32()),
+            pl.col("forward").cast(pl.UInt32()),
+        )
+        .rle_id()
+        .over(index_columns)
+    )
+
+    streamers = (
+        streamers.join(
+            to_drop,
+            on=[*index_columns, "index", "index_right"],
+            how="left",
+        )
+        .filter(~pl.col("drop").fill_null(False))
+        .drop("drop")
+        .with_columns(subindex=subindex)
+    )
+
+    l1 = pl.col("range").list.len()
+    l2 = pl.col("range_other").list.len()
+    linter = pl.col("range").list.set_intersection(
+        pl.col("range_other")
+    ).list.len() / pl.min_horizontal(l1, l2)
+
+    index = (
+        pl.when("forward").then(pl.col("index").min()).otherwise(pl.col("index").max())
+    )
+    index_right = (
+        pl.when("forward")
+        .then(pl.col("index_right").max())
+        .otherwise(pl.col("index_right").min())
+    )
+
+    streamers = (
+        streamers[
+            *index_columns,
+            "range",
+            "subindex",
+            "index",
+            "index_right",
+            "forward",
+            "max_n",
+        ]
+        .join(
+            streamers[*index_columns, "range", "subindex", "index", "index_right"],
+            on=index_columns,
+            how="left",
+            suffix="_other",
+        )
+        .with_columns(l1=l1, l2=l2)
+        .with_columns(linter=linter)
+        .filter(pl.col("linter") > 0.8)
+        .group_by(*index_columns, "index", "index_right", "subindex", "forward")
+        .agg(
+            minio=pl.col("index_other").min(),
+            maxio=pl.col("index_other").max(),
+            miniro=pl.col("index_right_other").min(),
+            maxiro=pl.col("index_right_other").max(),
+            max_n=pl.col("max_n").first(),
+        )
+        .with_columns(
+            index=pl.when("forward").then("minio").otherwise("maxio"),
+            index_right=pl.when("forward").then("maxiro").otherwise("miniro"),
+        )
+        .drop(["minio", "maxio", "miniro", "maxiro"])
+        .unique([*index_columns, "index", "index_right", "forward"])
+        .sort(*index_columns, "index", "index_right")
+        .with_columns(subindex=subindex)
+        .with_columns(range=range_)
+    )
+
+    index = (
+        pl.when("forward").then(pl.col("index").min()).otherwise(pl.col("index").max())
+    )
+    index_right = (
+        pl.when("forward")
+        .then(pl.col("index_right").max())
+        .otherwise(pl.col("index_right").min())
+    )
+
+    streamers = (
+        streamers.with_columns(
+            subindex=pl.any_horizontal(
+                pl.col("index").diff().abs() > 10,
+                pl.col("index_right").diff().abs() > 10,
+                pl.col("forward").cast(pl.Int8()).diff().abs() > 0,
+            )
+            .fill_null(False)
+            .over(index_columns)
+            .cum_sum()
+            .over(index_columns)
+        )
+        .explode("range")
+        .unique([*index_columns, "range"])
+        .group_by([*index_columns, "forward", "subindex"])
+        .agg(
+            pl.col("max_n").first(),
+            index=index.first(),
+            index_right=index_right.first(),
+        )
+        .with_columns(range=range_)
+        .sort(*index_columns, "forward", "subindex")
+        .with_columns(subindex=pl.col("subindex").rle_id().over(index_columns))
+        .drop("index", "index_right", "max_n")
+        .explode("range")
+        .with_columns(cs.signed_integer().cast(pl.Int32()))
+        .rename({"range": "index"})
+        .join(
+            contours.drop("s", "len", "max_s", "max_n", "cyclic"),
+            on=[*index_columns, "index"],
+        )
+        .drop("index")
+    )
+
+    phys_len = jet_integral_haversine("lon", "lat", x_is_one=True)
+    phys_len = phys_len.over([*index_columns, "subindex"])
+    index = pl.concat_arr(
+        pl.col("contour").cast(pl.UInt32()), pl.col("subindex").cast(pl.UInt32())
+    ).rle_id()
+    index_columns.remove("contour")
+    index = index.over(index_columns)
+    streamers = streamers.with_columns(phys_len=phys_len, index=index)
+    index_columns.append("index")
+    return event_geometry(streamers, "polygon", index_columns=index_columns)
 
 
 def sjoin_to_grid(
@@ -707,7 +972,11 @@ def sjoin_to_grid(
 
 
 def to_xarray_sjoin(
-    da: xr.DataArray, events: pl.DataFrame | None = None, events_on_grid: pl.DataFrame | None = None, varname: str = "ones", buffer: float | None = None
+    da: xr.DataArray,
+    events: pl.DataFrame | None = None,
+    events_on_grid: pl.DataFrame | None = None,
+    varname: str = "ones",
+    buffer: float | None = None,
 ):
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, da, varname, buffer)
@@ -729,7 +998,11 @@ def to_xarray_sjoin(
 
 
 def join_wrapper(
-    df: DataFrame, da: xr.DataArray | xr.Dataset, join_dims: list | None = None, suffix: str = "_right", **kwargs
+    df: DataFrame,
+    da: xr.DataArray | xr.Dataset,
+    join_dims: list | None = None,
+    suffix: str = "_right",
+    **kwargs,
 ):
     """
     Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
@@ -767,28 +1040,34 @@ def join_wrapper(
 def event_props(events: pl.DataFrame, das: list[xr.DataArray]):
     index_columns = get_index_columns(events, ["member", "time", "level", "index"])
     events_on_grid = sjoin_to_grid(events, das[0])
-    
+
     dx = (das[0].lon[1] - das[0].lon[0]).item()
     dy = (das[0].lat[1] - das[0].lat[0]).item()
     cell_area = (
-        (pl.col("lat") + pl.lit(dy / 2)).radians().sin() 
-        - (pl.col("lat") - pl.lit(dy / 2)).radians().sin() 
-    ) * pl.lit(dx).radians() * RADIUS ** 2
+        (
+            (pl.col("lat") + pl.lit(dy / 2)).radians().sin()
+            - (pl.col("lat") - pl.lit(dy / 2)).radians().sin()
+        )
+        * pl.lit(dx).radians()
+        * RADIUS**2
+    )
     cell_area = cell_area.abs().cast(pl.Float32())
     com_x = circular_mean(pl.col("lat"), "cell_area").cast(pl.Float32())
     com_y = weighted_mean_pl(pl.col("lon"), "cell_area").cast(pl.Float32())
     events_on_grid = events_on_grid.with_columns(cell_area=cell_area)
-    
+
     aggs = {"area": pl.col("cell_area").sum(), "com_x": com_x, "com_y": com_y}
-    
+
     for i, da in enumerate(das):
         if da.name is None:
             da.rename(f"da_{i}")
         events_on_grid = join_wrapper(events_on_grid, da)
-        aggs[da.name] = (pl.col(da.name) * pl.col("cell_area")).sum() / pl.col("cell_area").sum()
-    
+        aggs[da.name] = (pl.col(da.name) * pl.col("cell_area")).sum() / pl.col(
+            "cell_area"
+        ).sum()
+
     events_on_grid_ = events_on_grid.group_by(index_columns).agg(**aggs)
-    
+
     events = events.join(events_on_grid_, on=index_columns, how="left")
 
     events = events.with_columns(

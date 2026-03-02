@@ -48,7 +48,7 @@ from .derived_quantities import compute_norm_derivative
 from .frechet import earth_haversine_numba, fdfd_matrix
 from .geospatial import (
     compute_alignment,
-    compute_contours,
+    detect_contours,
     diff_exp,
     gather_normal_da_jets,
     haversine,
@@ -206,7 +206,7 @@ def find_all_jets(
         condition_expr2 = pl.col("int") > base_int_thresh
 
     # contours
-    all_contours = compute_contours(
+    all_contours = detect_contours(
         (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS
     ).drop("level")
 
