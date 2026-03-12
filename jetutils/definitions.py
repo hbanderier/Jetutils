@@ -265,6 +265,7 @@ if "DATADIR" not in globals():
     OMEGA = 7.2921e-5  # rad.s-1
     KAPPA = 0.2854
     R_SPECIFIC_AIR = 287.0500676
+    C_P_AIR = 1005 # J/kg/K
 
 
 def degcos(x: float | np.ndarray) -> float:
