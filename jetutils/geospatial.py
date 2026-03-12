@@ -585,7 +585,7 @@ def event_geometry(
             .list.concat(pl.col("points").list.gather([0]))
             .implode()
             .over([*index_columns, "side"])
-        )  # god
+        ).st.make_valid()  # god
     else:
         raise ValueError
     other_columns = [
