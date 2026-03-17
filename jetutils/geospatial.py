@@ -1082,8 +1082,8 @@ def event_props(events: pl.DataFrame, das: list[xr.DataArray]):
         * RADIUS**2
     )
     cell_area = cell_area.abs().cast(pl.Float32())
-    com_x = circular_mean(pl.col("lat"), "cell_area").cast(pl.Float32())
-    com_y = weighted_mean_pl(pl.col("lon"), "cell_area").cast(pl.Float32())
+    com_x = circular_mean(pl.col("lon"), "cell_area").cast(pl.Float32())
+    com_y = weighted_mean_pl(pl.col("lat"), "cell_area").cast(pl.Float32())
     events_on_grid = events_on_grid.with_columns(cell_area=cell_area)
 
     aggs = {"area": pl.col("cell_area").sum(), "com_x": com_x, "com_y": com_y}
