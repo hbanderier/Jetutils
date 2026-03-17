@@ -6,28 +6,26 @@ It also contains all the constants to do physics, the common timeranges, the ful
 
 Finally, it contains a few functions that are useful all over.
 """
+import configparser
+import datetime
 import os
 import pickle as pkl
-from pathlib import Path
-from typing import Any, Callable, ClassVar, Dict, Optional, Sequence, Iterable
-from itertools import product
-from multiprocessing import Pool
-from itertools import groupby
-from dataclasses import dataclass, field
 import time
-import datetime
-import configparser
+from dataclasses import dataclass, field
 from importlib import resources as impresources
+from itertools import groupby, product
+from multiprocessing import Pool
+from pathlib import Path
+from typing import Any, Callable, ClassVar, Dict, Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import polars as pl
-from polars import Expr
 import xarray as xr
-from tqdm import tqdm
 from dask.diagnostics import ProgressBar  # to use without a specified dask client
 from dask.distributed import progress  # to use with a specified dask client
-
+from polars import Expr
+from tqdm import tqdm
 
 if "DATADIR" not in globals():
     np.set_printoptions(precision=5, suppress=True)
@@ -1148,6 +1146,8 @@ def compute(obj, progress_flag: bool = False, **kwargs):
         return obj
     
 from contourpy import contour_generator
+
+
 def inner(args):
     im, lines = args
     cg = contour_generator(im.lon.values, im.lat.values, im.values, name="serial", line_type="ChunkCombinedCode")

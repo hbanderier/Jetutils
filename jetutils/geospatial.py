@@ -234,15 +234,19 @@ def difflon():
     return expr
 
 
+def signed_difflon():
+    expr = pl.col("lon").diff()
+    expr = pl.when(expr.abs() > 180).then((360 - expr.abs()) * expr.sign()).otherwise(expr)
+    return expr
+
+
 def diff_exp():
     expr = difflon()
     return (expr.abs() + pl.col("lat").diff().abs()).fill_null(10.0)
 
 
 def newindex():
-    return (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) % (
-        pl.col("index").max() + 1
-    )
+    return (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) % pl.col("index").max()
 
 
 def sort_by_index(df, index_columns, other):
@@ -478,7 +482,11 @@ def detect_contours(
         .with_columns(len=pl.len().over(index_columns))
         .filter(pl.col("len") > 10)
     )
-    return sort_by_newindex(all_contours, index_columns[:-1], "contour")
+    all_contours = sort_by_newindex(all_contours, index_columns[:-1], "contour")
+    backward = signed_difflon().sum() < 0
+    index = pl.when(backward).then(pl.col("index").reverse()).otherwise("index")
+    all_contours.with_columns(index=index.over(index_columns))
+    return all_contours.sort([*index_columns, "index"])
 
 
 def compute_alignment(all_contours: DataFrame, periodic: bool = False) -> DataFrame:
@@ -628,25 +636,24 @@ def detect_overturnings(
     overturnings = contours.join(
         unique_counts, on=[*index_columns, "lon"], how="left"
     ).filter(pl.col("counts") >= 3)
-    newindex = (pl.int_range(pl.len()) - pl.col("difflon").arg_max()) % (pl.len() + 1)
+    
+    index_columns = get_index_columns(contours, ["member", "time", "level", "contour"])
+    
+    subindex = (difflon() > max_difflon).fill_null(False).cum_sum()
+    newindex = (pl.int_range(pl.len()) - difflon().arg_max()) % pl.len()
     newindex = (
-        pl.when(pl.col("difflon").max() > max_difflon)
+        pl.when(difflon().max() > max_difflon)
         .then(newindex)
         .otherwise(pl.int_range(pl.len()))
     )
-    index_columns = ["time", "level", "contour"]
-    difflon = pl.col("lon").diff().abs()
-    difflon = pl.when(difflon > 180).then(360 - difflon).otherwise(difflon)
-    subindex = (difflon > max_difflon).fill_null(False).cum_sum()
 
     indexer = (
         overturnings.unique([*index_columns, "lon"])
         .sort(*index_columns, "lon")
-        .with_columns(difflon=difflon.over(index_columns))
         .with_columns(newindex=newindex.over(index_columns))
         .sort(*index_columns, "newindex")
         .with_columns(subindex=subindex.over(index_columns))
-        .drop("difflon")
+        .drop("len", "index", "counts")
     )
 
     overturnings = (
@@ -659,15 +666,15 @@ def detect_overturnings(
         .agg(
             pl.col("lon"),
             pl.col("lat"),
-            difflat=pl.col("lat").max() - pl.col("lat").min(),
-            difflon=(pl.col("lon").last() - pl.col("lon").first()).abs(),
+            lat_ext=pl.col("lat").max() - pl.col("lat").min(),
+            lon_ext=(pl.col("lon").last() - pl.col("lon").first()).abs(),
             len=pl.len(),
             side=pl.col("side"),
-            inside_index=pl.col("newindex"),
+            inside_index=newindex,
         )
         .filter(
-            pl.col("difflon") > min_lon_ext,
-            pl.col("difflat") > min_lat_ext,
+            pl.col("lon_ext") > min_lon_ext,
+            pl.col("lat_ext") > min_lat_ext,
             pl.col("len") > min_len,
         )
         .explode("lon", "lat", "side", "inside_index")
@@ -679,24 +686,25 @@ def detect_overturnings(
         )
     )
 
-    phys_len = jet_integral_haversine("lon", "lat", x_is_one=True)
-    phys_len = phys_len.over([*index_columns, "subindex"])
     index = pl.concat_arr(
         pl.col("contour").cast(pl.UInt32()), pl.col("subindex").cast(pl.UInt32())
     ).rle_id()
     index_columns.remove("contour")
     index = index.over(index_columns)
-    overturnings = overturnings.with_columns(phys_len=phys_len, index=index)
+    overturnings = overturnings.with_columns(index=index).drop("contour", "subindex")
+    overturnings = overturnings.with_columns(inside_index=newindex.over(index_columns)).sort([*index_columns, "inside_index"])
     index_columns.append("index")
+    overturnings = overturnings.with_columns(inside_index=newindex.over(index_columns)).sort([*index_columns, "inside_index"])
+    
+    backward = signed_difflon().sum() < 0
+    inside_index = pl.when(backward).then(pl.col("inside_index").reverse()).otherwise("inside_index")
+    overturnings = overturnings.with_columns(inside_index=inside_index.over(index_columns))
+    overturnings = overturnings.sort([*index_columns, "inside_index"])
 
-    index_east = pl.col("inside_index").arg_min()
-    index_west = pl.col("inside_index").arg_max()
-    lon_west = pl.col("lon").get(index_east)
-    lon_east = pl.col("lon").get(index_west)
-    lat_west = pl.col("lat").filter(pl.col("lon") == lon_west).mean()
-    lat_east = pl.col("lat").filter(pl.col("lon") == lon_east).mean()
+    lat_west = pl.col("lat").first()
+    lat_east = pl.col("lat").last()
     orientation = (
-        pl.when(lat_west <= lat_east)
+        pl.when(lat_west.abs() <= lat_east.abs())
         .then(pl.lit("cyclonic"))
         .otherwise(pl.lit("anticyclonic"))
     )
@@ -704,6 +712,7 @@ def detect_overturnings(
     overturnings = overturnings.with_columns(
         orientation=orientation.over(index_columns)
     )
+    
     return event_geometry(overturnings, "envelope", index_columns)
 
 
@@ -714,6 +723,27 @@ def detect_streamers(
     max_contourdist: float = 1e7,
     min_ratio: float = 10,
 ) -> pl.DataFrame:
+    """
+    Broken for now, can't repair it now
+
+    Parameters
+    ----------
+    contours : pl.DataFrame
+        _description_
+    max_realdist : float, optional
+        _description_, by default 8e5
+    min_contourdist : float, optional
+        _description_, by default 1e6
+    max_contourdist : float, optional
+        _description_, by default 1e7
+    min_ratio : float, optional
+        _description_, by default 10
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     index_columns = get_index_columns(contours, ["member", "time", "level", "contour"])
 
     ds = haversine(
@@ -755,7 +785,7 @@ def detect_streamers(
             pl.col("dist2") / pl.col("dist1") > min_ratio,
             pl.col("forward") | (~pl.col("cyclic")),
         )
-        .collect(streaming=True)  # ty: ignore[unknown-argument]
+        .collect(streaming=True) 
     )
 
     max_right = pl.col("index_right") == pl.col("index_right").max().over(

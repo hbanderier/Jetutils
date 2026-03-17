@@ -130,11 +130,42 @@ BLUEWHITERED = LinearSegmentedColormap.from_list(
 )
 # from franziska's case study paper
 WERNLI_FLAIR: LinearSegmentedColormap = LinearSegmentedColormap.from_list(
-    "wernli_flair", 
-    ["#6F88F4", "#96ABEE", "#B4C5E8", "#D8C4C3", "#D29998", "#D95B3F", "#EA7F30", "#F0B73F", "#F4D448", "#FDF552", "#C4DB48", "#8BC63F", "#6F9531", "#3C8029"]
+    "wernli_flair",
+    [
+        "#6F88F4",
+        "#96ABEE",
+        "#B4C5E8",
+        "#D8C4C3",
+        "#D29998",
+        "#D95B3F",
+        "#EA7F30",
+        "#F0B73F",
+        "#F4D448",
+        "#FDF552",
+        "#C4DB48",
+        "#8BC63F",
+        "#6F9531",
+        "#3C8029",
+    ],
 )
 WERNLI_FLAIR.set_extremes(bad="#ffffff", under="#2962F6", over="#183610")
-WERNLI_FLAIR_LEVELS: list[float] = [-.5, 0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+WERNLI_FLAIR_LEVELS: list[float] = [
+    -0.5,
+    0,
+    0.5,
+    1,
+    1.5,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+]
 
 
 COASTLINE = feat.NaturalEarthFeature(
@@ -189,7 +220,7 @@ def make_boundary_path(
     boundary_path = []
     # North (E->W)
     if maxlon > minlon:
-        linspace =         np.linspace(minlon, maxlon, n)
+        linspace = np.linspace(minlon, maxlon, n)
     else:
         linspace = (180 + np.linspace(minlon % 360, maxlon % 360, n)) % 360 - 180
     edge = [linspace, np.full(n, maxlat)]
@@ -353,7 +384,11 @@ def setup_lon_lat(
     to_plot_ = []
     for tplt in to_plot:
         to_plot_.append(tplt.assign_coords(lon=tplt.lon.values % 360))
-    return to_plot_, to_plot_[0].lon.values - maybe_circular_mean(to_plot_[0].lon.values), lat
+    return (
+        to_plot_,
+        to_plot_[0].lon.values - maybe_circular_mean(to_plot_[0].lon.values),
+        lat,
+    )
 
 
 def to_prettier_order(n: int | np.ndarray, width: int = 6, height: int = 4):
@@ -395,9 +430,7 @@ class Clusterplot:
         self.central_longitude = np.degrees(maybe_circular_mean(np.radians(lon)))
         self.central_longitude = np.round(self.central_longitude)
         if self.lambert_projection:
-            projection = ccrs.LambertConformal(
-                central_longitude=self.central_longitude
-            )
+            projection = ccrs.LambertConformal(central_longitude=self.central_longitude)
             ratio = 0.6 * self.nrow / (self.ncol + (0.5 if honeycomb else 0))
             self.boundary = make_boundary_path(*region)
         else:
@@ -411,17 +444,26 @@ class Clusterplot:
             )
         if honeycomb:
             self.fig, self.axes = honeycomb_panel(
-                self.nrow, self.ncol, ratio, row_height=row_height, projection=projection, fig=fig
+                self.nrow,
+                self.ncol,
+                ratio,
+                row_height=row_height,
+                projection=projection,
+                fig=fig,
             )
         else:
             if fig is not None:
                 self.fig = fig
-            else: 
+            else:
                 self.fig = plt.figure()
             if isinstance(self.fig, Figure):
-                self.fig.set_size_inches(row_height * self.ncol, row_height * self.ncol * ratio)
+                self.fig.set_size_inches(
+                    row_height * self.ncol, row_height * self.ncol * ratio
+                )
                 self.fig.set_constrained_layout(not lambert_projection)
-            self.axes = self.fig.subplots(self.nrow, self.ncol, subplot_kw={"projection": projection})
+            self.axes = self.fig.subplots(
+                self.nrow, self.ncol, subplot_kw={"projection": projection}
+            )
         self.axes = np.atleast_1d(self.axes).flatten()
         for ax in self.axes:
             if coastline:
@@ -429,7 +471,10 @@ class Clusterplot:
             ax.set_extent(
                 [self.minlon, self.maxlon, self.minlat, self.maxlat],
             )
-            ax.set_xlim(self.minlon - self.central_longitude, self.maxlon - self.central_longitude)
+            ax.set_xlim(
+                self.minlon - self.central_longitude,
+                self.maxlon - self.central_longitude,
+            )
             ax.set_ylim(self.minlat, self.maxlat)
             if self.lambert_projection:
                 ax.set_boundary(self.boundary)
@@ -491,7 +536,7 @@ class Clusterplot:
 
     def _add_titles(self, titles: Sequence) -> None:
         if len(titles) > len(self.axes):
-            titles = titles[:len(self.axes)]
+            titles = titles[: len(self.axes)]
         for title, ax in zip(titles, self.axes):
             if isinstance(title, float):
                 title = f"{title:.2f}"
@@ -641,7 +686,7 @@ class Clusterplot:
         q: float = 0.99,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
-        to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat) 
+        to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)
 
         kwargs, cbar_kwargs, im, levelsc = self.setup_contourf(
             to_plot,
@@ -664,7 +709,12 @@ class Clusterplot:
             ax.contourf(lon, lat, toplt, **kwargs)
 
             if self.lambert_projection and self.boundary is not None:
-                ax.set_boundary(self.boundary, transform=ccrs.PlateCarree(central_longitude=self.central_longitude))
+                ax.set_boundary(
+                    self.boundary,
+                    transform=ccrs.PlateCarree(
+                        central_longitude=self.central_longitude
+                    ),
+                )
 
         if titles is not None:
             self._add_titles(titles)
@@ -694,7 +744,7 @@ class Clusterplot:
         lon = da.lon.values
         lat = da.lat.values
         lon = lon - self.central_longitude
-        
+
         if mask is not None:
             to_test = []
             for mas in mask.T:
@@ -721,10 +771,10 @@ class Clusterplot:
                 lat,
                 da[0].where(signif),
                 hatch=hatch,
-                facecolor="none", 
-                edgecolor=color, 
-                hatch_linewidth=linewidth, 
-                linewidth=0.,
+                facecolor="none",
+                edgecolor=color,
+                hatch_linewidth=linewidth,
+                linewidth=0.0,
             )
 
             # cs.set_edgecolor(color)
@@ -748,7 +798,9 @@ class Clusterplot:
             if np.sum(mas) < 1:
                 to_plot.append(da[0].copy(data=np.zeros(da.shape[1:])))
                 continue
-            to_plot.append(da.isel({time_name: mas}).reduce(reduction_function, dim=time_name))
+            to_plot.append(
+                da.isel({time_name: mas}).reduce(reduction_function, dim=time_name)
+            )
 
         if type == "contourf":
             im = self.add_contourf(
@@ -994,21 +1046,38 @@ def plot_seasonal(
     gb = props_as_df.group_by(
         [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
     )
-    
+
     def _squarify(df: pl.DataFrame):
-        return pl.Series("dayofyear", np.arange(1, 367)).to_frame().join(df["jet"].unique().sort(descending=True).to_frame(), how="cross").join(df, how="left", on=["dayofyear", "jet"])
-    
-    means = gb.agg([pl.col(col).replace([float("-inf"), float("inf"), float("nan")], None).mean() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
+        return (
+            pl.Series("dayofyear", np.arange(1, 367))
+            .to_frame()
+            .join(df["jet"].unique().sort(descending=True).to_frame(), how="cross")
+            .join(df, how="left", on=["dayofyear", "jet"])
+        )
+
+    means = gb.agg(
+        [
+            pl.col(col)
+            .replace([float("-inf"), float("inf"), float("nan")], None)
+            .mean()
+            for col in data_vars
+        ]
+    ).sort("dayofyear", "jet", descending=[False, True])
     means = _squarify(means)
     means = periodic_rolling_pl(means, 15, data_vars)
-    
-        
+
     x = means["dayofyear"].unique()
-    medians = gb.agg([pl.col(col).median() for col in data_vars]).sort("dayofyear", "jet", descending=[False, True])
+    medians = gb.agg([pl.col(col).median() for col in data_vars]).sort(
+        "dayofyear", "jet", descending=[False, True]
+    )
     medians = _squarify(medians)
     medians = periodic_rolling_pl(medians, 15, data_vars)
-    q025 = _squarify(gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True]))
-    q075 = _squarify(gb.quantile(0.75).sort("dayofyear", "jet", descending=[False, True]))
+    q025 = _squarify(
+        gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True])
+    )
+    q075 = _squarify(
+        gb.quantile(0.75).sort("dayofyear", "jet", descending=[False, True])
+    )
     if njets == 3:
         color_order = [2, 3, 1]
     else:
@@ -1145,7 +1214,11 @@ def last_figure(
     to_ret = times["spell"].unique().to_frame()
     id_ = int(jet == "EDJ")
     varname_ = f"{varname}_interp"
-    agg = pl.col(varname_).replace([float("inf"), float("-inf"), float("nan")], None).mean()
+    agg = (
+        pl.col(varname_)
+        .replace([float("inf"), float("-inf"), float("nan")], None)
+        .mean()
+    )
     if clim is None:
         jets = gather_normal_da_jets_wrapper(
             jets,
@@ -1159,13 +1232,19 @@ def last_figure(
         )
         for filter_name, filter_ in filters.items():
             full_name = f"{varname}_{filter_name}"
-            results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("spell").agg(**{full_name: agg})
+            results = (
+                jets.filter(pl.col("jet ID") == id_, *filter_)
+                .group_by("spell")
+                .agg(**{full_name: agg})
+            )
             to_ret = to_ret.join(results, on="spell", how="left")
         return to_ret
-    
+
     if all_times is None:
         all_times = jets["time"].unique().clone()
-    ts_bootstrapped = create_bootstrapped_times(times, all_times, n_bootstraps=n_bootstraps)
+    ts_bootstrapped = create_bootstrapped_times(
+        times, all_times, n_bootstraps=n_bootstraps
+    )
     jets = gather_normal_da_jets_wrapper(
         jets,
         ts_bootstrapped,
@@ -1175,16 +1254,20 @@ def last_figure(
         half_length=half_length,
         dn=dn,
         n_interp=n_interp,
-    ) # columns: "sample_index", "inside_index", "time", "spell", ...
+    )  # columns: "sample_index", "inside_index", "time", "spell", ...
     for filter_name, filter_ in filters.items():
-        results = jets.filter(pl.col("jet ID") == id_, *filter_).group_by("sample_index", "spell").agg(agg)
+        results = (
+            jets.filter(pl.col("jet ID") == id_, *filter_)
+            .group_by("sample_index", "spell")
+            .agg(agg)
+        )
         results = squarify(results, ["sample_index", "spell"])
         full_name = f"{varname}_{filter_name}"
         full_name_pvals = f"{full_name}_pvals"
         results = results.group_by("spell", maintain_order=True).agg(
             **{
-                full_name: pl.col(varname_).last(), 
-                full_name_pvals: (pl.col(varname_).rank().last() - 1) / n_bootstraps
+                full_name: pl.col(varname_).last(),
+                full_name_pvals: (pl.col(varname_).rank().last() - 1) / n_bootstraps,
             }
         )
         to_ret = to_ret.join(results, on="spell", how="left")
