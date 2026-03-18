@@ -352,7 +352,6 @@ def inner_detect_contours(args):
         (i, level, round_contour(contour, lon, lat), 79 in types_)
         for level, (contours, types) in zip(levels, l1)
         for contour, types_, i in zip(contours, types, range(10000000))
-        if len(contours) > 5
     ]
     return tuple(zip(*to_ret))
 

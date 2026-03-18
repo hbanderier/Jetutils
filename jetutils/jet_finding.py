@@ -208,8 +208,9 @@ def find_all_jets(
         condition_expr2 = pl.col("int") > base_int_thresh
 
     # contours
+    repeat_lons = 120 if x_periodic else 0.
     all_contours = detect_contours(
-        (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS
+        (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS, repeat_lons=repeat_lons
     ).drop("level")
 
     int_expr = jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s"))
