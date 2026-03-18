@@ -383,6 +383,10 @@ def detect_contours(
     extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
     index_columns = list(extra_dims)
     extra_dims_values = {key: val.values for key, val in extra_dims.items()}
+    key = list(extra_dims_values)[0]
+    extra_dims_df = pl.DataFrame({key: extra_dims_values[key]})
+    for key in list(extra_dims_values)[1:]:
+        extra_dims_df = extra_dims_df.join(pl.DataFrame({key: extra_dims_values[key]}), how="cross")
     iter1 = list(product(*list(extra_dims.values())))
     iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
     iter3 = ((da.loc[indexer], levels) for indexer in iter2)
@@ -408,8 +412,11 @@ def detect_contours(
                 "contours": all_contours,
                 "cyclic": all_cyclics,
             }
-            | extra_dims_values
         )
+    )
+    all_contours = (
+        pl
+        .concat([extra_dims_df, all_contours], how="horizontal")
         .explode("contour", "level", "contours", "cyclic")
         .explode("contours")
         .with_columns(

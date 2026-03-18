@@ -117,14 +117,15 @@ def preprocess_ds(
     if smooth_s is not None:
         smooth_map = ("win", smooth_s)
         smooth_map = {"lon": smooth_map, "lat": smooth_map}
-        ds = ds.rename({var: f"{var}_orig" for var in to_smooth})
+        ds = ds.rename({var: f"{var}_orig" for var in to_smooth if var in ds.data_vars})
         for var in to_smooth:
+            if f"{var}_orig" not in ds.data_vars:
+                continue
             to_smooth = ds[f"{var}_orig"]
             ds[var] = to_smooth.copy(data=smooth(to_smooth, smooth_map=smooth_map))
     ds["sigma"] = compute_norm_derivative(ds, "s")
-    ds["sigma_theta"] = compute_norm_derivative(ds, "theta")
-    ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
-    ds["sigma_theta"] = smooth(ds["sigma_theta"], smooth_map=smooth_map)
+    if smooth_s is not None:
+        ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
     return ds
 
 
@@ -132,7 +133,7 @@ def find_all_jets(
     ds: xr.Dataset,
     thresholds: xr.DataArray | None = None,
     n_coarsen: int = 3,
-    smooth_s: int = 5,
+    smooth_s: int | None = 5,
     base_s_thresh: float = 0.5,
     alignment_thresh: float = 0.6,
     int_thresh_factor: float = 0.6,
@@ -148,11 +149,11 @@ def find_all_jets(
     # process input
     ds = preprocess_ds(ds, n_coarsen=n_coarsen, smooth_s=smooth_s)
     smoothed_to_remove = ("u", "v", "s")
-    df = xarray_to_polars(
-        ds.drop_vars(smoothed_to_remove).rename(
+    if smooth_s is not None:
+        ds = ds.drop_vars(smoothed_to_remove).rename(
             {f"{var}_orig": var for var in smoothed_to_remove}
         )
-    )
+    df = xarray_to_polars(ds)
     x_periodic = has_periodic_x(ds)
     index_columns = get_index_columns(
         df,
@@ -173,8 +174,9 @@ def find_all_jets(
     base_int_thresh = (
         RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
     )
+    ic_nomemb = [ic for ic in index_columns if ic != "member"]
     if base_s_thresh <= 1.0:
-        thresholds = df.group_by(index_columns).agg(
+        thresholds = df.group_by(ic_nomemb).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")
         )
         base_s_thresh = thresholds["s_thresh"].mean()  # disgusting
@@ -190,7 +192,7 @@ def find_all_jets(
         )
     if thresholds is not None:
         df = df.join(
-            thresholds, on=[ic for ic in index_columns if ic != "member"]
+            thresholds, on=ic_nomemb
         )  # ugly
         df = df.with_columns(
             int_thresh=base_int_thresh * pl.col("s_thresh") / base_s_thresh
