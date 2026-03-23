@@ -1537,6 +1537,8 @@ def find_spot(basepath: Path, metadata: dict) -> Path:
     for dir in basepath.iterdir():
         if not dir.is_dir():
             continue
+        if not dir.name.isnumeric():
+            continue
         try:
             other_mda = _fix_dict_lists(load_pickle(dir.joinpath("metadata.pkl")))
             if "varnames" in other_mda:
