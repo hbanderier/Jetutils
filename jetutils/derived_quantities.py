@@ -3,9 +3,10 @@ import xarray as xr
 from jetutils.definitions import RADIUS, OMEGA, degcos, degsin
 
 
-def find_axis(ds: xr.DataArray, name: str):
-    da = ds[list(ds.data_vars)[0]]
-    return np.where(np.array(da.dims) == name)[0].item()
+def find_axis(ds: xr.DataArray | xr.Dataset, name: str):
+    if isinstance(ds, xr.Dataset):
+        ds = ds[list(ds.data_vars)[0]]
+    return np.where(np.array(ds.dims) == name)[0].item()
 
 
 def setup_derivatives(ds: xr.Dataset):

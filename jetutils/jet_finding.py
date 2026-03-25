@@ -159,6 +159,8 @@ def find_all_jets(
         df,
         (
             "member",
+            "number",
+            "forecast_init",
             "time",
             "cluster",
             "jet ID",
@@ -174,7 +176,7 @@ def find_all_jets(
     base_int_thresh = (
         RADIUS * dl * base_s_thresh * np.cos(np.pi / 4) * int_thresh_factor
     )
-    ic_nomemb = [ic for ic in index_columns if ic != "member"]
+    ic_nomemb = [ic for ic in index_columns if ic not in ["member", "number"]]
     if base_s_thresh <= 1.0:
         thresholds = df.group_by(ic_nomemb).agg(
             pl.col("s").quantile(base_s_thresh).alias("s_thresh")

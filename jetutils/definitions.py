@@ -522,7 +522,9 @@ def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
     return ds
 
 default_index_columns = (
+    "number",
     "member",
+    "forecast_init",
     "time",
     "cluster",
     "jet ID",

@@ -348,6 +348,8 @@ def inner_detect_contours(args):
     l1 = contour_generator(
         lon, lat, z, line_type="SeparateCode", quad_as_tri=False
     ).multi_lines(levels)
+    if len(l1[0][0]) == 0:
+        return [], [], [], []
     to_ret = [
         (i, level, round_contour(contour, lon, lat), 79 in types_)
         for level, (contours, types) in zip(levels, l1)
