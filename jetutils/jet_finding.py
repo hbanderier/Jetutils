@@ -613,11 +613,11 @@ def is_polar_gmix(
     if "time" not in df.columns:
         mode = "all"
     if mode == "all":
-        X = extract_features(df, feature_names, None)
+        X = extract_features(df, feature_names)
         kwargs["n_components"] = n_components
         probas = gmix_fn(X, **kwargs)
         return df.with_columns(is_polar=probas)
-    index_columns = get_index_columns(df)
+    index_columns = get_index_columns(df, ["member", "number", "forecast_init", "time", "jet ID", "index"])
     to_concat = []
     if mode == "season":
         if isinstance(n_components, int):
@@ -627,24 +627,23 @@ def is_polar_gmix(
         for season, n_components_ in zip(
             tqdm(["DJF", "MAM", "JJA", "SON"]), n_components
         ):
-            X = extract_features(df, feature_names, season)
+            X = extract_season_from_df(df, season)
+            X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X, **kwargs)
-            to_concat.append(
-                extract_season_from_df(df, season).with_columns(is_polar=probas)
-            )
+            probas = gmix_fn(X[feature_names], **kwargs)
+            to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "month":
+        months = df["time"].dt.month().unique().sort().to_numpy()
         if isinstance(n_components, int):
-            n_components = [n_components] * 12
+            n_components = [n_components] * len(months)
         else:
-            assert len(n_components) == 12
-        for month, n_components_ in zip(trange(1, 13), n_components):
-            X = extract_features(df, feature_names, month)
+            assert len(n_components) == len(months)
+        for month, n_components_ in zip(tqdm(months), n_components):
+            X = extract_season_from_df(df, month)
+            X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X, **kwargs)
-            to_concat.append(
-                extract_season_from_df(df, month).with_columns(is_polar=probas)
-            )
+            probas = gmix_fn(X[feature_names], **kwargs)
+            to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "week":
         weeks = df["time"].dt.week().unique().sort().to_numpy()
         if isinstance(n_components, int):
@@ -653,12 +652,12 @@ def is_polar_gmix(
             assert len(n_components) == len(weeks)
         for week, n_components_ in zip(tqdm(weeks, total=len(weeks)), n_components):
             X = df.filter(pl.col("time").dt.week() == week)
-            X_ = extract_features(X, feature_names)
+            X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X_, **kwargs)
-            to_concat.append(X.with_columns(is_polar=probas))
+            probas = gmix_fn(X[feature_names], **kwargs)
+            to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
 
-    return pl.concat(to_concat).sort([*index_columns, "index"])
+    return df.join(pl.concat(to_concat), on=index_columns).sort(index_columns)
 
 
 def add_feature_for_cat(
