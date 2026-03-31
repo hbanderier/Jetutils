@@ -1,4 +1,3 @@
-from numba.core.tracing import event
 import warnings
 from itertools import product
 from typing import Literal
@@ -773,7 +772,7 @@ def detect_streamers(
     dist_forward = pl.col("s_right") - pl.col("s")
     dist_backward = pl.col("max_s") - (pl.col("s_right") - pl.col("s"))
     dist2 = pl.min_horizontal(dist_forward, dist_backward)
-    forward = dist_forward < dist_backward
+    forward = dist_forward <= dist_backward
 
     streamers = (
         contourslazy.join(
@@ -785,32 +784,25 @@ def detect_streamers(
             dist1=haversine("lon", "lat", "lon_right", "lat_right"),
             dist2=dist2,
             forward=forward,
+            ratio=dist2 / haversine("lon", "lat", "lon_right", "lat_right")
         )
         .filter(
             pl.col("dist1") < max_realdist,
             pl.col("dist2") > min_contourdist,
             pl.col("dist2") < max_contourdist,
-            pl.col("dist2") / pl.col("dist1") > min_ratio,
+            pl.col("ratio") > min_ratio,
             pl.col("forward") | (~pl.col("cyclic")),
         )
-        .collect(streaming=True) 
+        .collect(streaming=True)
     )
 
-    max_right = pl.col("index_right") == pl.col("index_right").max().over(
-        [*index_columns, "index"]
-    )
-    min_right = pl.col("index_right") == pl.col("index_right").min().over(
-        [*index_columns, "index"]
-    )
-    max_right = pl.when("forward").then(max_right).otherwise(min_right)
-
-    min_left = pl.col("index") == pl.col("index").min().over(
+    max_ratio = pl.col("dist1") == pl.col("dist1").min()
+    max_ratio_left = max_ratio.over(
         [*index_columns, "index_right"]
     )
-    max_left = pl.col("index") == pl.col("index").max().over(
-        [*index_columns, "index_right"]
+    max_ratio_right = max_ratio.over(
+        [*index_columns, "index"]
     )
-    min_left = pl.when("forward").then(min_left).otherwise(max_left)
 
     range_ = pl.int_ranges(pl.col("index"), pl.col("index_right") + 1)
     other_range = pl.int_ranges(
@@ -819,11 +811,13 @@ def detect_streamers(
     range_ = pl.when("forward").then(range_).otherwise(other_range)
 
     streamers = (
-        streamers[*index_columns, "index", "index_right", "forward", "max_n"]
-        .filter(max_right)
-        .filter(min_left)
+        streamers[*index_columns, "index", "index_right", "forward", "max_n", "dist1"]
+        .filter(max_ratio_right)
+        .filter(max_ratio_left)
         .with_columns(range=range_)
+        .sort(*index_columns, "index")
     )
+
 
     to_drop = (
         streamers.join(streamers, on=index_columns, suffix="_other", how="left")
@@ -836,16 +830,6 @@ def detect_streamers(
         .agg(pl.col("drop").any())
     )
 
-    subindex = (
-        pl.concat_arr(
-            pl.col("index").cast(pl.UInt32()),
-            pl.col("index_right").cast(pl.UInt32()),
-            pl.col("forward").cast(pl.UInt32()),
-        )
-        .rle_id()
-        .over(index_columns)
-    )
-
     streamers = (
         streamers.join(
             to_drop,
@@ -854,9 +838,8 @@ def detect_streamers(
         )
         .filter(~pl.col("drop").fill_null(False))
         .drop("drop")
-        .with_columns(subindex=subindex)
+        .with_columns(subindex=pl.int_range(pl.len()).over(index_columns))
     )
-
     l1 = pl.col("range").list.len()
     l2 = pl.col("range_other").list.len()
     linter = pl.col("range").list.set_intersection(
@@ -871,7 +854,7 @@ def detect_streamers(
         .then(pl.col("index_right").max())
         .otherwise(pl.col("index_right").min())
     )
-
+        
     streamers = (
         streamers[
             *index_columns,
@@ -891,7 +874,7 @@ def detect_streamers(
         .with_columns(l1=l1, l2=l2)
         .with_columns(linter=linter)
         .filter(pl.col("linter") > 0.8)
-        .group_by(*index_columns, "index", "index_right", "subindex", "forward")
+        .group_by(*index_columns, "index", "index_right", "forward", "subindex")
         .agg(
             minio=pl.col("index_other").min(),
             maxio=pl.col("index_other").max(),
@@ -906,7 +889,7 @@ def detect_streamers(
         .drop(["minio", "maxio", "miniro", "maxiro"])
         .unique([*index_columns, "index", "index_right", "forward"])
         .sort(*index_columns, "index", "index_right")
-        .with_columns(subindex=subindex)
+        .with_columns(subindex=pl.int_range(pl.len()).over(index_columns))
         .with_columns(range=range_)
     )
 
@@ -920,17 +903,7 @@ def detect_streamers(
     )
 
     streamers = (
-        streamers.with_columns(
-            subindex=pl.any_horizontal(
-                pl.col("index").diff().abs() > 10,
-                pl.col("index_right").diff().abs() > 10,
-                pl.col("forward").cast(pl.Int8()).diff().abs() > 0,
-            )
-            .fill_null(False)
-            .over(index_columns)
-            .cum_sum()
-            .over(index_columns)
-        )
+        streamers
         .explode("range")
         .unique([*index_columns, "range"])
         .group_by([*index_columns, "forward", "subindex"])
@@ -940,8 +913,6 @@ def detect_streamers(
             index_right=index_right.first(),
         )
         .with_columns(range=range_)
-        .sort(*index_columns, "forward", "subindex")
-        .with_columns(subindex=pl.col("subindex").rle_id().over(index_columns))
         .drop("index", "index_right", "max_n")
         .explode("range")
         .with_columns(cs.signed_integer().cast(pl.Int32()))
@@ -950,17 +921,16 @@ def detect_streamers(
             contours.drop("s", "len", "max_s", "max_n", "cyclic"),
             on=[*index_columns, "index"],
         )
+        .sort(*index_columns, "forward", "subindex", "index")
         .drop("index")
     )
 
-    phys_len = jet_integral_haversine("lon", "lat", x_is_one=True)
-    phys_len = phys_len.over([*index_columns, "subindex"])
     index = pl.concat_arr(
         pl.col("contour").cast(pl.UInt32()), pl.col("subindex").cast(pl.UInt32())
     ).rle_id()
     index_columns.remove("contour")
     index = index.over(index_columns)
-    streamers = streamers.with_columns(phys_len=phys_len, index=index)
+    streamers = streamers.with_columns(index=index)
     index_columns.append("index")
     return event_geometry(streamers, "polygon", index_columns=index_columns)
 
