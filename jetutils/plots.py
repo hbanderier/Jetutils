@@ -312,12 +312,13 @@ def make_transparent(
 
 
 def create_levels(
-    to_plot: list, levels: int | Sequence | None = None, q: float = 0.99
+    to_plot: list, levels: int | Sequence | None = None, q: float = 0.99, direction: int | None = None
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
         return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
     extend = {-1: "min", 0: "both", 1: "max"}
-    direction = infer_direction(to_plot)
+    if direction is None:
+        direction = infer_direction(to_plot)
     extend = extend[direction] if q < 1 else "neither"
     if isinstance(levels, Sequence):
         levelsc = np.asarray(levels)
@@ -455,7 +456,7 @@ class Clusterplot:
             if fig is not None:
                 self.fig = fig
             else:
-                self.fig = plt.figure()
+                self.fig = plt.figure(figsize=(row_height * self.ncol, row_height * self.ncol * ratio))
             if isinstance(self.fig, Figure):
                 self.fig.set_size_inches(
                     row_height * self.ncol, row_height * self.ncol * ratio
@@ -560,12 +561,13 @@ class Clusterplot:
         colors: list | str | None = None,
         linestyles: list | str | None = None,
         q: float = 0.99,
+        direction: int | None = None,
         **kwargs,
     ) -> None:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
         lon = lon + self.central_longitude
 
-        levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q)
+        levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q, direction=direction)
 
         if direction == 0 and linestyles is None:
             linestyles = ["dashed", "solid"]
@@ -618,9 +620,10 @@ class Clusterplot:
         cbar_label: str | None = None,
         cbar_kwargs: Mapping | None = None,
         q: float = 0.99,
+        direction: int | None = None,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
-        levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q)
+        levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q, direction=direction)
 
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
@@ -684,6 +687,7 @@ class Clusterplot:
         titles: Iterable | None = None,
         cbar_kwargs: Mapping | None = None,
         q: float = 0.99,
+        direction: int | None = None,
         **kwargs,
     ) -> Tuple[ScalarMappable, Mapping]:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)
@@ -698,6 +702,7 @@ class Clusterplot:
             cbar_label,
             cbar_kwargs,
             q=q,
+            direction=direction,
             **kwargs,
         )
 

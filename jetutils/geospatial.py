@@ -968,14 +968,14 @@ def sjoin_to_grid(
     )
 
     index_columns = get_index_columns(events, ["member", "time", "level", "index"])
-    events = events.drop("points").with_columns(pl.col("geometry").st.buffer(buffer))
+    events = events.drop("points", "side") # .with_columns(pl.col("geometry").st.buffer(buffer))
     if varname == "ones":
         events = events.with_columns(ones=pl.lit(1))
     events = events.cast({varname: dtype})
     events = events.st.sjoin(
         da_df, on="geometry", how="inner", predicate="within"
     ).drop("geometry_right")
-    events = events.sort(*index_columns, "lat", "lon")
+    # events = events.sort(*index_columns, "lat", "lon")
     return events
 
 
@@ -1045,9 +1045,10 @@ def join_wrapper(
     return df
 
 
-def event_props(events: pl.DataFrame, das: list[xr.DataArray]):
+def event_props(events: pl.DataFrame, das: list[xr.DataArray], events_on_grid: pl.DataFrame | None = None):
     index_columns = get_index_columns(events, ["member", "time", "level", "index"])
-    events_on_grid = sjoin_to_grid(events, das[0])
+    if events_on_grid is None:
+        events_on_grid = sjoin_to_grid(events, das[0])
 
     dx = (das[0].lon[1] - das[0].lon[0]).item()
     dy = (das[0].lat[1] - das[0].lat[0]).item()
