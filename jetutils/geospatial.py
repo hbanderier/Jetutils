@@ -653,7 +653,7 @@ def detect_overturnings(
         .then(newindex)
         .otherwise(pl.int_range(pl.len()))
     )
-    newside = pl.col("lon") >= pl.col("lon").get(difflon().arg_max())
+    newside = 1 - (pl.col("lon") >= pl.col("lon").get(difflon().arg_max()))
     newside = (
         pl.when(difflon().max().over([*index_columns, "subindex"]) > 10)
         .then(newside)
@@ -698,6 +698,7 @@ def detect_overturnings(
             .cast(pl.UInt8())
         )
         .with_columns(side=newside.over([*index_columns, "subindex"]))
+        .sort([*index_columns, "subindex", "inside_index"])
     )
 
     index = pl.concat_arr(
@@ -706,6 +707,7 @@ def detect_overturnings(
     index_columns.remove("contour")
     index = index.over(index_columns)
     overturnings = overturnings.with_columns(index=index).drop("contour", "subindex")
+    index_columns.append("index")
     
     backward = signed_difflon().sum() < 0
     inside_index = pl.when(backward).then(pl.col("inside_index").reverse()).otherwise("inside_index")
