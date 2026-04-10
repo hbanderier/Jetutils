@@ -153,17 +153,12 @@ if "DATADIR" not in globals():
         "waviness1": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
         "waviness2": r"$~^{\circ} \mathrm{N}$",
         "wavinessR16": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
-        "wavinessDC16": "$~$",
-        "wavinessFV15": "$~$",
         "width": r"$\mathrm{m}$",
         "int": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
         "int_low": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
         "int_over_europe": r"$\mathrm{m}^2 \cdot \mathrm{s}^{-1}$",
         "persistence": r"$\mathrm{day}$",
-        "njets": r"$~$",
         "com_speed": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
-        "double_jet_index": "$~$",
-        "ratio": "$~$",
         "mean_lat:var": r"$~^{\circ} \mathrm{E} ^2$",
         "mean_s:var": r"$\mathrm{m^2\cdot s^{-2}}$",
         "mean_lat_var": r"$~^{\circ} \mathrm{E} ^2$",
@@ -201,6 +196,18 @@ if "DATADIR" not in globals():
         "flag": 0,
         "ratio": 0.3,
         "pers": 0.0,
+    }
+    
+    FACTORS = {
+        "int": 1e8,
+        "int_over_europe": 1e8,
+        "width": 1e5,
+        "waviness1": 1e-2,
+        "waviness2": 1e-2,
+        "wavinessR16": 1e-2,
+        "wavinessDC16": 1e-2,
+        "wavinessFV15": 1e-2,
+        "pers": 1e-2,
     }
 
     LATEXY_VARNAME = {
@@ -899,6 +906,22 @@ def iterate_over_year_maybe_member(
     return zip(indexer_polars, indexer_xarray)
 
 
+def get_full_time(df):
+    dt = df["time"].unique().diff().mode()[0]
+    doys = df["time"].dt.ordinal_day().unique()
+    time_unit = df["time"].dtype.time_unit
+    t1 = datetime.datetime(df["time"].dt.year().min(), 1, 1)
+    t2 = datetime.datetime(df["time"].dt.year().max() + 1, 1, 1)
+    full_time = pl.datetime_range(t1, t2, interval=dt, eager=True, closed="left", time_unit=time_unit).rename("time").to_frame()
+    return full_time.filter(pl.col("time").dt.ordinal_day().is_in(doys.implode()))
+
+
+def _get_col_unique_vals(df, col):
+    if col != ["time"]:
+        return df[col].unique(col).sort(col)
+    return get_full_time(df)
+    
+
 def squarify(df: pl.DataFrame, index_columns: Sequence[str | list[str]] | None = None) -> pl.DataFrame:
     if index_columns is None:
         index_columns = get_index_columns(df)
@@ -909,13 +932,13 @@ def squarify(df: pl.DataFrame, index_columns: Sequence[str | list[str]] | None =
         else:
             newcols.append(col)
     index_columns = newcols
-    indexer = df[index_columns[0]].unique(index_columns[0]).sort(index_columns[0])
+    indexer = _get_col_unique_vals(df, index_columns[0])
     for index_column in index_columns[1:]:
-        indexer = indexer.join(df[index_column].unique(index_column).sort(index_column), how="cross")
+        indexer = indexer.join(_get_col_unique_vals(df, index_column), how="cross")
     index_columns_unwrapped = []
     for col in index_columns:
         index_columns_unwrapped.extend(col)
-    return indexer.join(df.unique(index_columns_unwrapped), on=index_columns_unwrapped, how="left").sort(index_column)
+    return indexer.join(df.unique(index_columns_unwrapped), on=index_columns_unwrapped, how="left").sort(index_columns_unwrapped)
 
 
 def gb_index(

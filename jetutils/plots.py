@@ -1,4 +1,5 @@
 # coding: utf-8
+from toolz import get_in
 from jetutils.definitions import squarify
 from jetutils.geospatial import central_diff
 from itertools import product
@@ -36,7 +37,7 @@ from matplotlib.colors import (
     hsv_to_rgb,
 )
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import MaxNLocator, FormatStrFormatter
+from matplotlib.ticker import MaxNLocator, FormatStrFormatter, ScalarFormatter
 from matplotlib.dates import MonthLocator, DateFormatter
 import colormaps
 import cartopy.crs as ccrs
@@ -51,11 +52,13 @@ from .definitions import (
     SEASONS,
     JJADOYS,
     DEFAULT_VALUES,
+    FACTORS,
     maybe_circular_mean,
     get_index_columns,
     infer_direction,
     polars_to_xarray,
     xarray_to_polars,
+    squarify,
 )
 from .jet_finding import gather_normal_da_jets
 from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
@@ -933,8 +936,6 @@ def clear(func):
             plt.close()
             clear_output()
             return
-        else:
-            plt.show()
         return fig
 
     return wrapper
@@ -946,10 +947,11 @@ def plot_trends(
     data_vars: list,
     season: str | None = None,
     bootstrap_len: int = 4,
-    n_boostraps: int = 10000,
+    n_bootstraps: int = 1000,
     std: bool = False,
     nrows: int = 3,
     ncols: int = 4,
+    folder: str | None = None,
     suffix: str = "",
     numbering: bool = False,
     *,
@@ -959,8 +961,8 @@ def plot_trends(
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(ncols * 3.5, nrows * 2.4),
-        tight_layout=True,
+        figsize=(ncols * 3.7, nrows * 2.5),
+        constrained_layout=True,
         sharex="all",
     )
     axes = axes.flatten()
@@ -971,57 +973,70 @@ def plot_trends(
         season=season,
         std=std,
         bootstrap_len=bootstrap_len,
-        n_boostraps=n_boostraps,
+        n_bootstraps=n_bootstraps,
     )
     ncat = props_as_df["jet"].n_unique()
 
     for letter, varname, ax in zip(ascii_lowercase, data_vars, axes):
         dji = varname == "double_jet_index"
-        if varname == "mean_lev":
+        factor = FACTORS.get(varname, 1)
+        if factor == 1:
+            factor_str = ""
+        else:
+            factor_str = str(int(np.log10(factor)))
+            factor_str = r"$10^{" + factor_str + r"} \times $"
+        if varname in ["mean_lev", "mean_theta"]:
             ax.invert_yaxis()
         if numbering:
             ax.set_title(
-                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{factor_str}{UNITS.get(varname, '~')}]"
             )
         else:
             ax.set_title(
-                f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
+                f"{PRETTIER_VARNAME.get(varname, varname)} [{factor_str}{UNITS.get(varname, '~')}]"
             )
 
-        for j, jet in enumerate(["STJ", "EDJ"]):
-            c1 = slopes[ncat * n_boostraps + j, varname]
-            c0 = constants[j, varname]
-            p = pvals[j, varname]
+        for j_, jet in enumerate(["STJ", "EDJ"]):
+            j = 1 - j_
+            filter_ = (pl.col("jet") == jet, pl.col("sample_index") == n_bootstraps)
+            c1 = slopes.filter(*filter_)[varname].item()
+            c0 = constants.filter(filter_[0])[varname].item()
+            p = pvals.filter(filter_[0])[varname].item()
             p = min(p, 1 - p) * 2
             this_da = y.filter(pl.col("jet") == jet)[varname]
             color = "black" if dji else COLORS[2 - j]
             ls = "dashed" if p < 0.05 else "dotted"
-            if c1 is not None:
-                if dji:
-                    label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
-                else:
-                    label = f"{jet}, {p_to_tex(c1, c0, True)}, $p={p:.2f}$"
-            else:
-                if dji:
-                    label = ""
-                else:
-                    label = f"{jet}"
-            ax.plot(x, this_da.to_numpy(), lw=2, color=color)
+            label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            # if c1 is not None:
+            #     if dji:
+            #         label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            #     else:
+            #         label = f"{jet}, {p_to_tex(c1, c0, True)}, $p={p:.2f}$"
+            # else:
+            #     if dji:
+            #         label = ""
+            #     else:
+            #         label = f"{jet}"
+            ax.plot(x, this_da.to_numpy() / factor, lw=2, color=color)
             ax.plot(
                 x,
-                c1 * x + c0,
+                (c1 * x + c0) / factor,
                 lw=1.5,
                 color=color,
                 ls=ls,
                 label=label,
             )
+            # ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+            # ax.ticklabel_format(style="sci", axis="y", scilimits=(0,2))  
             if dji:
                 break
-        ax.legend(ncol=1)
+        ax.legend(ncol=1, borderpad=0.2, labelspacing=0.3, handlelength=1.5, handletextpad=0.6, borderaxespad=0.2)
     if save:
-        subtitle = "_std_" if std else "_"
+        if folder is None:
+            subtitle = "_std_" if std else "_"
+            folder = f"jet_props{subtitle}trends"
         fig.savefig(
-            f"{FIGURES}/jet_props{subtitle}trends/jet_props_{season}{suffix}.png"
+            f"{FIGURES}/{folder}/trends_{season}{suffix}.png"
         )
     return fig
 
@@ -1032,6 +1047,7 @@ def plot_seasonal(
     data_vars: list,
     nrows: int = 3,
     ncols: int = 4,
+    folder: str | None = None,
     suffix: str = "",
     numbering: bool = False,
     *,
@@ -1042,7 +1058,7 @@ def plot_seasonal(
         nrows,
         ncols,
         figsize=(ncols * 3.5, nrows * 2.4),
-        tight_layout=True,
+        constrained_layout=True,
         sharex="all",
     )
     axes = axes.flatten()
@@ -1089,6 +1105,22 @@ def plot_seasonal(
         color_order = [2, 1]
     for letter, varname, ax in zip(ascii_lowercase, data_vars, axes.ravel()):
         dji = varname == "double_jet_index"
+        factor = FACTORS.get(varname, 1)
+        if factor == 1:
+            factor_str = ""
+        else:
+            factor_str = str(int(np.log10(factor)))
+            factor_str = r"$10^{" + factor_str + r"} \times $"
+        if varname in ["mean_lev", "mean_theta"]:
+            ax.invert_yaxis()
+        if numbering:
+            ax.set_title(
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{factor_str}{UNITS.get(varname, '~')}]"
+            )
+        else:
+            ax.set_title(
+                f"{PRETTIER_VARNAME.get(varname, varname)} [{factor_str}{UNITS.get(varname, '~')}]"
+            )
         ys = means[varname].to_numpy().reshape(366, njets)
         qs = np.stack(
             [
@@ -1101,32 +1133,24 @@ def plot_seasonal(
         for i in range(njets):
             color = "black" if dji else COLORS[color_order[i]]
             ax.fill_between(
-                x, qs[:, i, 0], qs[:, i, 1], color=color, alpha=0.2, zorder=-10
+                x, qs[:, i, 0] / factor, qs[:, i, 1] / factor, color=color, alpha=0.2, zorder=-10
             )
-            ax.plot(x, median[:, i], lw=2, color=color, ls="dotted", zorder=0)
-            ax.plot(x, ys[:, i], lw=3, color=color, label=jets[i], zorder=10)
+            ax.plot(x, median[:, i] / factor, lw=2, color=color, ls="dotted", zorder=0)
+            ax.plot(x, ys[:, i] / factor, lw=3, color=color, label=jets[i], zorder=10)
             if dji:
                 break
-        if numbering:
-            ax.set_title(
-                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
-            )
-        else:
-            ax.set_title(
-                f"{PRETTIER_VARNAME.get(varname, varname)} [{UNITS.get(varname, '')}]"
-            )
         ax.xaxis.set_major_locator(MonthLocator(range(0, 13, 3)))
         ax.xaxis.set_major_formatter(DateFormatter("%b"))
         ax.set_xlim(min(x), max(x))
-        if varname == "mean_lev":
-            ax.invert_yaxis()
         ylim = ax.get_ylim()
         wherex = np.isin(x, JJADOYS)
         ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
     axes.ravel()[0].legend().set_zorder(102)
     if save:
-        plt.savefig(f"{FIGURES}/jet_props_misc/jet_props_seasonal{suffix}.png")
+        if folder is None:
+            folder = "jet_props_misc"
+        plt.savefig(f"{FIGURES}/{folder}/seasonal{suffix}.png")
     return fig
 
 
@@ -1143,7 +1167,7 @@ def props_histogram(
     clear: bool = True,
 ):
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True
+        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), constrained_layout=True
     )
     axes = axes.flatten()
     if season is not None:
@@ -1198,6 +1222,141 @@ def props_histogram(
             ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
     if save:
         fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
+    return fig
+
+
+@clear
+def plot_dayofyear_trends(
+    props_as_df: pl.DataFrame,
+    data_vars: list,
+    bootstrap_len: int = 4,
+    n_bootstraps: int = 500,
+    win_size: int = 15,
+    nrows: int = 3,
+    ncols: int = 4,
+    folder: str | None = None,
+    suffix: str = "",
+    numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
+):
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True, sharex="all"
+    )
+    axes = axes.flatten()
+    
+    index_columns = get_index_columns(props_as_df, ["member", "time", "jet"])
+    props_as_df = squarify(props_as_df, index_columns)
+    n_years = props_as_df["time"].dt.year().n_unique()
+    rng = np.random.default_rng()
+    num_blocks = n_years // bootstrap_len
+
+    sample_indices = rng.choice(
+        n_years - bootstrap_len - 1, size=(n_bootstraps, n_years // bootstrap_len)
+        )
+    sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
+    sample_indices = sample_indices.reshape(n_bootstraps, num_blocks * bootstrap_len)
+    sample_indices = np.append(sample_indices, np.arange(n_years)[None, :], axis=0)
+    sample_indices = sample_indices.flatten()
+
+    props_as_df_daily = (
+        props_as_df.group_by_dynamic(pl.col("time"), every="1d", group_by="jet")
+        .agg(**{data_var: pl.col(data_var).mean() for data_var in data_vars})
+        .sort([pl.col("time"), pl.col("jet")])
+    )
+    props_as_df_daily = props_as_df_daily.filter(pl.col("time").dt.ordinal_day() < 366)
+    ts_bootstrapped = (
+        props_as_df_daily.group_by(
+            [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
+            maintain_order=True,
+        )
+        .agg(
+            **{data_var: pl.col(data_var).gather(sample_indices) for data_var in data_vars},
+            year=pl.col("time").dt.year().gather(sample_indices),
+            inside_index=pl.int_range(len(sample_indices)) % n_years,
+            sample_index=pl.int_range(len(sample_indices)) // n_years,
+        )
+        .explode([*data_vars, "year", "inside_index", "sample_index"])
+    )
+    slopes = ts_bootstrapped.group_by(
+        ["dayofyear", "sample_index", "jet"], maintain_order=True
+    ).agg(
+        **{
+            data_var: 
+            pds.lin_reg_report(
+                pl.col("inside_index"),
+                target=pl.col(data_var),
+                add_bias=True,
+                null_policy="skip"
+            )
+            .struct.field("beta").first()
+            for data_var in data_vars
+        }
+    )
+    pvals = slopes.group_by(["dayofyear", "jet"], maintain_order=True).agg(
+        **{
+            data_var: pl.col(data_var)
+            .head(n_bootstraps)
+            .sort()
+            .search_sorted(pl.col(data_var).get(-1)).item()
+            / n_bootstraps
+            for data_var in data_vars
+        }
+    )
+
+    ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
+    ys = periodic_rolling_pl(ys, win_size, data_vars)
+
+    for letter, varname, ax in zip(ascii_lowercase, data_vars, axes.ravel()):
+        dji = varname == "double_jet_index"
+        factor = FACTORS.get(varname, 1)
+        factor = factor / 100
+        if factor == 1:
+            factor_str = ""
+        else:
+            factor_str = str(int(np.log10(factor)))
+            factor_str = r"$10^{" + factor_str + r"} \times $"
+        if numbering:
+            ax.set_title(f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]")
+        else:
+            ax.set_title(f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]")
+        if varname in ["mean_lev", "mean_theta"]:
+            ax.invert_yaxis()
+        for i, jet in enumerate(["STJ", "EDJ"]):
+            color = "black" if dji else COLORS[2 - i]
+            y = ys.filter(pl.col("jet") == jet)[varname]
+            ps = pvals.filter(pl.col("jet") == jet)[varname]
+            x = np.arange(len(y))
+            ax.plot(x, y / factor, lw=2, color=color, label=jet, zorder=11)
+            filter_ = (ps > 0.975) | (ps < 0.025)
+            ax.scatter(
+                x[filter_],
+                y.filter(filter_) / factor,
+                marker=".",
+                color=color,
+                s=60,
+                linewidths=2,
+                zorder=12,
+            )
+            if dji:
+                break
+        ax.xaxis.set_major_locator(MonthLocator(range(0, 13, 3)))
+        ax.xaxis.set_major_formatter(DateFormatter("%b"))
+        ax.set_xlim(min(x), max(x))
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        ax.plot(xlim, [0, 0], lw=1.5, color="black", zorder=10, alpha=1)
+        wherex = np.isin(x, JJADOYS)
+        ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
+        ax.set_ylim(xlim)
+        ax.set_ylim(ylim)
+        ax.grid(True)
+    axes.ravel()[0].legend().set_zorder(102)
+    if save:
+        if folder is None:
+            folder = "jet_props_misc"
+        plt.savefig(f"{FIGURES}/{folder}/doy_trends{suffix}_{win_size=}.png")
     return fig
 
 

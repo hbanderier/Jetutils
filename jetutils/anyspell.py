@@ -1,4 +1,5 @@
 # coding: utf-8
+from fasthtml.ft import Dfn
 from typing import Mapping, Literal, Callable, Sequence
 from functools import partial
 from multiprocessing import set_start_method as set_mp_start_method
@@ -23,18 +24,27 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from tqdm import tqdm
 
 try:
     from xgboost import XGBClassifier, XGBRegressor
 
     xgboost_avail = True
 except ModuleNotFoundError:
+    print("no xgboost found")
     xgboost_avail = False
 
 try:
     from fasttreeshap import TreeExplainer, Explainer
+    shap_avail = True
 except ModuleNotFoundError:
-    from shap import TreeExplainer, Explainer
+    try:
+        from shap import TreeExplainer, Explainer
+        shap_avail = True
+        print("Fallback to base shap")
+    except ModuleNotFoundError:
+        print("No shap")
+        shap_avail = False
 
 
 from .definitions import (
@@ -51,7 +61,7 @@ from .definitions import (
     get_index_columns,
     extract_season_from_df,
     gb_index,
-    explode_rle,
+    explode_rle, squarify, Timer,
 )
 from .data import (
     compute_anomalies_pl,
@@ -592,6 +602,21 @@ def regionalize(da: xr.DataArray, clusters: xr.DataArray, sample_dims: list[str]
     return targets
 
 
+def prepare_targets_from_ts(df: pl.DataFrame, expr: pl.Expr, name: str | None = None, season: str | list | None = None, **get_spells_kwargs):
+    if name is None:
+        name = df.columns[-1]
+    df = extract_season_from_df(df, season)
+    index_columns_no_time = get_index_columns(df, ["member", "region"])
+    spells = get_spells(df, expr, group_by=index_columns_no_time, **get_spells_kwargs)
+    df = df.join(
+        spells[["time", *index_columns_no_time, "len"]],
+        on=["time", *index_columns_no_time],
+        how="left",
+    ).fill_null(0)
+    df = df.rename({name: "value"})
+    return spells, df
+
+
 def handle_nan_predictors(
     predictors: pl.DataFrame,
     index_columns_no_time: list[str],
@@ -630,15 +655,15 @@ def handle_nan_predictors(
     aggs = {
         data_var: (
             pl.col(data_var)
+            .replace([float("nan"), float("-inf"), float("inf")], None)
             .interpolate(nan_method)
             .fill_nan(DEFAULT_VALUES[data_var])
             .fill_null(DEFAULT_VALUES[data_var])
+            .over(index_columns_no_time)
         )
         for data_var in data_vars
     }
-    predictors = predictors.group_by(*index_columns_no_time, maintain_order=True).agg(
-        **aggs
-    )
+    predictors = predictors.with_columns(**aggs)
     return predictors
 
 
@@ -694,11 +719,17 @@ def add_timescales(
 def add_lags(
     df: pl.DataFrame,
     index_columns: list[str],
-    lags: list[datetime.timedelta] | None = None,
+    lags: list[datetime.timedelta] | list[int] | None = None,
 ) -> pl.DataFrame:
     unique_times = df["time"].unique()
     dt = unique_times[1] - unique_times[0]
-    ilags = (np.asarray(lags) / dt).astype(int)
+    time_unit = unique_times.dtype.time_unit
+    if isinstance(lags[0], int):
+        ilags = np.asarray(lags)
+        lags = ilags * dt
+    if isinstance(lags[0], datetime.timedelta):
+        lags = np.asarray(lags)
+        ilags = (np.asarray(lags) / dt).astype(int)
     jump_times = unique_times.filter((unique_times.diff() > dt).fill_null(True))
     data_vars = [col for col in df.columns if col not in [*index_columns, "time"]]
 
@@ -710,18 +741,20 @@ def add_lags(
             jump_times.to_frame()
             .group_by("time", maintain_order=True)
             .agg(
-                pl.datetime_range(
+                pl.datetime_ranges(
                     pl.col("time"),
                     pl.col("time") + lag,
                     interval=dt,
                     closed="both" if ilag != 0 else "none",
+                    time_unit=time_unit
                 ).alias("times")
             )["times"]
+            .explode()
             .explode()
         )
         aggs = {
             data_var: (
-                pl.when(pl.col("time").is_in(flagged_times))
+                pl.when(pl.col("time").is_in(flagged_times.implode()))
                 .then(None)
                 .otherwise(pl.col(data_var).shift(ilag))
             )
@@ -733,7 +766,7 @@ def add_lags(
     for lag, ilag in zip(lags, ilags):
         aggs = _aggs_add_lags(lag, ilag)
         predictors_ = df.with_columns(
-            lag=lag,
+            lag=pl.lit(lag, dtype=pl.Duration(time_unit=time_unit)),
             **aggs,
         )
         out.append(predictors_)
@@ -752,11 +785,12 @@ def prepare_predictors(
     ) = "fill",
     season: str | list | None = None,
     timescales: list[datetime.timedelta] | None = None,
-    lags: list[datetime.timedelta] | None = None,
+    lags: list[datetime.timedelta] | list[int] | None = None,
 ) -> pl.DataFrame:
     index_columns = get_index_columns(predictors, ["member", "time", "jet"])
     index_columns_no_time = get_index_columns(predictors, ["member", "jet"])
     index_columns_no_jet = get_index_columns(predictors, ["member", "time"])
+    predictors = squarify(predictors, index_columns)
     if subset is not None:
         predictors = predictors[[*index_columns, *subset]]
     if anomalize:
@@ -845,8 +879,9 @@ def compute_all_importances(
     perm_imp = dict(zip(predictor_names, perm_imp))
     names.append("permutation")
 
-    if not compute_shap:
+    if not compute_shap or not shap_avail:
         to_ret = pl.from_dicts([corr, model_imp, perm_imp])
+        names = pl.Series("importance_type", names)
         to_ret = to_ret.with_columns(importance_type=names)
         return to_ret
 
@@ -898,15 +933,16 @@ def predict_all(
         )
     join_columns = np.intersect1d(index_columns_targets, index_columns_predictors)
     targets = targets.join(
-        predictors.cast({"time": pl.Datetime("us")}), on=join_columns
+        predictors, on=join_columns
     )
     group_by_columns = get_index_columns(targets, ["region", "lag"])
+    total_iters = np.prod([targets[a].n_unique() for a in group_by_columns])
     Model_class = ALL_MODELS[model_type][int(base_pred is not None)]
 
     full_pred = []
     scores = []
     feature_importances = []
-    for indexer, df in targets.group_by(group_by_columns, maintain_order=True):
+    for indexer, df in tqdm(targets.group_by(group_by_columns, maintain_order=True), total=total_iters, disable=False):
         X = df[predictor_names]
         y = df["target"]
         y_base = df["pred"]
@@ -917,7 +953,7 @@ def predict_all(
             X_train, X_test, y_train, y_test, _, y_orig_test, _, y_base_test = (
                 train_test_split(X, y, y_orig, y_base, test_size=0.2)
             )
-            model = Model_class(n_jobs=1, **kwargs).fit(X_train, y_train)
+            model = Model_class(n_jobs=N_WORKERS, **kwargs).fit(X_train, y_train)
             if base_pred is None:
                 y_pred_test = model.predict(X_test)
                 y_pred_prob_test = model.predict_proba(X_test)[:, 1]
@@ -931,12 +967,10 @@ def predict_all(
                 ["target", "len", "pred", *predictor_names]
             ).with_columns(pred=pred, fold=fold)
             full_pred.append(this_pred)
-
             these_scores = compute_all_scores(
                 y_orig_test, y_pred_test, y_pred_prob_test
             )
             scores.append(indexer_dict_with_fold | these_scores)
-
             these_importances = compute_all_importances(
                 model, model_type, X, y, compute_shap
             )
@@ -950,6 +984,14 @@ def predict_all(
 
 
 class ExtremeExperiment(object):
+    """
+    Obsolete i tihnk. Use the functions they're up to date
+
+    Parameters
+    ----------
+    object : _type_
+        _description_
+    """
     def __init__(
         self,
         data_handler: DataHandler,
