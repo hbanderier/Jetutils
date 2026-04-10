@@ -55,11 +55,27 @@ def compute_absolute_vorticity(ds: xr.Dataset):
     return f[None, :, None] + zeta
 
 
+def compute_2d_conv(ds: xr.Dataset, u: str | None = None, v: str | None = None):
+    dx, dy, axis_x, axis_y, this_expand_dims = setup_derivatives(ds)
+    
+    if u is not None:
+        dudx = ds[u].copy(data=np.gradient(ds[u], axis=axis_x)) / this_expand_dims(dx)
+    else:
+        da = ds[list(ds.data_vars)[0]]
+        dudx = da.copy(data=np.zeros(da.shape))
+    if v is not None:
+        dvdy = ds[v].copy(data=np.gradient(ds[v], axis=axis_y)) / this_expand_dims(dy)
+    else:
+        da = ds[list(ds.data_vars)[0]]
+        dvdy = da.copy(data=np.zeros(da.shape))
+    return dudx + dvdy
+
+
 def compute_emf_2d_conv(ds: xr.Dataset):
     dx, dy, axis_x, axis_y, this_expand_dims = setup_derivatives(ds)
     
     e1 = 0.5 * (ds["vp"] ** 2 - ds["up"] ** 2)
     e2 = - ds["up"] * ds["vp"]
-    de1dx = ds["up"].copy(data=np.gradient(e1, axis=2)) / this_expand_dims(dx)
-    de2dy = ds["up"].copy(data=np.gradient(e2, axis=1)) / this_expand_dims(dy)
+    de1dx = ds["up"].copy(data=np.gradient(e1, axis=axis_x)) / this_expand_dims(dx)
+    de2dy = ds["vp"].copy(data=np.gradient(e2, axis=axis_y)) / this_expand_dims(dy)
     return de1dx + de2dy
