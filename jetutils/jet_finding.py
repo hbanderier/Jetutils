@@ -331,7 +331,8 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
         (
             1
             - pds.lin_reg_report(unraveled_lon, target=pl.col("lat"), add_bias=True)
-            .struct.field("r2")
+            .struct
+            .field("r2")
             .first()
         ).alias("waviness1"),
         (pl.col("lat") - pl.col("lat").mean()).pow(2).sum().alias("waviness2"),
@@ -532,7 +533,7 @@ def one_gmix_v2(
 ):
     """
     Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
-
+    
     Parameters
     ----------
     X : DataFrame
@@ -1445,24 +1446,16 @@ def jet_position_as_da(
     return da_jet_pos
 
 
-def get_double_jet_index(props_as_df: DataFrame, jet_pos_da: xr.DataArray):
+def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     """
     Adds a new columns to props_as_df; `"double_jet_index"`, by checking, for all longitudes, if there are at least two jet core points along the latitude, then averaging this over longitudes above 20° West.
     """
-    overlap = (~np.isnan(jet_pos_da)).sum("lat") >= 2
-    index_columns = get_index_columns(props_as_df, ["member", "time", "cluster"])
-    dji = pl.concat(
-        [
-            props_as_df.select(index_columns).unique(maintain_order=True),
-            Series(
-                "double_jet_index",
-                overlap.sel(lon=slice(-20, None, None)).mean("lon").values,
-            ).to_frame(),
-        ],
-        how="horizontal",
-    )
-    props_as_df = props_as_df.join(dji, on=index_columns, how="left")
-    return props_as_df
+    if diff_cat:
+        overlap = (jet_pos_da >= 0.5).any("lat") & (jet_pos_da < 0.5).any("lat") 
+    else:
+        overlap = (~np.isnan(jet_pos_da)).sum("lat") >= 2
+    overlap = overlap.rename("double_jet_index")
+    return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
 
 

@@ -1452,7 +1452,7 @@ def periodic_rolling_pl(
 
 def compute_anomalies_pl(
     df: pl.DataFrame,
-    other_index_columns: tuple = ("jet",),
+    other_index_columns: tuple | str = ("jet",),
     smooth_clim: int = 0,
     standardize: bool = False,
     # mode: Literal["dayofyear"] | Literal["season"] = "dayofyear",
@@ -1476,6 +1476,8 @@ def compute_anomalies_pl(
     df: pl.DataFrame
         Anomalized `df` with the same column names and size.
     """
+    if isinstance(other_index_columns, str):
+        other_index_columns = (other_index_columns,)
     data_columns = [
         col for col in df.columns if col not in ["time", *other_index_columns]
     ]

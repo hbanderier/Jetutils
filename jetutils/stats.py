@@ -82,7 +82,7 @@ def trends_and_pvalues(
     season: str | None = None,
     std: bool = False,
     bootstrap_len: int = 4,
-    n_boostraps: int = 10000,
+    n_bootstraps: int = 10000,
 ):
     ncat = props_as_df["jet"].n_unique()
 
@@ -107,10 +107,10 @@ def trends_and_pvalues(
     rng = np.random.default_rng()
 
     sample_indices = rng.choice(
-        n - bootstrap_len, size=(n_boostraps, n // bootstrap_len)
+        n - bootstrap_len, size=(n_bootstraps, n // bootstrap_len)
     )
     sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
-    sample_indices = sample_indices.reshape(n_boostraps, num_blocks * bootstrap_len)
+    sample_indices = sample_indices.reshape(n_bootstraps, num_blocks * bootstrap_len)
     sample_indices = np.append(
         sample_indices, np.arange(sample_indices.shape[1])[None, :], axis=0
     )
@@ -151,10 +151,10 @@ def trends_and_pvalues(
     pvals = slopes.group_by("jet", maintain_order=True).agg(
         **{
             data_var: pl.col(data_var)
-            .head(n_boostraps)
+            .head(n_bootstraps)
             .sort()
             .search_sorted(pl.col(data_var).get(-1)).first()
-            / n_boostraps
+            / n_bootstraps
             for data_var in data_vars
         }
     )
