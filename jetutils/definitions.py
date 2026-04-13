@@ -494,15 +494,37 @@ def revert_normalize(X, meanX, stdX):
     return X
 
 
-def xarray_to_polars(da: xr.DataArray | xr.Dataset):
-    """
-    Turns a xarray Dataset or DataArray into a polars DataFrame.
-    """
-    if "time" in da.dims and da["time"].dtype == np.dtype("object"):
-        da["time"] = da.indexes["time"].to_datetimeindex(time_unit="us")
-    df = da.to_dataframe().reset_index(allow_duplicates=True)
-    df = df.loc[:, ~df.columns.duplicated()] # weird but easiest to handle multiindex unwrapping
-    return pl.from_pandas(df)
+def _indexer_from_da(da: xr.DataArray | xr.Dataset):
+    dims = list(da.dims)
+    if len(dims) == 0:
+        return pl.DataFrame()
+    indexer = pl.Series(dims[0], da[dims[0]].values).to_frame()
+    for dim in dims[1:]:
+        indexer_ = pl.Series(dim, da[dim].values).to_frame()
+        indexer = indexer.join(indexer_, how="cross")
+    return indexer
+
+
+def _da_to_polars(da: xr.DataArray):
+    df = _indexer_from_da(da)
+    value_name = "values" if da.name is None else da.name
+    df = df.with_columns(**{value_name: da.values.ravel()})
+    return df
+
+
+def xarray_to_polars(ds: xr.DataArray | xr.Dataset):
+    if isinstance(ds, xr.DataArray):
+        return _da_to_polars(ds)
+    indexer = _indexer_from_da(ds)
+    dsdims = tuple(ds.dims)
+    for var in ds.data_vars:
+        if ds[var].dims != dsdims:
+            print(ds[var].dims, dsdims)
+            this_df = _da_to_polars(ds[var])
+            indexer = indexer.join(this_df, how="left", on=ds[var].dims)
+        else:
+            indexer = indexer.with_columns(**{var: ds[var].values.ravel()})
+    return indexer
 
 
 def polars_to_xarray(df: pl.DataFrame, index_columns: Sequence[str]):
