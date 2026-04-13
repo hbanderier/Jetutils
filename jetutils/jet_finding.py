@@ -11,6 +11,7 @@ import dask
 import numpy as np
 import polars as pl
 import polars_ds as pds
+import polars_st as st
 import rustworkx as rx
 import xarray as xr
 from polars import DataFrame, Expr, Series
@@ -45,7 +46,6 @@ from .definitions import (
     weighted_mean_pl
 )
 from .derived_quantities import compute_norm_derivative
-from .frechet import earth_haversine_numba, fdfd_matrix
 from .geospatial import (
     compute_alignment,
     detect_contours,
@@ -954,14 +954,6 @@ def average_jet_categories(
     return props_as_df_cat
 
 
-def _frechet_of_row(row):
-    if any(r is None for r in row):
-        return 0.0
-    p = np.asarray(row[0])
-    q = np.asarray(row[1])
-    return fdfd_matrix(p, q, earth_haversine_numba)
-
-
 def _lons_from_points(points: str | pl.Expr = "points") -> pl.Expr:
     points = to_expr(points)
     return points.list.eval(pl.element().arr.first())
@@ -984,11 +976,19 @@ def _lon_overlap(
     return overlap
 
 
-def track_jets_one_year(
-    jets: DataFrame, year: int, month: int | None = None, member: str | None = None
+def _frechet_st(
+    points: str | pl.Expr = "points", points_right: str | pl.Expr = "points_right"
+):
+    points = st.linestring(points).st.set_srid(4326).st.to_srid(3857)
+    points_right = st.linestring(points_right).st.set_srid(4326).st.to_srid(3857)
+    return points.st.frechet_distance(points_right)
+    
+
+def track_jets_(
+    jets: DataFrame, member: str | None = None, year: int | None = None, month: int | None = None
 ) -> DataFrame:
     """
-    Performs one year of explicit jet tracking
+    Performs jet tracking for real
 
     Parameters
     ----------
@@ -1012,10 +1012,12 @@ def track_jets_one_year(
         deltas.append("is_polar")
     deltas2 = [f"d{col}" for col in deltas]
     typical_group_by = ["time", "time_right", "jet ID", "jet ID_right"]
-    filter_ = pl.col("time").dt.year() == year
+    filter_ = pl.lit(True) 
+    if year is not None:
+        filter_ = filter_ & (pl.col("time").dt.year() == year)
     if month is not None:
         filter_ = filter_ & (pl.col("time").dt.month() == month)
-    if (year + 1) in jets["time"].dt.year().unique() and (month is None or month == 12):
+    if year is not None and (year + 1) in jets["time"].dt.year().unique() and (month is None or month == 12):
         filter_ = filter_ | pl.col("time").is_in(
             pl.col("time")
             .filter(pl.col("time").dt.year() == year + 1)
@@ -1024,10 +1026,8 @@ def track_jets_one_year(
             .implode()
         )
     if "member" in jets.columns and member is not None:
-        filter_ = filter_ & pl.col("member") == member
-        typical_group_by_ = ["member"]
-        typical_group_by_.extend(typical_group_by)
-        typical_group_by = typical_group_by_
+        filter_ = filter_ & (pl.col("member") == member)
+        typical_group_by.insert(0, "member")
 
     cols_i_want = get_index_columns(jets, ["member", "time", "jet ID", "lon", "lat"])
     jets_current = (
@@ -1046,15 +1046,18 @@ def track_jets_one_year(
     aggs_first = {"points": pl.concat_arr("lon", "lat"), "s": weighted_mean_pl("s")} | {
         d: weighted_mean_pl(d, "s") for d in deltas[1:]
     }
+    
+    memb = ["member"] if "member" in jets_current.columns else []
 
-    jets_current = jets_current.group_by("time", "jet ID").agg(**aggs_first)
-    jets_next = jets_next.group_by("time", "time_shifted", "jet ID").agg(**aggs_first)
+    jets_current = jets_current.group_by(*memb, "time", "jet ID").agg(**aggs_first)
+    jets_next = jets_next.group_by(*memb, "time", "time_shifted", "jet ID").agg(**aggs_first)
     cross = jets_current.join(
-        jets_next, left_on="time", right_on="time_shifted", how="left"
+        jets_next, left_on=[*memb, "time"], right_on=[*memb, "time_shifted"], how="left"
     )
+    cross = cross.filter(pl.col("points").is_not_null(), pl.col("points_right").is_not_null())
     overlap = _lon_overlap()
     more_aggs = {
-        "dist": cross["points", "points_right"].map_rows(_frechet_of_row)["map"],
+        "dist": _frechet_st(),
         "lon_overlap": overlap,
     } | {
         d2: (pl.col(d1) - pl.col(f"{d1}_right")).abs()
@@ -1069,9 +1072,9 @@ def track_jets_one_year(
     return cross
 
 
-def track_jets(all_jets_one_df: DataFrame, monthly: bool = False) -> DataFrame:
+def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False) -> DataFrame:
     """
-    Iterates over years and maybe members and performs explicit jet tracking.
+    Iterates over maybe years and maybe members and performs explicit jet tracking. Only use yearly and monthly if severely memory bound, it makes everything much slower
 
     Parameters
     ----------
@@ -1084,27 +1087,31 @@ def track_jets(all_jets_one_df: DataFrame, monthly: bool = False) -> DataFrame:
         _description_
     """
     cross = []
-    gb = ["time", "jet ID"]
-    iterator = all_jets_one_df["time"].dt.year().unique()
-    if monthly:
-        iterator = list(product(iterator, all_jets_one_df["time"].dt.month().unique()))
-    else:
-        iterator = list(zip(iterator, [None] * len(iterator)))
-    total = len(iterator)
-    if "member" in all_jets_one_df.columns:
+    do_member = "member" in all_jets_one_df.columns
+    if do_member:
         members = all_jets_one_df["member"].unique()
-        iterator = product(members, iterator)
-        gb = ["member"].extend(gb)
-        total = total * len(members)
     else:
-        iterator = zip([None] * len(iterator), iterator)
+        members = [None]
+        
+    if yearly:
+        years = all_jets_one_df["time"].dt.year().unique()
+    else:
+        years = [None]
+        
+    if monthly:
+        months = all_jets_one_df["time"].dt.year().unique()
+    else:
+        months = [None]
+    iterator = list(product(members, years, months))
+    total = len(iterator)
 
-    for member, time in tqdm(iterator, total=total):
+    for member, year, month in tqdm(iterator, total=total):
         cross.append(
-            track_jets_one_year(
+            track_jets_(
                 all_jets_one_df,
-                *time,
                 member,
+                year,
+                month
             )
         )
     cross = pl.concat(cross)

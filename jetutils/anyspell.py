@@ -1,5 +1,4 @@
 # coding: utf-8
-from fasthtml.ft import Dfn
 from typing import Mapping, Literal, Callable, Sequence
 from functools import partial
 from multiprocessing import set_start_method as set_mp_start_method
