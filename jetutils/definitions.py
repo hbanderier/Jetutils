@@ -1192,14 +1192,6 @@ def compute(obj, progress_flag: bool = False, **kwargs):
             return client.compute(obj)  # type: ignore # noqa: F821
     except AttributeError:
         return obj
-    
-from contourpy import contour_generator
-
-
-def inner(args):
-    im, lines = args
-    cg = contour_generator(im.lon.values, im.lat.values, im.values, name="serial", line_type="ChunkCombinedCode")
-    return cg.multi_lines(lines)
 
 def map_maybe_parallel(
     iterator: Iterable,

@@ -1266,6 +1266,7 @@ def add_normals_meters(
             "n",
             "normallon",
             "normallat",
+            "angle",
             *is_polar,
         ]
     ]
@@ -1369,7 +1370,8 @@ def add_normals(
 
 def gather_normal_da_jets(
     jets: DataFrame,
-    da: xr.DataArray,
+    # da: xr.DataArray,
+    *das: tuple[xr.DataArray],
     half_length: float = 1.2e6,
     dn: float = 5e4,
     delete_middle: bool = False,
@@ -1416,6 +1418,7 @@ def gather_normal_da_jets(
         jets = add_normals_meters(jets, half_length, dn, delete_middle)
     else:
         jets = add_normals(jets, half_length, dn, delete_middle)
+    da = das[0]
     dlon = (da.lon[1] - da.lon[0]).item()
     dlat = (da.lat[1] - da.lat[0]).item()
     lon = Series("normallon_rounded", da.lon.values).to_frame()
@@ -1445,22 +1448,24 @@ def gather_normal_da_jets(
 
     lonslice = jets["normallon_rounded"].unique()
     latslice = jets["normallat_rounded"].unique()
-    da = da.sel(
-        lon=lonslice,
-        lat=latslice,
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        if "time" in da.dims:
-            if da["time"].dtype == np.dtype("object"):
-                da["time"] = da.indexes["time"].to_datetimeindex(time_unit="ms")
-            da = da.sel(time=jets["time"].unique().sort().to_numpy())
-    da_df = xarray_to_polars(da)
-    if "time" in da_df.columns:
-        da_df = da_df.cast({"time": jets.schema["time"]})
+    
+    for da in das:
+        da = da.sel(
+            lon=lonslice,
+            lat=latslice,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            if "time" in da.dims:
+                if da["time"].dtype == np.dtype("object"):
+                    da["time"] = da.indexes["time"].to_datetimeindex(time_unit="ms")
+                da = da.sel(time=jets["time"].unique().sort().to_numpy())
+        da_df = xarray_to_polars(da)
+        if "time" in da_df.columns:
+            da_df = da_df.cast({"time": jets.schema["time"]})
 
-    varname = da.name
-    jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
+        varname = da.name
+        jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
     return jets
 
