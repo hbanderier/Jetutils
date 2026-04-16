@@ -333,7 +333,7 @@ def data_path(
     return anom_path
 
 
-def standardize(da):
+def standardize(da, unify_dtypes: bool = True):
     """
     Applies a bunch of different rules to standardize Xarray objects. Names of variables, dimensions, coordinates and indices are modified as specified by the `standard_dict` defined at the start of the function. The longitudes are forced to go from -180 to +180 - dx, the latitudes are forced to be in increasing order. Finally, the data is coerced into a dask array.
 
@@ -415,6 +415,8 @@ def standardize(da):
     #     first_lat = np.round(first_lat, 2)
     #     dlat = np.round(np.mean(np.diff(da.lat)), 2).item()
     #     da = da.assign_coords(lat=first_lat + np.arange(len(da.lat), dtype=np.float32) * dlat)
+    if not unify_dtypes:
+        return da
     if isinstance(da, xr.Dataset):
         for var in da.data_vars:
             if "chunksizes" in da[var].encoding and da[var].chunks is None:

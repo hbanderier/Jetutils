@@ -985,7 +985,7 @@ def _frechet_st(
     
 
 def track_jets_(
-    jets: DataFrame, member: str | None = None, year: int | None = None, month: int | None = None
+    jets: DataFrame, member: str | None = None, year: int | None = None, month: int | None = None, catd: bool = False,
 ) -> DataFrame:
     """
     Performs jet tracking for real
@@ -1054,6 +1054,8 @@ def track_jets_(
     cross = jets_current.join(
         jets_next, left_on=[*memb, "time"], right_on=[*memb, "time_shifted"], how="left"
     )
+    if catd:
+        cross = cross.filter(pl.col("jet ID") == pl.col("jet ID_right"))
     cross = cross.filter(pl.col("points").is_not_null(), pl.col("points_right").is_not_null())
     overlap = _lon_overlap()
     more_aggs = {
@@ -1072,7 +1074,7 @@ def track_jets_(
     return cross
 
 
-def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False) -> DataFrame:
+def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False, catd: bool = False) -> DataFrame:
     """
     Iterates over maybe years and maybe members and performs explicit jet tracking. Only use yearly and monthly if severely memory bound, it makes everything much slower
 
@@ -1111,7 +1113,8 @@ def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool =
                 all_jets_one_df,
                 member,
                 year,
-                month
+                month,
+                catd=catd
             )
         )
     cross = pl.concat(cross)
