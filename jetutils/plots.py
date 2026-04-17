@@ -1,7 +1,5 @@
 # coding: utf-8
-from toolz import get_in
 from jetutils.definitions import squarify
-from jetutils.geospatial import central_diff
 from itertools import product
 from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
 from math import log10, floor
@@ -1234,6 +1232,7 @@ def plot_dayofyear_trends(
     win_size: int = 15,
     nrows: int = 3,
     ncols: int = 4,
+    std: bool = False,
     folder: str | None = None,
     suffix: str = "",
     numbering: bool = False,
@@ -1241,11 +1240,6 @@ def plot_dayofyear_trends(
     save: bool = False,
     clear: bool = True,
 ):
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), tight_layout=True, sharex="all"
-    )
-    axes = axes.flatten()
-    
     index_columns = get_index_columns(props_as_df, ["member", "time", "jet"])
     props_as_df = squarify(props_as_df, index_columns)
     n_years = props_as_df["time"].dt.year().n_unique()
@@ -1260,27 +1254,44 @@ def plot_dayofyear_trends(
     sample_indices = np.append(sample_indices, np.arange(n_years)[None, :], axis=0)
     sample_indices = sample_indices.flatten()
 
-    props_as_df_daily = (
-        props_as_df.group_by_dynamic(pl.col("time"), every="1d", group_by="jet")
-        .agg(**{data_var: pl.col(data_var).mean() for data_var in data_vars})
-        .sort([pl.col("time"), pl.col("jet")])
+    # props_as_df = props_as_df.with_columns(dayofyear=pl.col("time").dt.ordinal_day(), year=pl.col("time").dt.year())
+    # to_add = pl.concat([
+    #     props_as_df.with_columns(dayofyear=pl.col("dayofyear") - pl.col("dayofyear").max().over("year"), year=pl.col("year") + 1).filter(pl.col("dayofyear") >= -win_size // 2),
+    #     props_as_df.with_columns(dayofyear=pl.col("dayofyear") + pl.col("dayofyear").max().over("year"), year=pl.col("year") - 1).filter(pl.col("dayofyear") <= pl.col("dayofyear").min().over("year") + win_size // 2)
+    # ])
+    # props_as_df = pl.concat([
+    #     props_as_df,
+    #     to_add
+    # ]).with_columns(hourofyear=pl.col("dayofyear") * 24 + pl.col("time").dt.hour()).sort("year", "hourofyear", "jet")
+
+    period = f"{win_size}d"
+    offset = f"{-win_size // 2}d"
+    if std:
+        aggs = {data_var: pl.col(data_var).std() for data_var in data_vars}
+    else:
+        aggs = {data_var: pl.col(data_var).mean() for data_var in data_vars}
+    props_as_df_smoothed = (
+        props_as_df.rolling(pl.col("time"), period=period, offset=offset, group_by=["jet"])
+        .agg(**aggs)
+        .sort("time", "jet")
+        .filter(pl.col("time").dt.ordinal_day() <= 365)
+        .with_columns(hourofyear=pl.col("time").dt.ordinal_day() * 24 + pl.col("time").dt.hour(), year=pl.col("time").dt.year())
     )
-    props_as_df_daily = props_as_df_daily.filter(pl.col("time").dt.ordinal_day() < 366)
     ts_bootstrapped = (
-        props_as_df_daily.group_by(
-            [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
+        props_as_df_smoothed.group_by(
+            ["hourofyear", "jet"],
             maintain_order=True,
         )
         .agg(
             **{data_var: pl.col(data_var).gather(sample_indices) for data_var in data_vars},
-            year=pl.col("time").dt.year().gather(sample_indices),
+            year=pl.col("year").gather(sample_indices),
             inside_index=pl.int_range(len(sample_indices)) % n_years,
             sample_index=pl.int_range(len(sample_indices)) // n_years,
         )
         .explode([*data_vars, "year", "inside_index", "sample_index"])
     )
     slopes = ts_bootstrapped.group_by(
-        ["dayofyear", "sample_index", "jet"], maintain_order=True
+        ["hourofyear", "sample_index", "jet"], maintain_order=True
     ).agg(
         **{
             data_var: 
@@ -1294,7 +1305,7 @@ def plot_dayofyear_trends(
             for data_var in data_vars
         }
     )
-    pvals = slopes.group_by(["dayofyear", "jet"], maintain_order=True).agg(
+    pvals = slopes.group_by(["hourofyear", "jet"], maintain_order=True).agg(
         **{
             data_var: pl.col(data_var)
             .head(n_bootstraps)
@@ -1304,9 +1315,12 @@ def plot_dayofyear_trends(
             for data_var in data_vars
         }
     )
-
     ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
-    ys = periodic_rolling_pl(ys, win_size, data_vars)
+    
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), constrained_layout=True, sharex="all"
+    )
+    axes = axes.flatten()
 
     for letter, varname, ax in zip(ascii_lowercase, data_vars, axes.ravel()):
         dji = varname == "double_jet_index"
@@ -1327,7 +1341,7 @@ def plot_dayofyear_trends(
             color = "black" if dji else COLORS[2 - i]
             y = ys.filter(pl.col("jet") == jet)[varname]
             ps = pvals.filter(pl.col("jet") == jet)[varname]
-            x = np.arange(len(y))
+            x = ys.filter(pl.col("jet") == jet)["hourofyear"].to_numpy() / 24
             ax.plot(x, y / factor, lw=2, color=color, label=jet, zorder=11)
             filter_ = (ps > 0.975) | (ps < 0.025)
             ax.scatter(
@@ -1347,12 +1361,12 @@ def plot_dayofyear_trends(
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
         ax.plot(xlim, [0, 0], lw=1.5, color="black", zorder=10, alpha=1)
-        wherex = np.isin(x, JJADOYS)
-        ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
+        # wherex = np.isin(x, JJADOYS)
+        # ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(xlim)
         ax.set_ylim(ylim)
         ax.grid(True)
-    axes.ravel()[0].legend().set_zorder(102)
+
     if save:
         if folder is None:
             folder = "jet_props_misc"
