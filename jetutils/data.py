@@ -394,6 +394,8 @@ def standardize(da, unify_dtypes: bool = True):
             da = da.reset_coords(to_del, drop=True)
         except ValueError:
             pass
+    if "nbnd" in da.dims:
+        da = da.drop_dims("nbnd")
     if "time" in da.dims:
         inityear = da["time"].dt.year.values[0]
         if inityear < 1800:
@@ -436,6 +438,11 @@ def standardize(da, unify_dtypes: bool = True):
             da = da.astype(np.float32)
         elif da.dtype == np.int64:
             da = da.astype(np.int32)
+    for coord in da.coords:
+        if da[coord].dtype == np.float64:
+            da = da.assign_coords(**{coord: da[coord].values.astype(np.float32)})
+        elif da[coord].dtype == np.int64:
+            da = da.assign_coords(**{coord: da[coord].values.astype(np.int32)})
     return da.unify_chunks()
 
 
