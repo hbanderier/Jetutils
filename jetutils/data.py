@@ -394,6 +394,8 @@ def standardize(da, unify_dtypes: bool = True):
             da = da.reset_coords(to_del, drop=True)
         except ValueError:
             pass
+    if "nbnd" in da.dims:
+        da = da.drop_dims("nbnd")
     if "time" in da.dims:
         inityear = da["time"].dt.year.values[0]
         if inityear < 1800:
@@ -404,7 +406,7 @@ def standardize(da, unify_dtypes: bool = True):
                 inclusive="left",
                 periods=da.time.shape[0],
             )
-            da["time"] = new_time_range
+            da = da.assign_coords(time=new_time_range)
     if (da.lon.max() > 180) and (da.lon.min() >= 0):
         da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
         da = da.sortby("lon")
@@ -436,6 +438,13 @@ def standardize(da, unify_dtypes: bool = True):
             da = da.astype(np.float32)
         elif da.dtype == np.int64:
             da = da.astype(np.int32)
+    for coord in da.coords:
+        if da[coord].dtype == np.float64:
+            da = da.assign_coords(**{coord: da[coord].values.astype(np.float32)})
+        elif da[coord].dtype == np.int64:
+            da = da.assign_coords(**{coord: da[coord].values.astype(np.int32)})
+        elif coord == "time":
+            da = da.assign_coords(**{coord: da[coord].values.astype("datetime64[ms]")})
     return da.unify_chunks()
 
 
@@ -696,7 +705,7 @@ def extract(
     if "member" in da.dims and members != "all":
         try:
             da = da.isel(member=members)
-        except (ValueError, TypeError):
+        except (ValueError, IndexError):
             da = da.sel(member=members)
 
     da = extract_region(da, minlon, maxlon, minlat, maxlat)

@@ -569,13 +569,19 @@ def revert_normalize(X, meanX, stdX):
     return X
 
 
+def _dimvals(da: xr.DataArray | xr.Dataset, dim: str):
+    if dim != "time":
+        return da[dim].values
+    return da[dim].values.astype("datetime64[ms]")
+
+
 def _indexer_from_da(da: xr.DataArray | xr.Dataset):
     dims = list(da.dims)
     if len(dims) == 0:
         return pl.DataFrame()
-    indexer = pl.Series(dims[0], da[dims[0]].values).to_frame()
+    indexer = pl.Series(dims[0], _dimvals(da, dims[0])).to_frame()
     for dim in dims[1:]:
-        indexer_ = pl.Series(dim, da[dim].values).to_frame()
+        indexer_ = pl.Series(dim, _dimvals(da, dim)).to_frame()
         indexer = indexer.join(indexer_, how="cross")
     return indexer
 
