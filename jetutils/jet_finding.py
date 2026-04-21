@@ -187,7 +187,7 @@ def find_all_jets(
         )
     elif thresholds is not None:
         thresholds = (
-            pl.from_pandas(thresholds.to_dataframe().reset_index())
+            xarray_to_polars(thresholds)
             .drop("quantile")
             .cast({"s": pl.Float32})
             .rename({"s": "s_thresh"})
@@ -390,7 +390,7 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     """
     Computes the width of each jet using normally interpolated wind speed on either side of the jet.
     """
-    jets = gather_normal_da_jets(jets, da, 2e6, 5e4, delete_middle=True, in_meters=True)
+    jets = gather_normal_da_jets(jets, da, half_length=2e6, dn=5e4, delete_middle=True, in_meters=True)
 
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
@@ -1545,9 +1545,9 @@ class JetFindingExperiment(object):
 
         all_jets_one_df = []
         if "member" in self.metadata or self.ds.nbytes > 8e10:
-            several_years = 1
+            several_years = 2
         else:
-            several_years = 3
+            several_years = 5
         iterator = iterate_over_year_maybe_member(
             da=self.ds, several_years=several_years
         )
