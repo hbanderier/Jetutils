@@ -1,7 +1,7 @@
 # coding: utf-8
 from jetutils.definitions import squarify
 from itertools import product
-from typing import Mapping, Sequence, Tuple, Union, Iterable, Callable
+from typing import Mapping, Sequence, Tuple, Literal, Iterable, Callable
 from math import log10, floor
 
 import os
@@ -1374,79 +1374,108 @@ def plot_dayofyear_trends(
     return fig
 
 
-def last_figure(
-    jets: pl.DataFrame,
-    times: pl.DataFrame,
-    da: xr.DataArray,
-    filters: dict[str, list[pl.Expr]],
-    jet: str,
-    varname: str,
-    all_times: pl.Series | None = None,
-    half_length: float = 20,
-    dn: float = 1,
-    n_interp: int = 30,
-    n_bootstraps: int = 0,
-    clim: xr.DataArray | None = None,
-    clim_std: xr.DataArray | None = None,
-) -> dict[str, pl.DataFrame]:
-    to_ret = times["spell"].unique().to_frame()
-    id_ = int(jet == "EDJ")
-    varname_ = f"{varname}_interp"
-    agg = (
-        pl.col(varname_)
-        .replace([float("inf"), float("-inf"), float("nan")], None)
-        .mean()
-    )
-    if clim is None:
-        jets = gather_normal_da_jets_wrapper(
-            jets,
-            times,
-            da,
-            clim=clim,
-            clim_std=clim_std,
-            half_length=half_length,
-            dn=dn,
-            n_interp=n_interp,
-        )
-        for filter_name, filter_ in filters.items():
-            full_name = f"{varname}_{filter_name}"
-            results = (
-                jets.filter(pl.col("jet ID") == id_, *filter_)
-                .group_by("spell")
-                .agg(**{full_name: agg})
-            )
-            to_ret = to_ret.join(results, on="spell", how="left")
-        return to_ret
+def plot_interp(
+    variables: dict, 
+    prefix: str, 
+    ipath: Path,
+    jet: str, 
+    square_len: float = 3,
+    n_col: int = 4,
+    pad: float = 0.02,
+    fraction: float = 0.12,
+    alpha: float = 0.05,
+    handle_pvals: Literal["hide", "hatch"] = "hide"
+) -> plt.Figure:
+    n_row = int(np.ceil(len(variables) / n_col))
+    width = square_len * n_col * (1 + pad + fraction)
+    height = square_len * n_row
+    cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
 
-    if all_times is None:
-        all_times = jets["time"].unique().clone()
-    ts_bootstrapped = create_bootstrapped_times(
-        times, all_times, n_bootstraps=n_bootstraps
+    fig, axes = plt.subplots(
+        n_row, n_col, figsize=(width, height), sharex="all", sharey="all"
     )
-    jets = gather_normal_da_jets_wrapper(
-        jets,
-        ts_bootstrapped,
-        da,
-        clim=clim,
-        clim_std=clim_std,
-        half_length=half_length,
-        dn=dn,
-        n_interp=n_interp,
-    )  # columns: "sample_index", "inside_index", "time", "spell", ...
-    for filter_name, filter_ in filters.items():
-        results = (
-            jets.filter(pl.col("jet ID") == id_, *filter_)
-            .group_by("sample_index", "spell")
-            .agg(agg)
-        )
-        results = squarify(results, ["sample_index", "spell"])
-        full_name = f"{varname}_{filter_name}"
-        full_name_pvals = f"{full_name}_pvals"
-        results = results.group_by("spell", maintain_order=True).agg(
-            **{
-                full_name: pl.col(varname_).last(),
-                full_name_pvals: (pl.col(varname_).rank().last() - 1) / n_bootstraps,
-            }
-        )
-        to_ret = to_ret.join(results, on="spell", how="left")
-    return to_ret
+    axes = axes.ravel()
+    for i, letter, ax, (varname_full, props) in zip(
+        range(1000), ascii_lowercase, axes, variables.items()
+    ):
+        nlevels, cmap, (min_, max_) = props
+        varname, mode = varname_full.split(":")
+        varname_no_number = varname.rstrip("0123456789")
+        long_name = PRETTIER_VARNAME.get(varname, varname)
+        grad = mode[-4:] == "grad"
+        is_polar = jet == "EDJ"
+        levels = MaxNLocator(nlevels).tick_values(min_, max_)
+        ofile = ipath.joinpath(f"{prefix}_{jet}_{varname_full}.nc")
+        factor = FACTORS.get(varname, 1)
+        to_plot = xr.open_dataarray(ofile)
+        y = to_plot.n / 1e6
+        ofile_pvals = ipath.joinpath(f"{prefix}_{jet}_{varname_full}_pvals.nc")
+        if ofile_pvals.is_file():
+            if handle_pvals != "hide":
+                levels = np.delete(levels, np.where(np.abs(levels) < 1e-7)[0])
+            norm = BoundaryNorm(levels, cmap.N)
+            pvals = xr.open_dataarray(ofile_pvals)
+            pvals_ = pvals.values.ravel()
+            sort_order = np.argsort(pvals_)
+            try:
+                cutoff = np.amax(
+                    np.where(
+                        pvals_[sort_order] <= np.linspace(0, 1, len(sort_order)) * alpha
+                    )[0]
+                )
+                filter_ = np.argsort(sort_order).reshape(pvals.shape) <= cutoff
+            except ValueError:
+                filter_ = pvals.values < alpha
+            if handle_pvals == "hide":
+                tplt = to_plot.where(filter_).values / factor
+            elif handle_pvals == "hatch":
+                tplt = to_plot.values / factor
+            im = ax.pcolormesh(
+                to_plot.norm_index,
+                y,
+                tplt,
+                shading="nearest",
+                cmap=cmap,
+                norm=norm,
+            )
+            if handle_pvals == "hatch":
+                _ = ax.pcolor(
+                    to_plot.norm_index,
+                    y,
+                    pvals.where(filter_),
+                    hatch="\\" * 3,
+                    facecolor="none",
+                    edgecolor="grey",
+                    hatch_linewidth=2.0,
+                    linewidth=0,
+                )
+        else:
+            norm = BoundaryNorm(levels, cmap.N)
+            im = ax.pcolormesh(
+                to_plot.norm_index,
+                y,
+                to_plot.values / factor,
+                shading="nearest",
+                cmap=cmap,
+                norm=norm,
+            )
+        ax.plot([-0.5, 1.5], [0, 0], lw=4, color=COLORS[2 - int(is_polar)])
+        ax.set_xlim(0, 1)
+        if factor == 1:
+            factor_str = ""
+        else:
+            factor_str = str(int(np.log10(factor)))
+            factor_str = r"$10^{" + factor_str + r"} \times $"
+        unit = UNITS[varname_no_number]
+        unit = factor_str + unit
+        unit = unit + r"$/10^{6}\mathrm{m}$" if grad else unit
+        unit = "pp" if unit == r"$\%$" and mode == "anom" else unit
+        mode_pretty = mode.split("_")
+        mode_pretty = f"{mode_pretty[0]} of {mode_pretty[1]}" if "_" in mode else mode
+        ax.set_title(f"{letter}) {long_name}, {mode_pretty} [{unit}]", fontsize=13)
+        fig.colorbar(im, ax=ax, **cbar_kwargs)
+        if i >= (n_row - 1) * n_col:
+            ax.set_xlabel("Along jet coord.")
+        if i % n_col == 0:
+            ax.set_ylabel(r"Normal distance $[10^{6} \mathrm{m}]$")
+    return fig
