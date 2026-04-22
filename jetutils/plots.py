@@ -1384,17 +1384,27 @@ def plot_interp(
     pad: float = 0.02,
     fraction: float = 0.12,
     alpha: float = 0.05,
+    transpose: bool = False,
     handle_pvals: Literal["hide", "hatch"] = "hide"
 ) -> plt.Figure:
-    n_row = int(np.ceil(len(variables) / n_col))
-    width = square_len * n_col * (1 + pad + fraction)
-    height = square_len * n_row
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
-
-    fig, axes = plt.subplots(
-        n_row, n_col, figsize=(width, height), sharex="all", sharey="all"
-    )
-    axes = axes.ravel()
+    if transpose:
+        n_row = n_col
+        n_col = int(np.ceil(len(variables) / n_row))
+        width = square_len * n_col * (1 + pad + fraction)
+        height = square_len * n_row
+        fig, axes = plt.subplots(
+            n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
+        )
+        axes = axes.T.ravel()
+    else:
+        n_row = int(np.ceil(len(variables) / n_col))
+        width = square_len * n_col * (1 + pad + fraction)
+        height = square_len * n_row
+        fig, axes = plt.subplots(
+            n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
+        )
+        axes = axes.ravel()
     for i, letter, ax, (varname_full, props) in zip(
         range(1000), ascii_lowercase, axes, variables.items()
     ):
@@ -1464,7 +1474,7 @@ def plot_interp(
         if factor == 1:
             factor_str = ""
         else:
-            factor_str = str(int(np.log10(factor)))
+            factor_str = str(int(np.log10(np.abs(factor))))
             factor_str = r"$10^{" + factor_str + r"} \times $"
         unit = UNITS[varname_no_number]
         unit = factor_str + unit
@@ -1474,8 +1484,12 @@ def plot_interp(
         mode_pretty = f"{mode_pretty[0]} of {mode_pretty[1]}" if "_" in mode else mode
         ax.set_title(f"{letter}) {long_name}, {mode_pretty} [{unit}]", fontsize=13)
         fig.colorbar(im, ax=ax, **cbar_kwargs)
-        if i >= (n_row - 1) * n_col:
+        if i >= (n_row - 1) * n_col and not transpose:
             ax.set_xlabel("Along jet coord.")
-        if i % n_col == 0:
+        if i % n_row == (n_row - 1) and transpose:
+            ax.set_xlabel("Along jet coord.")
+        if i % n_col == 0 and not transpose:
+            ax.set_ylabel(r"Normal distance $[10^{6} \mathrm{m}]$")
+        if i < n_row and transpose:
             ax.set_ylabel(r"Normal distance $[10^{6} \mathrm{m}]$")
     return fig

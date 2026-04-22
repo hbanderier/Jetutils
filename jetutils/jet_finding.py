@@ -367,9 +367,9 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
         props_as_df = props_as_df.with_columns(
             [
                 pl.col(col)
-                .replace([float("inf"), float("-inf")], None)
+                .replace([float("inf"), float("-inf"), float("nan")], None)
                 .clip(pl.col(col).quantile(0.00001), pl.col(col).quantile(0.99999))
-                for col in ["tilt", "waviness1", "wavinessDC16"]
+                for col in ["tilt", "waviness1", "wavinessDC16", "wavinessR16"]
             ]
         )
         return props_as_df.collect()

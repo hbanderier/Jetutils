@@ -268,9 +268,9 @@ if "DATADIR" not in globals():
         #
         "EMFconv250": 1e6,
         "F3": 1e-1, 
-        "hor": 1e-5, 
-        "vert": 1e-5, 
-        "vert_extra": 1e-6,
+        "hor": -1e-5, 
+        "vert": -1e-5, 
+        "vert_extra": -1e-5,
     }
     
     FACTORS_UNITS = {
