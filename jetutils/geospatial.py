@@ -341,17 +341,17 @@ def inner_detect_contours(args):
     """
     Worker function to compute the zero-sigma-contours in a parallel context
     """
-    da, levels = args
-    lon = da.lon.values
-    lat = da.lat.values
+    da, levels, spatial_dims = args
+    x = da[spatial_dims[0]].values
+    y = da[spatial_dims[1]].values
     z = da.values
     l1 = contour_generator(
-        lon, lat, z, line_type="SeparateCode", quad_as_tri=False
+        x, y, z, line_type="SeparateCode", quad_as_tri=False
     ).multi_lines(levels)
     if len(l1[0][0]) == 0:
         return [], [], [], []
     to_ret = [
-        (i, level, round_contour(contour, lon, lat), 79 in types_)
+        (i, level, round_contour(contour, x, y), 79 in types_)
         for level, (contours, types) in zip(levels, l1)
         for contour, types_, i in zip(contours, types, range(10000000))
     ]
@@ -359,6 +359,57 @@ def inner_detect_contours(args):
 
 
 def detect_contours(
+    da: xr.DataArray,
+    levels: list[float],
+    spatial_dims: tuple = ("lon", "lat"),
+    processes: int = 1,
+    ctx: str | None = None,
+) -> DataFrame:
+    extra_dims = {dim: da[dim] for dim in da.dims if dim not in spatial_dims}
+    extra_dims_values = {key: val.values for key, val in extra_dims.items()}
+    key = list(extra_dims_values)[0]
+    extra_dims_df = pl.DataFrame({key: extra_dims_values[key]})
+    for key in list(extra_dims_values)[1:]:
+        extra_dims_df = extra_dims_df.join(pl.DataFrame({key: extra_dims_values[key]}), how="cross")
+    iter1 = list(product(*list(extra_dims.values())))
+    iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
+    iter3 = ((da.loc[indexer], levels, spatial_dims) for indexer in iter2)
+    if processes > 1 and ctx is None:
+        ctx = get_context("fork")
+    elif processes > 1:
+        ctx = get_context(ctx)
+    res = map_maybe_parallel(
+        iter3,
+        inner_detect_contours,
+        len(iter2),
+        processes=processes,
+        ctx=ctx,
+        progress=False,
+    )
+    all_is, all_levels, all_contours, all_cyclics = list(zip(*res))
+    all_contours = (
+        pl.DataFrame(
+            {
+                "contour": all_is,
+                "level": all_levels,
+                "contours": all_contours,
+                "cyclic": all_cyclics,
+            }
+        )
+    )
+    aggs = {col: pl.col("contours").arr.get(i) for i, col in enumerate(spatial_dims)}
+    all_contours = (
+        pl
+        .concat([extra_dims_df, all_contours], how="horizontal")
+        .explode("contour", "level", "contours", "cyclic")
+        .explode("contours")
+        .with_columns(**aggs)
+        .drop("contours")
+    )
+    return all_contours
+
+
+def detect_contours_lonlat(
     da: xr.DataArray,
     levels: list[float],
     repeat_lons: int = 120,
@@ -381,50 +432,19 @@ def detect_contours(
     else:
         da = da.copy()
 
-    extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
-    index_columns = list(extra_dims)
-    extra_dims_values = {key: val.values for key, val in extra_dims.items()}
-    key = list(extra_dims_values)[0]
-    extra_dims_df = pl.DataFrame({key: extra_dims_values[key]})
-    for key in list(extra_dims_values)[1:]:
-        extra_dims_df = extra_dims_df.join(pl.DataFrame({key: extra_dims_values[key]}), how="cross")
-    iter1 = list(product(*list(extra_dims.values())))
-    iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
-    iter3 = ((da.loc[indexer], levels) for indexer in iter2)
-    if processes > 1 and ctx is None:
-        ctx = get_context("fork")
-    elif processes > 1:
-        ctx = get_context(ctx)
-    res = map_maybe_parallel(
-        iter3,
-        inner_detect_contours,
-        len(iter2),
+    all_contours = detect_contours(
+        da, 
+        levels,
+        spatial_dims=("lon", "lat"),
         processes=processes,
         ctx=ctx,
-        progress=False,
     )
-    all_is, all_levels, all_contours, all_cyclics = list(zip(*res))
-    index_columns = [*index_columns, "level", "contour"]
+    
+    extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
+    index_columns = [*list(extra_dims), "level", "contour"]
+    
     all_contours = (
-        pl.DataFrame(
-            {
-                "contour": all_is,
-                "level": all_levels,
-                "contours": all_contours,
-                "cyclic": all_cyclics,
-            }
-        )
-    )
-    all_contours = (
-        pl
-        .concat([extra_dims_df, all_contours], how="horizontal")
-        .explode("contour", "level", "contours", "cyclic")
-        .explode("contours")
-        .with_columns(
-            lon=pl.col("contours").arr.get(0),
-            lat=pl.col("contours").arr.get(1),
-        )
-        .drop("contours")
+        all_contours
         .unique([*index_columns, "lon", pl.col("lat").round(2)], maintain_order=True)
         .with_columns(side=(pl.col("lon") >= 180.0).cast(pl.UInt8()))
         .filter(~(pl.col("side") == 1).all().over(index_columns))

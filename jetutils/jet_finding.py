@@ -48,7 +48,7 @@ from .definitions import (
 from .derived_quantities import compute_norm_derivative
 from .geospatial import (
     compute_alignment,
-    detect_contours,
+    detect_contours_lonlat,
     diff_exp,
     gather_normal_da_jets,
     haversine,
@@ -211,7 +211,7 @@ def find_all_jets(
 
     # contours
     repeat_lons = 120 if x_periodic else 0.
-    all_contours = detect_contours(
+    all_contours = detect_contours_lonlat(
         (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS, repeat_lons=repeat_lons
     ).drop("level")
 
