@@ -261,7 +261,6 @@ if "DATADIR" not in globals():
         "width": 1e5,
         "waviness1": 1e-2,
         "waviness2": 1e-2,
-        "wavinessR16": 1e-2,
         "wavinessDC16": 1e-2,
         "wavinessFV15": 1e-2,
         "pers": 1e-2,

@@ -2,6 +2,7 @@ import warnings
 from itertools import product
 from typing import Literal
 from multiprocessing import get_context
+from functools import reduce
 
 import numpy as np
 import polars as pl
@@ -1375,7 +1376,7 @@ def gather_normal_da_jets(
     half_length: float = 1.2e6,
     dn: float = 5e4,
     delete_middle: bool = False,
-    in_meters: bool = False,
+    in_meters: bool = True,
 ) -> DataFrame:
     """
     Creates normal half-segments on either side of all jet core points, each of length `half_length` and with flat spacing `dn`. Then, interpolates the values of `da` onto each point of each normal segment.
@@ -1414,6 +1415,18 @@ def gather_normal_da_jets(
             "inside_index",
         ),
     )
+    schema = jets.collect_schema()
+    for col in index_columns:
+        dtype = schema[col]
+        if all([col not in da.coords for da in das]):
+            continue
+        coord_vals = []
+        for da in das:
+            if col in da.coords:
+                coord_vals.append(da[col].values)
+        coord_vals = reduce(np.intersect1d, coord_vals)
+        coord_vals = pl.Series(col, coord_vals).cast(dtype).implode()
+        jets = jets.filter(pl.col(col).is_in(coord_vals))
     if in_meters:
         jets = add_normals_meters(jets, half_length, dn, delete_middle)
     else:

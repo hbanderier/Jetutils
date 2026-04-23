@@ -1396,7 +1396,10 @@ def plot_interp(
         fig, axes = plt.subplots(
             n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
         )
+        letters = np.asarray(list(ascii_lowercase[:n_col * n_row]))
+        letters = letters.reshape(axes.shape)
         axes = axes.T.ravel()
+        letters = letters.T.ravel()
     else:
         n_row = int(np.ceil(len(variables) / n_col))
         width = square_len * n_col * (1 + pad + fraction)
@@ -1405,8 +1408,9 @@ def plot_interp(
             n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
         )
         axes = axes.ravel()
+        letters = ascii_lowercase
     for i, letter, ax, (varname_full, props) in zip(
-        range(1000), ascii_lowercase, axes, variables.items()
+        range(1000), letters, axes, variables.items()
     ):
         nlevels, cmap, (min_, max_) = props
         varname, mode = varname_full.split(":")
