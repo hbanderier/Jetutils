@@ -1034,7 +1034,7 @@ def plot_trends(
             subtitle = "_std_" if std else "_"
             folder = f"jet_props{subtitle}trends"
         fig.savefig(
-            f"{FIGURES}/{folder}/trends_{season}{suffix}.png"
+            f"{FIGURES}/{folder}/trends_{season}{suffix}.pdf"
         )
     return fig
 
@@ -1148,7 +1148,7 @@ def plot_seasonal(
     if save:
         if folder is None:
             folder = "jet_props_misc"
-        plt.savefig(f"{FIGURES}/{folder}/seasonal{suffix}.png")
+        plt.savefig(f"{FIGURES}/{folder}/seasonal{suffix}.pdf")
     return fig
 
 
@@ -1219,7 +1219,7 @@ def props_histogram(
             )
             ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
     if save:
-        fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.png")
+        fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.pdf")
     return fig
 
 
@@ -1370,7 +1370,7 @@ def plot_dayofyear_trends(
     if save:
         if folder is None:
             folder = "jet_props_misc"
-        plt.savefig(f"{FIGURES}/{folder}/doy_trends{suffix}_{win_size=}.png")
+        plt.savefig(f"{FIGURES}/{folder}/doy_trends{suffix}_{win_size=}.pdf")
     return fig
 
 
@@ -1385,8 +1385,10 @@ def plot_interp(
     fraction: float = 0.12,
     alpha: float = 0.05,
     transpose: bool = False,
+    bias_correction: bool = False,
     handle_pvals: Literal["hide", "hatch"] = "hide"
 ) -> plt.Figure:
+    suffix = "_bc" if bias_correction else ""
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
     if transpose:
         n_row = n_col
@@ -1419,11 +1421,11 @@ def plot_interp(
         grad = mode[-4:] == "grad"
         is_polar = jet == "EDJ"
         levels = MaxNLocator(nlevels).tick_values(min_, max_)
-        ofile = ipath.joinpath(f"{prefix}_{jet}_{varname_full}.nc")
         factor = FACTORS.get(varname, 1)
+        ofile = ipath.joinpath(f"{prefix}_{jet}_{varname_full}{suffix}.nc")
         to_plot = xr.open_dataarray(ofile)
         y = to_plot.n / 1e6
-        ofile_pvals = ipath.joinpath(f"{prefix}_{jet}_{varname_full}_pvals.nc")
+        ofile_pvals = ipath.joinpath(f"{prefix}_{jet}_{varname_full}{suffix}_pvals.nc")
         if ofile_pvals.is_file():
             if handle_pvals != "hide":
                 levels = np.delete(levels, np.where(np.abs(levels) < 1e-7)[0])
