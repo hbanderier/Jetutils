@@ -5,7 +5,7 @@ This probably too big module contains all the utilities relative to jet extracti
 import datetime
 from itertools import product
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal, Sequence, Callable
 
 import dask
 import numpy as np
@@ -131,9 +131,10 @@ def preprocess_ds(
 
 def find_all_jets(
     ds: xr.Dataset,
+    preprocess_func: Callable,
     thresholds: xr.DataArray | None = None,
-    n_coarsen: int = 3,
-    smooth_s: int | None = 5,
+    # n_coarsen: int = 3,
+    # smooth_s: int | None = 5,
     base_s_thresh: float = 0.5,
     alignment_thresh: float = 0.6,
     int_thresh_factor: float = 0.6,
@@ -147,12 +148,12 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_ds(ds, n_coarsen=n_coarsen, smooth_s=smooth_s)
-    smoothed_to_remove = ("u", "v", "s")
-    if smooth_s is not None:
-        ds = ds.drop_vars(smoothed_to_remove).rename(
-            {f"{var}_orig": var for var in smoothed_to_remove}
-        )
+    ds = preprocess_func(ds)
+    # smoothed_to_remove = ("u", "v", "s")
+    # if smooth_s is not None:
+    #     ds = ds.drop_vars(smoothed_to_remove).rename(
+    #         {f"{var}_orig": var for var in smoothed_to_remove}
+    #     )
     df = xarray_to_polars(ds)
     x_periodic = has_periodic_x(ds)
     index_columns = get_index_columns(
