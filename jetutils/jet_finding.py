@@ -1542,6 +1542,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, **find_jets_kwargs):
         width = pl.concat(width)
         index_columns = get_index_columns(width)
         props = props.join(width, on=index_columns, how="inner").sort(index_columns)
+        props.write_parquet(props_path)
     else:
         props = pl.read_parquet(props_path)
         
