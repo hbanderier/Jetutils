@@ -15,6 +15,7 @@ import polars_st as st
 import rustworkx as rx
 import xarray as xr
 from scipy.ndimage import gaussian_filter
+from scipy.interpolate import splev, splprep
 from polars import DataFrame, Expr, Series
 from polars.exceptions import ColumnNotFoundError
 from scipy.linalg import sqrtm
@@ -43,6 +44,7 @@ from .definitions import (
     squarify,
     to_expr,
     xarray_to_polars,
+    polars_to_xarray,
     circular_mean,
     weighted_mean_pl
 )
@@ -50,6 +52,7 @@ from .data import standardize_polars_dtypes, standardize
 from .derived_quantities import compute_norm_derivative
 from .geospatial import (
     compute_alignment,
+    detect_contours,
     detect_contours_lonlat,
     diff_exp,
     gather_normal_da_jets,
@@ -57,7 +60,7 @@ from .geospatial import (
     jet_integral_haversine,
     join_wrapper,
     sort_by_index_then_difflon,
-    sort_by_index_then_newindex,
+    sort_by_index_then_newindex, nearest_mapping,
 )
 
 
@@ -105,7 +108,7 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     """
     Generates an Expression that rounds the given column to a given base, one over the factor.
     """
-    return (pl.col(col) * factor).round() / factor
+    return (to_expr(col) * factor).round() / factor
 
 
 def window_smooth_func(da: xr.DataArray, win_size: int = 5):
@@ -120,6 +123,26 @@ def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: flo
     )
     sigmas = sigmas + (sigma_lat, sigma_lon)
     return gaussian_filter(da.values, sigmas)
+
+
+def join_on_ds(jets, ds):
+    index_columns = get_index_columns(jets, ["member", "number", "cluster", "time"])
+    ds = xarray_to_polars(ds.drop_vars("sigma"))
+    lo = nearest_mapping(jets, ds, "lon")
+    la = nearest_mapping(jets, ds, "lat")
+    
+    jets = (
+        jets
+        .join(lo, on="lon")
+        .drop("lon")
+        .rename({"lon_": "lon"})
+        .join(la, on="lat")
+        .drop("lat")
+        .rename({"lat_": "lat"})
+        .join(ds, on=[*index_columns, "lon", "lat"], how="left")
+    )
+    
+    return jets
 
 
 def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 1, smooth_func: Callable = window_smooth_func, **smooth_kwargs):
@@ -156,7 +179,7 @@ def find_all_jets(
     """
     # process input
     ds, ds_orig = preprocess_ds(ds, n_coarsen=n_coarsen, smooth_func=smooth_func, **smooth_kwargs)
-    df = xarray_to_polars(ds)
+    df = xarray_to_polars(ds_orig)
     x_periodic = has_periodic_x(ds)
     index_columns = get_index_columns(
         df,
@@ -166,7 +189,6 @@ def find_all_jets(
             "forecast_init",
             "time",
             "cluster",
-            "jet ID",
             "spell",
             "relative_index",
             "sample_index",
@@ -296,6 +318,76 @@ def find_all_jets(
     return jets
 
 
+def bias_correct(jets, ds):
+    index_columns = get_index_columns(jets)
+    idxmax = jets.select(*index_columns, idxmax=pl.col("index").max().over(index_columns))
+    if "sigma" not in ds:
+        ds["sigma"] = compute_norm_derivative(ds, "s")
+    jets = gather_normal_da_jets(
+        jets, ds["sigma"].compute(), half_length=5e5, dn=2.5e4
+    )
+    useful = jets.filter(pl.col("n") == 0)[*index_columns, "index", "lon", "lat", "angle"]
+    jets = polars_to_xarray(jets, [*index_columns, "index", "n"])[
+        "sigma_interp"
+    ]
+    jets = (
+        detect_contours(
+            jets,
+            levels=[0.0],
+            spatial_dims=("n", "index"),
+            do_round=False
+        )
+        .with_columns(pl.col("index").round().cast(pl.UInt32()))
+        .drop_nulls("contour")
+        .filter(~pl.col("cyclic"))
+        .drop("cyclic")
+        .join(idxmax, on=index_columns, how="left")
+        .unique([*index_columns, "contour", "index"])
+        .sort(*index_columns, "contour", "index")
+        .filter(
+            (pl.col("index").first().over(*index_columns, "contour") <= 1) 
+            & (pl.col("index").last().over(*index_columns, "contour") >= pl.col("idxmax") - 2)
+        )
+        .join(useful, on=[*index_columns, "index"])
+    )
+
+    arc_distances = pl.col("n").first() / RADIUS
+    lon = pl.col("lon").first().radians()
+    lat = pl.col("lat").first().radians()
+    angle = pl.col("angle").first()
+
+    newlat = (
+        lat.sin() * arc_distances.cos() + lat.cos() * arc_distances.sin() * angle.sin()
+    ).arcsin()
+    newlat = newlat.degrees()
+
+    newlon = lon + pl.arctan2(
+        angle.cos() * arc_distances.sin() * lat.cos(),
+        arc_distances.cos() - lat.sin() * newlat.sin(),
+    )
+    newlon = newlon.degrees()
+
+    jets = jets.group_by("time", "jet ID", "index", maintain_order=True).agg(
+        lon=newlon,
+        lat=newlat,
+    )
+    return jets 
+
+def spline_smooth(jets):
+    index_columns = get_index_columns(jets)
+    newjets = []
+    for indexer, newjet in tqdm(jets.group_by(index_columns)):
+        lo, la = newjet["lon"].to_numpy(), newjet["lat"].to_numpy()
+        tck, u = splprep([lo, la], s=2)
+        unew = np.linspace(u.min(), u.max(), len(u) * 3)
+        los, las = splev(unew, tck)
+        indexer = dict(zip(index_columns, indexer))
+        df = indexer | {"index": np.arange(len(unew)), "lon": los, "lat": las, "len": len(unew)}
+        newjets.append(pl.DataFrame(df))
+    newjets = standardize_polars_dtypes(pl.concat(newjets)).sort(*index_columns, "index").cast({"jet ID": pl.UInt32()})
+    return newjets
+
+
 def compute_jet_props(df: DataFrame) -> DataFrame:
     """
     Computes all basic jet properties from a DataFrame containing many jets.
@@ -394,7 +486,7 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
     dji = df.group_by([*index_columns, "lon"]).agg(
         pl.col("jet ID").n_unique()
     )
-    dji = unique_lon_over_europe.to_frame().join(dji, on="lon", how="left").group_by(index_columns).agg(dji=(pl.col("jet ID").fill_null(0) >= 2).mean())
+    dji = unique_lon_over_europe.to_frame().join(dji, on="lon", how="left").group_by(index_columns).agg(double_jet_index=(pl.col("jet ID").fill_null(0) >= 2).mean())
     props_as_df = props_as_df.join(dji, on=index_columns)
     props_as_df = standardize_polars_dtypes(props_as_df)
     return props_as_df
@@ -1500,8 +1592,9 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
 
-def do_everything(ds: xr.Dataset, save_path: Path, **find_jets_kwargs):
+def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, **find_jets_kwargs):
     save_path.mkdir(exist_ok=True)
+    ds = standardize(ds)
     jets_path = save_path.joinpath("jets.parquet")
     props_path = save_path.joinpath("props.parquet")
     props_final_path = save_path.joinpath("props_full.parquet")
@@ -1511,8 +1604,21 @@ def do_everything(ds: xr.Dataset, save_path: Path, **find_jets_kwargs):
         jets = []
         for indexer in tqdm(list(iterator)):
             ds_ = compute(ds.isel(**indexer), progress_flag=True)
-            jets.append(find_all_jets(ds_, **find_jets_kwargs))
+            these_jets = find_all_jets(ds_, **find_jets_kwargs)
+            if do_bias_correct:
+                these_jets = bias_correct(these_jets, ds_)
+            if do_smooth_spline:
+                these_jets = spline_smooth(these_jets)
+            if do_bias_correct or do_smooth_spline:
+                these_jets = join_on_ds(these_jets, ds_)
+            jets.append(these_jets)
         jets = pl.concat(jets)
+        if "int" not in jets.columns:
+            index_columns = get_index_columns(jets)
+            int_expr = jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s"))
+            int_expr = int_expr.over(index_columns)
+            jets = jets.with_columns(int=int_expr)
+        jets = standardize_polars_dtypes(jets)
         jets.write_parquet(jets_path)
     else:
         jets = pl.read_parquet(jets_path)
@@ -1550,6 +1656,8 @@ def do_everything(ds: xr.Dataset, save_path: Path, **find_jets_kwargs):
         phat_props = props.filter(phat_filter)
         index_columns = get_index_columns(phat_props)
         phat_props = phat_props.join(cross[*index_columns, "pers"], on=index_columns)
+        
+        phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
         phat_props.write_parquet(props_final_path)
     else:
         phat_props = pl.read_parquet(props_final_path)

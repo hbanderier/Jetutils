@@ -27,6 +27,7 @@ from .definitions import (
     circular_mean,
     weighted_mean_pl,
 )
+from .data import standardize_polars_dtypes
 
 
 def euclidean_geographic(
@@ -341,7 +342,7 @@ def inner_detect_contours(args):
     """
     Worker function to compute the zero-sigma-contours in a parallel context
     """
-    da, levels, spatial_dims = args
+    da, levels, spatial_dims, do_round = args
     x = da[spatial_dims[0]].values
     y = da[spatial_dims[1]].values
     z = da.values
@@ -350,8 +351,9 @@ def inner_detect_contours(args):
     ).multi_lines(levels)
     if len(l1[0][0]) == 0:
         return [], [], [], []
+    f = round_contour if do_round else lambda x, y, z: x
     to_ret = [
-        (i, level, round_contour(contour, x, y), 79 in types_)
+        (i, level, f(contour, x, y), 79 in types_)
         for level, (contours, types) in zip(levels, l1)
         for contour, types_, i in zip(contours, types, range(10000000))
     ]
@@ -364,6 +366,7 @@ def detect_contours(
     spatial_dims: tuple = ("lon", "lat"),
     processes: int = 1,
     ctx: str | None = None,
+    do_round: bool = True,
 ) -> DataFrame:
     extra_dims = {dim: da[dim] for dim in da.dims if dim not in spatial_dims}
     extra_dims_values = {key: val.values for key, val in extra_dims.items()}
@@ -373,7 +376,7 @@ def detect_contours(
         extra_dims_df = extra_dims_df.join(pl.DataFrame({key: extra_dims_values[key]}), how="cross")
     iter1 = list(product(*list(extra_dims.values())))
     iter2 = list((dict(zip(extra_dims, stuff)) for stuff in iter1))
-    iter3 = ((da.loc[indexer], levels, spatial_dims) for indexer in iter2)
+    iter3 = ((da.loc[indexer], levels, spatial_dims, do_round) for indexer in iter2)
     if processes > 1 and ctx is None:
         ctx = get_context("fork")
     elif processes > 1:
@@ -406,7 +409,7 @@ def detect_contours(
         .with_columns(**aggs)
         .drop("contours")
     )
-    return all_contours
+    return standardize_polars_dtypes(all_contours)
 
 
 def detect_contours_lonlat(
@@ -1500,7 +1503,7 @@ def gather_normal_da_jets(
         varname = da.name
         jets = interp_from_other(jets, da_df, varname).sort([*index_columns, "index", "n"])
     jets = jets.with_columns(side=pl.col("n").sign().cast(pl.Int8))
-    return jets
+    return standardize_polars_dtypes(jets)
 
 
 def interp_jets_to_zero_one(
