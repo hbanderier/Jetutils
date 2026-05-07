@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
+import polars.selectors as cs
 import xarray as xr
 from tqdm import tqdm
 
@@ -446,6 +447,15 @@ def standardize(da, unify_dtypes: bool = True):
         elif coord == "time":
             da = da.assign_coords(**{coord: da[coord].values.astype("datetime64[ms]")})
     return da.unify_chunks()
+
+
+def standardize_polars_dtypes(df):
+    if "time" in df.columns:
+        df = df.with_columns(pl.col("time").cast(pl.Datetime("ms")))
+    df = df.with_columns(cs.unsigned_integer().cast(pl.UInt32()))
+    df = df.with_columns(cs.signed_integer().cast(pl.Int32()))
+    df = df.with_columns(cs.float().cast(pl.Float32()))
+    return df
 
 
 def extract_period(

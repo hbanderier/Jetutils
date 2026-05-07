@@ -14,6 +14,7 @@ import polars_ds as pds
 import polars_st as st
 import rustworkx as rx
 import xarray as xr
+from scipy.ndimage import gaussian_filter
 from polars import DataFrame, Expr, Series
 from polars.exceptions import ColumnNotFoundError
 from scipy.linalg import sqrtm
@@ -45,6 +46,7 @@ from .definitions import (
     circular_mean,
     weighted_mean_pl
 )
+from .data import standardize_polars_dtypes, standardize
 from .derived_quantities import compute_norm_derivative
 from .geospatial import (
     compute_alignment,
@@ -106,39 +108,44 @@ def round_polars(col: str, factor: int = 2) -> Expr:
     return (pl.col(col) * factor).round() / factor
 
 
-def preprocess_ds(
-    ds: xr.Dataset, n_coarsen: int = 3, smooth_s: int | None = 5
-) -> xr.Dataset:
-    ds = coarsen_da(ds, n_coarsen=n_coarsen)
+def window_smooth_func(da: xr.DataArray, win_size: int = 5):
+    smooth_map = ("win", win_size)
+    smooth_map = {"lon": smooth_map, "lat": smooth_map}
+    return smooth(da, smooth_map)
+
+
+def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: float = 1.):
+    sigmas = tuple(
+        [0] * len([dim for dim in da.dims if dim not in ["lon", "lat"]])
+    )
+    sigmas = sigmas + (sigma_lat, sigma_lon)
+    return gaussian_filter(da.values, sigmas)
+
+
+def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 1, smooth_func: Callable = window_smooth_func, **smooth_kwargs):
+    ds = standardize(ds)
     if "s" not in ds:
         ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
-
+    ds_orig = ds.copy()
+    ds = coarsen_da(ds, n_coarsen=n_coarsen, reduce_func=np.mean)
     to_smooth = ["u", "v", "s", "theta"]
-    if smooth_s is not None:
-        smooth_map = ("win", smooth_s)
-        smooth_map = {"lon": smooth_map, "lat": smooth_map}
-        ds = ds.rename({var: f"{var}_orig" for var in to_smooth if var in ds.data_vars})
-        for var in to_smooth:
-            if f"{var}_orig" not in ds.data_vars:
-                continue
-            to_smooth = ds[f"{var}_orig"]
-            ds[var] = to_smooth.copy(data=smooth(to_smooth, smooth_map=smooth_map))
+    for var in to_smooth:
+        ds[var] = ds[var].copy(data=smooth_func(ds[var], **smooth_kwargs))
     ds["sigma"] = compute_norm_derivative(ds, "s")
-    if smooth_s is not None:
-        ds["sigma"] = smooth(ds["sigma"], smooth_map=smooth_map)
-    return ds
+    ds_orig["sigma"] = compute_norm_derivative(ds_orig, "s")
+    return ds, ds_orig
 
 
 def find_all_jets(
     ds: xr.Dataset,
-    preprocess_func: Callable,
+    n_coarsen: int = 3,
+    smooth_func: Callable = window_smooth_func,
     thresholds: xr.DataArray | None = None,
-    # n_coarsen: int = 3,
-    # smooth_s: int | None = 5,
     base_s_thresh: float = 0.5,
     alignment_thresh: float = 0.6,
     int_thresh_factor: float = 0.6,
     hole_size: int = 10,
+    **smooth_kwargs,
 ):
     """
     Main function to find all jets in a polars DataFrame containing at least the "lon", "lat", "u", "v" and "s" columns. Will group by any potential index columns to compute jets independently for every, timestep, member and / or cluster. Any other non-index column present in `df` (like "theta" or "lev") will be interpolated to the jet cores in the output.
@@ -148,12 +155,7 @@ def find_all_jets(
     The jet integral threshold is computed from the wind speed threshold.
     """
     # process input
-    ds = preprocess_func(ds)
-    # smoothed_to_remove = ("u", "v", "s")
-    # if smooth_s is not None:
-    #     ds = ds.drop_vars(smoothed_to_remove).rename(
-    #         {f"{var}_orig": var for var in smoothed_to_remove}
-    #     )
+    ds, ds_orig = preprocess_ds(ds, n_coarsen=n_coarsen, smooth_func=smooth_func, **smooth_kwargs)
     df = xarray_to_polars(ds)
     x_periodic = has_periodic_x(ds)
     index_columns = get_index_columns(
@@ -289,7 +291,9 @@ def find_all_jets(
         .drop("distance_ends")
         .with_columns(pl.col("jet ID").rle_id().over([*index_columns]))
     )
-    return sort_by_index_then_newindex(jets, index_columns, "jet ID")
+    jets = sort_by_index_then_newindex(jets, index_columns, "jet ID")
+    jets = standardize_polars_dtypes(jets)
+    return jets
 
 
 def compute_jet_props(df: DataFrame) -> DataFrame:
@@ -362,7 +366,7 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
 
     df_lazy = df.lazy()
     index_columns = get_index_columns(df)
-    if "member" not in get_index_columns(df):
+    if "member" not in index_columns:
         gb = df_lazy.group_by(index_columns, maintain_order=True)
         props_as_df = gb.agg(*aggregations)
         props_as_df = props_as_df.with_columns(
@@ -373,17 +377,26 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
                 for col in ["tilt", "waviness1", "wavinessDC16", "wavinessR16"]
             ]
         )
-        return props_as_df.collect()
-
-    # streaming mode doesn't work well
-    collected = []
-    for member in tqdm(df["member"].unique(maintain_order=True).to_numpy()):
-        gb = df_lazy.filter(pl.col("member") == member).group_by(
-            get_index_columns(df), maintain_order=True
-        )
-        props_as_df = gb.agg(*aggregations)
-        collected.append(props_as_df.collect())
-    props_as_df = pl.concat(collected).sort("member")
+        props_as_df = props_as_df.collect()
+    else:
+        # streaming mode doesn't work well
+        collected = []
+        for member in tqdm(df["member"].unique(maintain_order=True).to_numpy()):
+            gb = df_lazy.filter(pl.col("member") == member).group_by(
+                index_columns, maintain_order=True
+            )
+            props_as_df = gb.agg(*aggregations)
+            collected.append(props_as_df.collect())
+        props_as_df = pl.concat(collected).sort("member")
+    index_columns.remove("jet ID")
+    unique_lon_over_europe = df["lon"].unique()
+    unique_lon_over_europe = unique_lon_over_europe.filter(unique_lon_over_europe > -10)
+    dji = df.group_by([*index_columns, "lon"]).agg(
+        pl.col("jet ID").n_unique()
+    )
+    dji = unique_lon_over_europe.to_frame().join(dji, on="lon", how="left").group_by(index_columns).agg(dji=(pl.col("jet ID").fill_null(0) >= 2).mean())
+    props_as_df = props_as_df.join(dji, on=index_columns)
+    props_as_df = standardize_polars_dtypes(props_as_df)
     return props_as_df
 
 
@@ -391,7 +404,7 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     """
     Computes the width of each jet using normally interpolated wind speed on either side of the jet.
     """
-    jets = gather_normal_da_jets(jets, da, half_length=2e6, dn=5e4, delete_middle=True, in_meters=True)
+    jets = gather_normal_da_jets(jets, da, half_length=1.3e6, dn=5e4, delete_middle=True, in_meters=True)
 
     index_columns = get_index_columns(
         jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
@@ -955,6 +968,24 @@ def average_jet_categories(
     return props_as_df_cat
 
 
+def to_one_large(jets, int_EDJ_threshold: float = 1.3e8):
+    jets = jets.filter(
+        (pl.col("is_polar").mean().over(["time", "jet ID"]) < 0.5)
+        | (
+            (pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5)
+            & (pl.col("int").mode().first().over(["time", "jet ID"]) > int_EDJ_threshold)
+        )
+    )
+    jets = jets.with_columns(
+        **{
+            "jet ID": (pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5).cast(
+                pl.UInt32()
+            )
+        }
+    )
+    return jets
+
+
 def _lons_from_points(points: str | pl.Expr = "points") -> pl.Expr:
     points = to_expr(points)
     return points.list.eval(pl.element().arr.first())
@@ -1468,6 +1499,60 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     overlap = overlap.rename("double_jet_index")
     return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
+
+def do_everything(ds: xr.Dataset, save_path: Path, **find_jets_kwargs):
+    save_path.mkdir(exist_ok=True)
+    jets_path = save_path.joinpath("jets.parquet")
+    props_path = save_path.joinpath("props.parquet")
+    props_final_path = save_path.joinpath("props_full.parquet")
+    cross_path = save_path.joinpath("cross.parquet")
+    if not jets_path.is_file():
+        iterator = iterate_over_year_maybe_member(da=ds, several_years=1)
+        jets = []
+        for indexer in tqdm(list(iterator)):
+            ds_ = compute(ds.isel(**indexer), progress_flag=True)
+            jets.append(find_all_jets(ds_, **find_jets_kwargs))
+        jets = pl.concat(jets)
+        jets.write_parquet(jets_path)
+    else:
+        jets = pl.read_parquet(jets_path)
+    if "is_polar" not in jets.columns:
+        jets = is_polar_gmix(jets, ("s", "theta"))
+        jets.write_parquet(jets_path)
+        
+    phat_jets = to_one_large(jets, int_EDJ_threshold=1.3e8)
+    phat_filter = (pl.col("is_polar") < 0.5) | ((pl.col("is_polar") > 0.5) & (pl.col("int") > 1.3e8))
+    if not cross_path.is_file():
+        cross = track_jets(phat_jets)
+        cross = pers_from_cross_catd(cross)
+        cross.write_parquet(cross_path)
+    else:
+        cross = pl.read_parquet(cross_path)
+    
+    if not props_path.is_file():
+        props = compute_jet_props(jets)
+        width = []
+        da = ds["s"]
+        indexer = iterate_over_year_maybe_member(jets, da)
+        for idx1, idx2 in tqdm(list(indexer)):
+            these_jets = jets.filter(*idx1)
+            da_ = compute(da.sel(**idx2), progress_flag=False)
+            width_ = compute_widths(these_jets, da_)
+            width.append(width_)
+        width = pl.concat(width)
+        index_columns = get_index_columns(width)
+        props = props.join(width, on=index_columns, how="inner").sort(index_columns)
+    else:
+        props = pl.read_parquet(props_path)
+        
+    if not props_final_path.is_file():
+        phat_props = props.filter(phat_filter)
+        index_columns = get_index_columns(phat_props)
+        phat_props = phat_props.join(cross[*index_columns, "pers"], on=index_columns)
+        phat_props.write_parquet(props_final_path)
+    else:
+        phat_props = pl.read_parquet(props_final_path)
+    return jets, phat_jets, props, phat_props
 
 
 class JetFindingExperiment(object):
