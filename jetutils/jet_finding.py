@@ -31,6 +31,8 @@ from .data import (
     open_dataarray,
     smooth,
     to_netcdf,
+    standardize_polars_dtypes, 
+    standardize
 )
 from .definitions import (
     N_WORKERS,
@@ -48,7 +50,6 @@ from .definitions import (
     circular_mean,
     weighted_mean_pl
 )
-from .data import standardize_polars_dtypes, standardize
 from .derived_quantities import compute_norm_derivative
 from .geospatial import (
     compute_alignment,
@@ -60,7 +61,9 @@ from .geospatial import (
     jet_integral_haversine,
     join_wrapper,
     sort_by_index_then_difflon,
-    sort_by_index_then_newindex, nearest_mapping,
+    sort_by_index_then_newindex, 
+    nearest_mapping,
+    create_jet_relative_dataset
 )
 
 
@@ -125,7 +128,7 @@ def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: flo
     return gaussian_filter(da.values, sigmas)
 
 
-def join_on_ds(jets, ds):
+def join_on_ds(jets, ds, fix_id: bool = False):
     index_columns = get_index_columns(jets, ["member", "number", "cluster", "time"])
     ds = xarray_to_polars(ds.drop_vars("sigma"))
     lo = nearest_mapping(jets, ds, "lon")
@@ -139,8 +142,11 @@ def join_on_ds(jets, ds):
         .join(la, on="lat")
         .drop("lat")
         .rename({"lat_": "lat"})
+        .unique([*index_columns, "lon", "lat"], maintain_order=True)
         .join(ds, on=[*index_columns, "lon", "lat"], how="left")
     )
+    if fix_id:
+        jets = jets.with_columns(pl.col("jet ID").rle_id().over([col for col in index_columns if col != "jet ID"]))
     
     return jets
 
@@ -155,11 +161,12 @@ def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 1, smooth_func: Callable = wi
     for var in to_smooth:
         ds[var] = ds[var].copy(data=smooth_func(ds[var], **smooth_kwargs))
     ds["sigma"] = compute_norm_derivative(ds, "s")
-    ds_orig["sigma"] = compute_norm_derivative(ds_orig, "s")
+    if "sigma" not in ds_orig:
+        ds_orig["sigma"] = compute_norm_derivative(ds_orig, "s")
     return ds, ds_orig
 
 
-def find_all_jets(
+def  find_all_jets(
     ds: xr.Dataset,
     n_coarsen: int = 3,
     smooth_func: Callable = window_smooth_func,
@@ -376,7 +383,7 @@ def bias_correct(jets, ds):
 def spline_smooth(jets):
     index_columns = get_index_columns(jets)
     newjets = []
-    for indexer, newjet in tqdm(jets.group_by(index_columns)):
+    for indexer, newjet in tqdm(jets.group_by(index_columns), disable=True):
         lo, la = newjet["lon"].to_numpy(), newjet["lat"].to_numpy()
         tck, u = splprep([lo, la], s=2)
         unew = np.linspace(u.min(), u.max(), len(u) * 3)
@@ -385,6 +392,7 @@ def spline_smooth(jets):
         df = indexer | {"index": np.arange(len(unew)), "lon": los, "lat": las, "len": len(unew)}
         newjets.append(pl.DataFrame(df))
     newjets = standardize_polars_dtypes(pl.concat(newjets)).sort(*index_columns, "index").cast({"jet ID": pl.UInt32()})
+    newjets =  newjets.unique([*index_columns, "index"], maintain_order=True)
     return newjets
 
 
@@ -1599,18 +1607,19 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     props_path = save_path.joinpath("props.parquet")
     props_final_path = save_path.joinpath("props_full.parquet")
     cross_path = save_path.joinpath("cross.parquet")
+    s_interp_path = save_path.joinpath("s_interp.parquet")
     if not jets_path.is_file():
         iterator = iterate_over_year_maybe_member(da=ds, several_years=1)
         jets = []
         for indexer in tqdm(list(iterator)):
-            ds_ = compute(ds.isel(**indexer), progress_flag=True)
+            ds_ = compute(ds.isel(**indexer), progress_flag=False)
             these_jets = find_all_jets(ds_, **find_jets_kwargs)
             if do_bias_correct:
                 these_jets = bias_correct(these_jets, ds_)
             if do_smooth_spline:
                 these_jets = spline_smooth(these_jets)
             if do_bias_correct or do_smooth_spline:
-                these_jets = join_on_ds(these_jets, ds_)
+                these_jets = join_on_ds(these_jets, ds_, fix_id=True)
             jets.append(these_jets)
         jets = pl.concat(jets)
         if "int" not in jets.columns:
@@ -1629,7 +1638,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     phat_jets = to_one_large(jets, int_EDJ_threshold=1.3e8)
     phat_filter = (pl.col("is_polar") < 0.5) | ((pl.col("is_polar") > 0.5) & (pl.col("int") > 1.3e8))
     if not cross_path.is_file():
-        cross = track_jets(phat_jets)
+        cross = track_jets(phat_jets, catd=True, yearly=True)
         cross = pers_from_cross_catd(cross)
         cross.write_parquet(cross_path)
     else:
@@ -1661,6 +1670,13 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         phat_props.write_parquet(props_final_path)
     else:
         phat_props = pl.read_parquet(props_final_path)
+        
+    if not s_interp_path.is_file():
+        jets_with_s = create_jet_relative_dataset(jets, ds["s"], None, dn=5e4, n_interp=40)
+        jets_with_s.write_parquet(s_interp_path)
+    else:
+        jets_with_s = pl.read_parquet(s_interp_path)
+
     return jets, phat_jets, props, phat_props
 
 

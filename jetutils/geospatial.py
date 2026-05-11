@@ -444,7 +444,8 @@ def detect_contours_lonlat(
     )
     
     extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
-    index_columns = [*list(extra_dims), "level", "contour"]
+    extra_cols = list(extra_dims)
+    index_columns = [*extra_cols, "level", "contour"]
     
     all_contours = (
         all_contours
@@ -471,9 +472,10 @@ def detect_contours_lonlat(
     intersection = (
         pl.col("points").list.set_intersection(pl.col("points_right")).list.len()
     )
+    huh_right = [f"{col}_right" for col in extra_cols]
     to_drop = (
-        df.join(df, on=["time", "level"], how="full")
-        .drop("time_right", "level_right")
+        df.join(df, on=[*extra_cols, "level"], how="full")
+        .drop(*huh_right, "level_right")
         .filter(filters)
         .with_columns(intersection=intersection)
         .filter(pl.col("intersection") > 0.97 * pl.col("len_right"))
@@ -1598,50 +1600,64 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
 
 def create_jet_relative_dataset(
     jets,
-    path,
     da,
-    suffix="",
+    bias_correction: pl.DataFrame | None = None,
     half_length: float = 2e6,
-    dn: float = 5e4,
-    n_interp: int = 40,
+    dn: float = 1e5,
+    n_interp: int = 30,
     in_meters: bool = True,
 ):
-    jets = jets.with_columns(pl.col("time").dt.round("1d"))
-    jets = jets.with_columns(
-        jets.group_by("time", maintain_order=True)
-        .agg(pl.col("jet ID").rle_id())["jet ID"]
-        .explode()
-    )
-    indexer = iterate_over_year_maybe_member(jets, da)
+    indexer = list(iterate_over_year_maybe_member(jets, da))
     to_average = []
+    index_columns = get_index_columns(
+        jets, 
+        (
+            "member",
+            "time",
+            "cluster",
+            "spell",
+            "relative_index",
+            "relative_time",
+            "sample_index",
+            "inside_index"
+        )
+    )
     varname = da.name + "_interp"
-    for idx1, idx2 in tqdm(indexer, total=len(YEARS)):
+    for idx1, idx2 in tqdm(indexer, total=len(indexer)):
         jets_ = jets.filter(*idx1)
         da_ = da.sel(**idx2)
+        if bias_correction is not None:
+            bias_correction_ = bias_correction.filter(*idx1)
+            extra_n = bias_correction["n_max"].abs().max()
+        else:
+            bias_correction_ = None
+            extra_n = 0
         try:
             jets_with_interp = gather_normal_da_jets(
-                jets_, da_, half_length=half_length, dn=dn, in_meters=in_meters
+                jets_,
+                da_,
+                half_length=half_length + extra_n,
+                dn=dn,
+                in_meters=in_meters,
             )
         except (KeyError, ValueError) as e:
             print(e)
             break
+        if bias_correction_ is not None:
+            jets_with_interp = (
+                jets_with_interp
+                .join(bias_correction_, on=[*index_columns, "jet ID", "index"])
+                .with_columns(n=pl.col("n") - pl.col("n_max"))
+                .filter(pl.col("n").abs() <= 2e6)
+                .with_columns(side=pl.col("n").sign().cast(pl.Int32()))
+                .drop("n_max")
+            )
+            jets_with_interp = jets_with_interp.filter(pl.col("n").abs() <= 2e6)
         jets_with_interp = interp_jets_to_zero_one(
             jets_with_interp, [varname, "is_polar"], n_interp=n_interp
         )
-        jets_with_interp = jets_with_interp.group_by(
-            "time",
-            pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5,
-            "norm_index",
-            "n",
-            maintain_order=True,
-        ).agg(pl.col(varname).mean())
         to_average.append(jets_with_interp)
-    (
-        pl.concat(to_average)
-        .cast({"norm_index": pl.Float32(), "n": pl.Float32(), varname: pl.Float32()})
-        .write_parquet(path.joinpath(f"{da.name}{suffix}_relative.parquet"))
-    )
-    return
+    return pl.concat(to_average)
 
 
 def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str):
