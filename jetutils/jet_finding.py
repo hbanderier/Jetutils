@@ -327,6 +327,7 @@ def  find_all_jets(
 
 def bias_correct(jets, ds):
     index_columns = get_index_columns(jets)
+    jets_orig = jets.clone()
     idxmax = jets.select(*index_columns, idxmax=pl.col("index").max().over(index_columns))
     if "sigma" not in ds:
         ds["sigma"] = compute_norm_derivative(ds, "s")
@@ -344,17 +345,14 @@ def bias_correct(jets, ds):
             spatial_dims=("n", "index"),
             do_round=False
         )
-        .with_columns(pl.col("index").round().cast(pl.UInt32()))
+        .with_columns(pl.col("index").round().cast(pl.Int32()))
         .drop_nulls("contour")
         .filter(~pl.col("cyclic"))
         .drop("cyclic")
         .join(idxmax, on=index_columns, how="left")
         .unique([*index_columns, "contour", "index"])
         .sort(*index_columns, "contour", "index")
-        .filter(
-            (pl.col("index").first().over(*index_columns, "contour") <= 1) 
-            & (pl.col("index").last().over(*index_columns, "contour") >= pl.col("idxmax") - 2)
-        )
+        .filter(pl.len().over("time", "jet ID", "contour") == pl.len().over("time", "jet ID", "contour").max().over("time", "jet ID"))
         .join(useful, on=[*index_columns, "index"])
     )
 
@@ -374,10 +372,14 @@ def bias_correct(jets, ds):
     )
     newlon = newlon.degrees()
 
-    jets = jets.group_by("time", "jet ID", "index", maintain_order=True).agg(
+    jets = jets.group_by(*index_columns, "index", maintain_order=True).agg(
         lon=newlon,
         lat=newlat,
     )
+    idx_new = jets.select(index_columns).unique(index_columns)
+    idx_old = jets_orig.select(index_columns).unique(index_columns)
+    left_behind = idx_old.join(idx_new, on=index_columns, how="anti")
+    jets = pl.concat([jets, left_behind.join(jets_orig, on=index_columns).select(*jets.columns)]).sort([*index_columns, "index"])
     return jets 
 
 def spline_smooth(jets):
