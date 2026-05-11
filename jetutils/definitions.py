@@ -575,7 +575,13 @@ def _dimvals(da: xr.DataArray | xr.Dataset, dim: str):
 
 
 def _indexer_from_da(da: xr.DataArray | xr.Dataset):
-    dims = list(da.dims)
+    if isinstance(da, xr.DataArray):
+        dims = list(da.dims)
+    else:
+        dims = []
+        for var in da.data_vars:
+            dims.extend(da[var].dims)
+        dims = list(set(dims))
     if len(dims) == 0:
         return pl.DataFrame()
     indexer = pl.Series(dims[0], _dimvals(da, dims[0])).to_frame()
@@ -596,14 +602,8 @@ def xarray_to_polars(ds: xr.DataArray | xr.Dataset):
     if isinstance(ds, xr.DataArray):
         return _da_to_polars(ds)
     indexer = _indexer_from_da(ds)
-    dsdims = tuple(ds.dims)
     for var in ds.data_vars:
-        if ds[var].dims != dsdims:
-            print(ds[var].dims, dsdims)
-            this_df = _da_to_polars(ds[var])
-            indexer = indexer.join(this_df, how="left", on=ds[var].dims)
-        else:
-            indexer = indexer.with_columns(**{var: ds[var].values.ravel()})
+        indexer = indexer.with_columns(**{var: ds[var].values.ravel()})
     return indexer
 
 
