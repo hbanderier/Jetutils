@@ -418,6 +418,7 @@ def detect_contours_lonlat(
     repeat_lons: int = 120,
     processes: int = 1,
     ctx: str | None = None,
+    do_round: bool = False,
 ) -> DataFrame:
     """
     Potentially parallel wrapper around `inner_detect_contours`. Finds all zero-sigma-contours in all timesteps of `df`. Extend in longitude to capture the contours over the -180 line
@@ -441,6 +442,7 @@ def detect_contours_lonlat(
         spatial_dims=("lon", "lat"),
         processes=processes,
         ctx=ctx,
+        do_round=do_round,
     )
     
     extra_dims = {dim: da[dim] for dim in da.dims if dim not in ["lon", "lat"]}
@@ -449,7 +451,7 @@ def detect_contours_lonlat(
     
     all_contours = (
         all_contours
-        .unique([*index_columns, "lon", pl.col("lat").round(2)], maintain_order=True)
+        .unique([*index_columns, pl.col("lon").round(2), pl.col("lat").round(2)], maintain_order=True)
         .with_columns(side=(pl.col("lon") >= 180.0).cast(pl.UInt8()))
         .filter(~(pl.col("side") == 1).all().over(index_columns))
         .with_columns(len=pl.len().over(index_columns))
@@ -459,7 +461,7 @@ def detect_contours_lonlat(
     # filter intersections of fully zeros within nonzero
     lon_wrapped = (pl.col("lon") + 180) % 360 - 180
     points = pl.concat_str(
-        lon_wrapped.cast(pl.Int32()), pl.col("lat").cast(pl.Int32()), separator=" "
+        lon_wrapped.round(2), pl.col("lat").round(2), separator=" "
     )
     df = all_contours.group_by(index_columns).agg(
         points=points, side=pl.col("side").mean(), len=points.len()

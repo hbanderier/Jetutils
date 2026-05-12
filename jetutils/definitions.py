@@ -580,8 +580,9 @@ def _indexer_from_da(da: xr.DataArray | xr.Dataset):
     else:
         dims = []
         for var in da.data_vars:
-            dims.extend(da[var].dims)
-        dims = list(set(dims))
+            these_dims = list(da[var].dims)
+            if len(these_dims) > len(dims):
+                dims = these_dims
     if len(dims) == 0:
         return pl.DataFrame()
     indexer = pl.Series(dims[0], _dimvals(da, dims[0])).to_frame()

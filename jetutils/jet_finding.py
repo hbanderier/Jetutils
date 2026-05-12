@@ -128,9 +128,11 @@ def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: flo
     return gaussian_filter(da.values, sigmas)
 
 
-def join_on_ds(jets, ds, fix_id: bool = False):
+def join_on_ds(jets, ds: xr.Dataset | xr.DataArray | pl.DataFrame, fix_id: bool = False):
     index_columns = get_index_columns(jets, ["member", "number", "cluster", "time"])
-    ds = xarray_to_polars(ds.drop_vars("sigma"))
+    other_indexer = get_index_columns(jets, ["jet", "jet ID", "contour", "level"])
+    if isinstance(ds, xr.DataArray | xr.Dataset):
+        ds = xarray_to_polars(ds)
     lo = nearest_mapping(jets, ds, "lon")
     la = nearest_mapping(jets, ds, "lat")
     
@@ -142,11 +144,11 @@ def join_on_ds(jets, ds, fix_id: bool = False):
         .join(la, on="lat")
         .drop("lat")
         .rename({"lat_": "lat"})
-        .unique([*index_columns, "lon", "lat"], maintain_order=True)
+        .unique([*index_columns, *other_indexer, "lon", "lat"], maintain_order=True)
         .join(ds, on=[*index_columns, "lon", "lat"], how="left")
     )
     if fix_id:
-        jets = jets.with_columns(pl.col("jet ID").rle_id().over([col for col in index_columns if col != "jet ID"]))
+        jets = jets.with_columns(pl.col("index").rle_id().over([*index_columns, *other_indexer]))
     
     return jets
 
@@ -161,12 +163,13 @@ def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 1, smooth_func: Callable = wi
     for var in to_smooth:
         ds[var] = ds[var].copy(data=smooth_func(ds[var], **smooth_kwargs))
     ds["sigma"] = compute_norm_derivative(ds, "s")
+    ds["sigma"] = ds["sigma"].copy(data=smooth_func(ds["sigma"], **smooth_kwargs))
     if "sigma" not in ds_orig:
         ds_orig["sigma"] = compute_norm_derivative(ds_orig, "s")
     return ds, ds_orig
 
 
-def  find_all_jets(
+def find_all_jets(
     ds: xr.Dataset,
     n_coarsen: int = 3,
     smooth_func: Callable = window_smooth_func,
@@ -278,6 +281,16 @@ def  find_all_jets(
             .filter(
                 (pl.col("value").not_() & (pl.col("len") < hole_size)) | pl.col("value")
             )
+            .filter(
+                pl.col("value").cum_sum().over(*index_columns, "contour") > 0,
+                ~(
+                    ~pl.col("value")
+                    & (
+                        pl.col("start")
+                        == pl.col("start").max().over(*index_columns, "contour")
+                    )
+                ),
+            )
         )
         .drop("value", "len", "start")
         .group_by([*index_columns, "contour"], maintain_order=True)
@@ -297,7 +310,7 @@ def  find_all_jets(
         )
         .with_columns(diff=diff_exp().over([*index_columns, "contour"]))
         .with_columns(
-            contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 10).cum_sum())
+            contour=(pl.col("contour") + 0.01 * (pl.col("diff") > 3).cum_sum())
             .rle_id()
             .over(index_columns)
         )
@@ -340,11 +353,12 @@ def bias_correct(jets, ds):
     ]
     jets = (
         jets
-        .rolling(index=7, min_periods=1)
+        .rolling(index=11, min_periods=1)
         .mean()
-        .rolling(n=3, min_periods=1)
+        .rolling(n=2, min_periods=1)
         .mean()
     )
+    kinda_len = pl.col("index_right").n_unique().over(*index_columns, "contour")
     jets = (
         detect_contours(
             jets,
@@ -352,15 +366,17 @@ def bias_correct(jets, ds):
             spatial_dims=("n", "index"),
             do_round=False
         )
-        .with_columns(pl.col("index").round().cast(pl.Int32()))
         .drop_nulls("contour")
         .filter(~pl.col("cyclic"))
         .drop("cyclic")
-        .join(idxmax, on=index_columns, how="left")
+        .join(idxmax, on=index_columns)
         .unique([*index_columns, "contour", "index"])
         .sort(*index_columns, "contour", "index")
-        .filter(pl.len().over("time", "jet ID", "contour") == pl.len().over("time", "jet ID", "contour").max().over("time", "jet ID"))
-        .join(useful, on=[*index_columns, "index"])
+        .join(useful, on=[*index_columns, pl.col("index").round().cast(pl.Int32())])
+        .drop(*[f"{col}_right" for col in index_columns])
+        .filter(kinda_len >= pl.col("idxmax") * 0.9).with_columns(len=kinda_len)
+        .drop("index_right")
+        .with_columns(index=pl.col("index").rle_id().over(*index_columns, "contour").cast(pl.Int32()))
     )
 
     arc_distances = pl.col("n").first() / RADIUS
@@ -389,13 +405,13 @@ def bias_correct(jets, ds):
     jets = pl.concat([jets, left_behind.join(jets_orig, on=index_columns).select(*jets.columns)]).sort([*index_columns, "index"])
     return jets 
 
-def spline_smooth(jets):
+def spline_smooth(jets, s: float = 0., factor: int = 3):
     index_columns = get_index_columns(jets)
     newjets = []
     for indexer, newjet in tqdm(jets.group_by(index_columns), disable=True):
         lo, la = newjet["lon"].to_numpy(), newjet["lat"].to_numpy()
-        tck, u = splprep([lo, la], s=2)
-        unew = np.linspace(u.min(), u.max(), len(u) * 3)
+        tck, u = splprep([lo, la], s=s)
+        unew = np.linspace(u.min(), u.max(), len(u) * factor)
         los, las = splev(unew, tck)
         indexer = dict(zip(index_columns, indexer))
         df = indexer | {"index": np.arange(len(unew)), "lon": los, "lat": las, "len": len(unew)}
@@ -1626,7 +1642,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
             if do_bias_correct:
                 these_jets = bias_correct(these_jets, ds_)
             if do_smooth_spline:
-                these_jets = spline_smooth(these_jets)
+                these_jets = spline_smooth(these_jets, s=2, factor=1)
             if do_bias_correct or do_smooth_spline:
                 these_jets = join_on_ds(these_jets, ds_, fix_id=True)
             jets.append(these_jets)
