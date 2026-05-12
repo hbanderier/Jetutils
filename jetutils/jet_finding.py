@@ -335,9 +335,16 @@ def bias_correct(jets, ds):
         jets, ds["sigma"].compute(), half_length=5e5, dn=2.5e4
     )
     useful = jets.filter(pl.col("n") == 0)[*index_columns, "index", "lon", "lat", "angle"]
-    jets = polars_to_xarray(jets, [*index_columns, "index", "n"])[
+    jets: xr.DataArray = polars_to_xarray(jets, [*index_columns, "index", "n"])[
         "sigma_interp"
     ]
+    jets = (
+        jets
+        .rolling(index=7, min_periods=1)
+        .mean()
+        .rolling(n=3, min_periods=1)
+        .mean()
+    )
     jets = (
         detect_contours(
             jets,
