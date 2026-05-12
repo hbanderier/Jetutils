@@ -63,7 +63,7 @@ from .geospatial import (
     sort_by_index_then_difflon,
     sort_by_index_then_newindex, 
     nearest_mapping,
-    create_jet_relative_dataset
+    create_jet_relative_dataset, _bias_correct
 )
 
 
@@ -121,6 +121,23 @@ def window_smooth_func(da: xr.DataArray, win_size: int = 5):
 
 
 def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: float = 1.):
+    """
+    Paper-thin wrapper around `scipy.ndimage.gaussian_smooth`
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        _description_
+    sigma_lon : float, optional
+        _description_, by default 1.
+    sigma_lat : float, optional
+        _description_, by default 1.
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     sigmas = tuple(
         [0] * len([dim for dim in da.dims if dim not in ["lon", "lat"]])
     )
@@ -129,6 +146,23 @@ def gaussian_smooth_func(da: xr.DataArray, sigma_lon: float = 1., sigma_lat: flo
 
 
 def join_on_ds(jets, ds: xr.Dataset | xr.DataArray | pl.DataFrame, fix_id: bool = False):
+    """
+    Wrapper around `.join`, `neareast_mapping` and potentially `xarray_to_polars` if you provided a `xarray` object. For now we're doing nearest interpolation but we want to support bilinear interpolation in the future too, since we already have the code for it in `geospatial.interp_from_other`. 
+
+    Parameters
+    ----------
+    jets : _type_
+        _description_
+    ds : xr.Dataset | xr.DataArray | pl.DataFrame
+        _description_
+    fix_id : bool, optional
+        _description_, by default False
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     index_columns = get_index_columns(jets, ["member", "number", "cluster", "time"])
     other_indexer = get_index_columns(jets, ["jet", "jet ID", "contour", "level"])
     if isinstance(ds, xr.DataArray | xr.Dataset):
@@ -154,6 +188,23 @@ def join_on_ds(jets, ds: xr.Dataset | xr.DataArray | pl.DataFrame, fix_id: bool 
 
 
 def preprocess_ds(ds: xr.Dataset, n_coarsen: int = 1, smooth_func: Callable = window_smooth_func, **smooth_kwargs):
+    """
+    Lego-type preprocessing, coarsens then applies `smooth_func` and also compute sigma the horizontal normal wind shear. It returns the unprocessed data too because it's useful. Extra kwargs are passed to smooth_func but you should really be building it with `functools.partial` because it's more explicit.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        _description_
+    n_coarsen : int, optional
+        _description_, by default 1
+    smooth_func : Callable, optional
+        _description_, by default window_smooth_func
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     ds = standardize(ds)
     if "s" not in ds:
         ds["s"] = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
@@ -247,7 +298,8 @@ def find_all_jets(
     # contours
     repeat_lons = 120 if x_periodic else 0.
     all_contours = detect_contours_lonlat(
-        (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS, repeat_lons=repeat_lons
+        (ds["sigma"] > 0).astype(np.uint8), [0.0], processes=N_WORKERS, repeat_lons=repeat_lons,
+        do_round=False,
     ).drop("level")
 
     int_expr = jet_integral_haversine(pl.col("lon"), pl.col("lat"), pl.col("s"))
@@ -338,46 +390,25 @@ def find_all_jets(
     return jets
 
 
-def bias_correct(jets, ds):
+def online_bias_correct(jets: pl.DataFrame, ds: xr.Dataset) -> pl.DataFrame:
+    """
+    This is a fun idea but it does not work great. For now, use biased jets and only bias correct the jet-centred composites, it's fine.
+
+    Parameters
+    ----------
+    jets : pl.DataFrame
+        _description_
+    ds : xr.Dataset
+        _description_
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     index_columns = get_index_columns(jets)
     jets_orig = jets.clone()
-    idxmax = jets.select(*index_columns, idxmax=pl.col("index").max().over(index_columns))
-    if "sigma" not in ds:
-        ds["sigma"] = compute_norm_derivative(ds, "s")
-    jets = gather_normal_da_jets(
-        jets, ds["sigma"].compute(), half_length=5e5, dn=2.5e4
-    )
-    useful = jets.filter(pl.col("n") == 0)[*index_columns, "index", "lon", "lat", "angle"]
-    jets: xr.DataArray = polars_to_xarray(jets, [*index_columns, "index", "n"])[
-        "sigma_interp"
-    ]
-    jets = (
-        jets
-        .rolling(index=11, min_periods=1)
-        .mean()
-        .rolling(n=2, min_periods=1)
-        .mean()
-    )
-    kinda_len = pl.col("index_right").n_unique().over(*index_columns, "contour")
-    jets = (
-        detect_contours(
-            jets,
-            levels=[0.0],
-            spatial_dims=("n", "index"),
-            do_round=False
-        )
-        .drop_nulls("contour")
-        .filter(~pl.col("cyclic"))
-        .drop("cyclic")
-        .join(idxmax, on=index_columns)
-        .unique([*index_columns, "contour", "index"])
-        .sort(*index_columns, "contour", "index")
-        .join(useful, on=[*index_columns, pl.col("index").round().cast(pl.Int32())])
-        .drop(*[f"{col}_right" for col in index_columns])
-        .filter(kinda_len >= pl.col("idxmax") * 0.9).with_columns(len=kinda_len)
-        .drop("index_right")
-        .with_columns(index=pl.col("index").rle_id().over(*index_columns, "contour").cast(pl.Int32()))
-    )
+    jets = _bias_correct(jets, ds, same_len=False)
 
     arc_distances = pl.col("n").first() / RADIUS
     lon = pl.col("lon").first().radians()
@@ -395,9 +426,13 @@ def bias_correct(jets, ds):
     )
     newlon = newlon.degrees()
 
-    jets = jets.group_by(*index_columns, "index", maintain_order=True).agg(
-        lon=newlon,
-        lat=newlat,
+    jets = (
+        jets
+        .group_by(*index_columns, "index", maintain_order=True)
+        .agg(
+            lon=newlon,
+            lat=newlat,
+        )
     )
     idx_new = jets.select(index_columns).unique(index_columns)
     idx_old = jets_orig.select(index_columns).unique(index_columns)
@@ -405,19 +440,43 @@ def bias_correct(jets, ds):
     jets = pl.concat([jets, left_behind.join(jets_orig, on=index_columns).select(*jets.columns)]).sort([*index_columns, "index"])
     return jets 
 
-def spline_smooth(jets, s: float = 0., factor: int = 3):
+def spline_smooth(jets: pl.DataFrame, s: float = 0., factor: int = 3) -> pl.DataFrame:
+    """
+    This works but was mostly useful in conjunction with bias_correct. 
+
+    Parameters
+    ----------
+    jets : pl.DataFrame
+        _description_
+    s : float, optional
+        _description_, by default 0.
+    factor : int, optional
+        _description_, by default 3
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     index_columns = get_index_columns(jets)
     newjets = []
+    oldjets = []
     for indexer, newjet in tqdm(jets.group_by(index_columns), disable=True):
         lo, la = newjet["lon"].to_numpy(), newjet["lat"].to_numpy()
-        tck, u = splprep([lo, la], s=s)
+        try:
+            tck, u = splprep([lo, la], s=s)
+        except ValueError:
+            oldjets.append(newjet[*index_columns, "index", "lon", "lat"])
+            continue
         unew = np.linspace(u.min(), u.max(), len(u) * factor)
         los, las = splev(unew, tck)
         indexer = dict(zip(index_columns, indexer))
-        df = indexer | {"index": np.arange(len(unew)), "lon": los, "lat": las, "len": len(unew)}
+        df = indexer | {"index": np.arange(len(unew)), "lon": los, "lat": las}
         newjets.append(pl.DataFrame(df))
-    newjets = standardize_polars_dtypes(pl.concat(newjets)).sort(*index_columns, "index").cast({"jet ID": pl.UInt32()})
-    newjets =  newjets.unique([*index_columns, "index"], maintain_order=True)
+    newjets = standardize_polars_dtypes(pl.concat(newjets)).cast({"jet ID": pl.UInt32()})
+    if len(oldjets) > 0:
+        newjets = pl.concat([newjets, pl.concat(oldjets)])
+    newjets =  newjets.unique([*index_columns, "index"]).sort(*index_columns, "index")
     return newjets
 
 
@@ -1626,6 +1685,25 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     
 
 def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, **find_jets_kwargs):
+    """
+    Faster than object-oriented approach for quick testing
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        _description_
+    save_path : Path
+        _description_
+    do_bias_correct : bool, optional
+        _description_, by default False
+    do_smooth_spline : bool, optional
+        _description_, by default False
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     save_path.mkdir(exist_ok=True)
     ds = standardize(ds)
     jets_path = save_path.joinpath("jets.parquet")
@@ -1640,7 +1718,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
             ds_ = compute(ds.isel(**indexer), progress_flag=False)
             these_jets = find_all_jets(ds_, **find_jets_kwargs)
             if do_bias_correct:
-                these_jets = bias_correct(these_jets, ds_)
+                these_jets = online_bias_correct(these_jets, ds_)
             if do_smooth_spline:
                 these_jets = spline_smooth(these_jets, s=2, factor=1)
             if do_bias_correct or do_smooth_spline:
@@ -1708,6 +1786,11 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
 class JetFindingExperiment(object):
     """
     Convenience class that wraps basically all the functions in this module, applying it to the data held by its `DataHandler` and storing the results to avoid recomputing in the subfolder of its `DataHandler`.
+    
+    I think it's a bit broken right now, fix coming at some point. In the mean time use "do_everything" or unwrap it yourself.
+    
+    TODO: do_everything and this class's methods should be broken down into functions with a decorator for saving.
+    Any function that has the argument "subpath", the decorator takes an argument "filename" a str, constructs the file path from DATADIR, subpath and filename, tries to load it and return it (parquet or nc) or does the computation defined by the function. The function does not know anything about saving.
 
     Attributes
     ----------

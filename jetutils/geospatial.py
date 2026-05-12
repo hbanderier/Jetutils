@@ -25,7 +25,7 @@ from .definitions import (
     xarray_to_polars,
     compute,
     circular_mean,
-    weighted_mean_pl,
+    weighted_mean_pl, polars_to_xarray,
 )
 from .data import standardize_polars_dtypes
 
@@ -1600,6 +1600,93 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
+def _bias_correct(
+    jets: pl.DataFrame,
+    ds: xr.Dataset,
+    smooth_index: int = 11,
+    smooth_n: int = 2,
+    period: int = 15,
+    same_len: bool = False
+):
+    offset = int(np.ceil(period / 2))
+    index_columns = get_index_columns(jets)
+    idxmax = jets.select(*index_columns, idxmax=pl.col("index").max().over(index_columns))
+    jets = gather_normal_da_jets(
+        jets, ds["s"].compute(), half_length=5e5, dn=2.5e4
+    )
+    useful = jets.filter(pl.col("n") == 0)[*index_columns, "index", "lon", "lat", "angle"]
+    jets: xr.DataArray = polars_to_xarray(jets, [*index_columns, "index", "n"])[
+        "s_interp"
+    ]
+    jets = (
+        jets
+        .rolling(index=smooth_index, min_periods=1)
+        .mean()
+        .rolling(n=smooth_n, min_periods=1)
+        .mean()
+        .differentiate("n")
+    )
+    kinda_len = pl.col("index_right").n_unique().over(*index_columns, "contour")
+    jets = (
+        detect_contours(
+            jets,
+            levels=[0.0],
+            spatial_dims=("n", "index"),
+            do_round=False
+        )
+        .drop_nulls("contour")
+        .filter(~pl.col("cyclic"))
+        .drop("cyclic")
+        .join(idxmax, on=index_columns)
+        .unique([*index_columns, "contour", "index"])
+        .sort(*index_columns, "contour", "index")
+        .join(useful, on=[*index_columns, pl.col("index").round().cast(pl.Int32())])
+        .drop(*[f"{col}_right" for col in index_columns])
+        .filter(kinda_len >= pl.col("idxmax") * 0.9).with_columns(len=kinda_len)
+        .drop("index_right", "idxmax", "contour", "level", "len")
+    )
+    if same_len:
+        jets = (
+            jets
+            .with_columns(index=pl.col("index").round().cast(pl.Int32())).unique([*index_columns, "index"])
+            .sort(*index_columns, "index")
+            .rolling("index", period=f"{period}i", offset=f"-{offset}i", group_by=(index_columns))
+            .agg(pl.col("n").mean(), cs.exclude("n").first())
+        )
+        idx = [*index_columns, "index"]
+        idx_old = useful.select(idx).unique(idx)
+        idx_new = jets.select(idx).unique(idx)
+        left_behind = idx_old.join(idx_new, on=idx, how="anti")
+        jets = pl.concat([jets, left_behind.join(useful, on=idx).with_columns(n=pl.lit(0., pl.Float32())).select(jets.columns)]).sort([*index_columns, "index"])
+    else:
+        jets = (
+            jets
+            .with_columns(index=pl.col("index").rle_id().over(*index_columns).cast(pl.Int32()))
+            .sort(*index_columns, "index")
+            .rolling("index", period=f"{period}i", offset=f"-{offset}i", group_by=(index_columns))
+            .agg(pl.col("n").mean(), cs.exclude("n").first())
+        )
+        
+    return jets
+
+
+def create_bias_correction(
+    jets: pl.DataFrame,
+    ds: xr.Dataset,
+    smooth_index: int = 20,
+    smooth_n: int = 2,
+    period: int = 15
+):
+    indexer = list(iterate_over_year_maybe_member(jets, ds))
+    to_average = []
+    for idx1, idx2 in tqdm(indexer, total=len(indexer)):
+        jets_ = jets.filter(*idx1)
+        ds_ = ds.sel(**idx2)
+        jets_ = _bias_correct(jets_, ds_, smooth_index=smooth_index, smooth_n=smooth_n, period=period, same_len=True)
+        to_average.append(jets_)
+    return pl.concat(to_average)
+
+
 def create_jet_relative_dataset(
     jets,
     da,
@@ -1630,7 +1717,8 @@ def create_jet_relative_dataset(
         da_ = da.sel(**idx2)
         if bias_correction is not None:
             bias_correction_ = bias_correction.filter(*idx1)
-            extra_n = bias_correction["n_max"].abs().max()
+            extra_n = bias_correction["n"].abs().max()
+            extra_n = (extra_n // dn) * dn
         else:
             bias_correction_ = None
             extra_n = 0
@@ -1646,13 +1734,20 @@ def create_jet_relative_dataset(
             print(e)
             break
         if bias_correction_ is not None:
+            mapping = nearest_mapping(bias_correction_, jets_with_interp, "n")
+            bias_correction_ = (
+                bias_correction_
+                .join(mapping, on="n")
+                .drop("n")
+                .rename({"n_": "n"})
+            )
             jets_with_interp = (
                 jets_with_interp
                 .join(bias_correction_, on=[*index_columns, "jet ID", "index"])
-                .with_columns(n=pl.col("n") - pl.col("n_max"))
+                .with_columns(n=pl.col("n") - pl.col("n_right")) # TODO: nearest_mapping
                 .filter(pl.col("n").abs() <= 2e6)
                 .with_columns(side=pl.col("n").sign().cast(pl.Int32()))
-                .drop("n_max")
+                .drop("n_right")
             )
             jets_with_interp = jets_with_interp.filter(pl.col("n").abs() <= 2e6)
         jets_with_interp = interp_jets_to_zero_one(
