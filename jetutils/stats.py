@@ -93,7 +93,8 @@ def trends_and_pvalues(
         season = "all_year"
 
     def agg_func(col):
-        return pl.col(col).std() if std else pl.col(col).mean()
+        col = pl.col(col).cast(pl.Float32()).replace((float("-inf"), float("inf"), float("nan")), None).cast(pl.Float32())
+        return col.std() if std else col.mean()
 
     aggs = [agg_func(col) for col in data_vars]
     props_as_df = props_as_df.group_by(
@@ -125,7 +126,6 @@ def trends_and_pvalues(
         inside_index=np.arange(len(ts_bootstrapped))
         % (ncat * num_blocks * bootstrap_len),
     )
-
     slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
         **{
             data_var: pds.lin_reg_report(

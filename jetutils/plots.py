@@ -1265,10 +1265,12 @@ def plot_dayofyear_trends(
 
     period = f"{win_size}d"
     offset = f"{-win_size // 2}d"
+    def target(col):
+        return pl.col(col).cast(pl.Float32()).replace((float("-inf"), float("inf"), float("nan")), None).cast(pl.Float32())
     if std:
-        aggs = {data_var: pl.col(data_var).std() for data_var in data_vars}
+        aggs = {data_var: target(data_var).std() for data_var in data_vars}
     else:
-        aggs = {data_var: pl.col(data_var).mean() for data_var in data_vars}
+        aggs = {data_var: target(data_var).mean() for data_var in data_vars}
     props_as_df_smoothed = (
         props_as_df.rolling(pl.col("time"), period=period, offset=offset, group_by=["jet"])
         .agg(**aggs)
