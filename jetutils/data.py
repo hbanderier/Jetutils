@@ -205,7 +205,7 @@ def determine_file_structure(path: Path) -> str:
     RuntimeError
         If no files are present that match the patterns looked for
     """    
-    if path.joinpath("full.nc").is_file():
+    if path.joinpath("full.nc").is_file() or path.joinpath("full.zarr").is_dir():
         return "one_file"
     if any([path.joinpath(f"{year}.nc").is_file() for year in YEARS]):
         return "yearly"
@@ -421,9 +421,13 @@ def standardize(da, unify_dtypes: bool = True):
     if not unify_dtypes:
         return da
     if isinstance(da, xr.Dataset):
+        chunking = False
         for var in da.data_vars:
-            if "chunksizes" in da[var].encoding and da[var].chunks is None:
-                chunks = da[var].encoding["chunksizes"]
+            chunks = None
+            if "preferred_chunks" in da[var].encoding and da[var].chunks is None:
+                chunks = da[var].encoding["preferred_chunks"]
+                chunking = True
+            if chunking:
                 chunks = chunks if chunks is not None else "auto"
                 da[var] = da[var].chunk(chunks)
             if da[var].dtype == np.float64:
@@ -431,8 +435,8 @@ def standardize(da, unify_dtypes: bool = True):
             elif da[var].dtype == np.int64:
                 da[var] = da[var].astype(np.int32)
     else:
-        if "chunksizes" in da.encoding and da.chunks is None:
-            chunks = da.encoding["chunksizes"]
+        if "preferred_chunks" in da.encoding and da.chunks is None:
+            chunks = da.encoding["preferred_chunks"]
             chunks = chunks if chunks is not None else "auto"
             da = da.chunk(chunks)
         if da.dtype == np.float64:
@@ -836,7 +840,7 @@ def open_da(
     files_to_load = []
 
     if file_structure == "one_file":
-        files_to_load = [path.joinpath("full.nc")]
+        files_to_load = [path.joinpath("full.nc"), path.joinpath("full.zarr")]
     elif file_structure == "yearly":
         files_to_load = [path.joinpath(f"{year}.nc") for year in period]
     elif file_structure == "monthly":
@@ -866,7 +870,7 @@ def open_da(
                 for year in period
             ]
 
-    files_to_load = [fn for fn in files_to_load if fn.is_file()]
+    files_to_load = [fn for fn in files_to_load if fn.is_file() or fn.is_dir()]
 
     da = _open_many_da_wrapper(files_to_load, varname_in_file)
     da = extract(

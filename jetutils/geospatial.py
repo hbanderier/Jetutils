@@ -33,6 +33,25 @@ from .data import standardize_polars_dtypes
 def euclidean_geographic(
     lon1: Expr | str, lat1: Expr | str, lon2: Expr | str, lat2: Expr | str
 ) -> Expr:
+    """
+    Slightly modified eucliean distance as a polars expression in longitude in latitude, with periodic longitudes in degrees.
+
+    Parameters
+    ----------
+    lon1 : Expr | str
+        _description_
+    lat1 : Expr | str
+        _description_
+    lon2 : Expr | str
+        _description_
+    lat2 : Expr | str
+        _description_
+
+    Returns
+    -------
+    Expr
+        _description_
+    """
     lon1 = to_expr(lon1)
     lat1 = to_expr(lat1)
     lon2 = to_expr(lon2)
@@ -229,28 +248,73 @@ def directional_diff(
     )
 
 
-def difflon():
+def difflon() -> Expr:
+    """
+    Periodic difference in longitude in degrees
+
+    Returns
+    -------
+    Expr
+    """
     expr = pl.col("lon").diff().abs()
     expr = pl.when(expr > 180).then(360 - expr).otherwise(expr)
     return expr
 
 
-def signed_difflon():
+def signed_difflon() -> Expr:
+    """
+    Signed periodic difference
+
+    Returns
+    -------
+    Expr
+    """
     expr = pl.col("lon").diff()
     expr = pl.when(expr.abs() > 180).then((360 - expr.abs()) * expr.sign()).otherwise(expr)
     return expr
 
 
-def diff_exp():
+def diff_exp() -> Expr:
+    """
+    Periodic L^1 distance for lon and lat
+
+    Returns
+    -------
+    Expr
+    """
     expr = difflon()
     return (expr.abs() + pl.col("lat").diff().abs()).fill_null(10.0)
 
 
-def newindex():
+def newindex() -> Expr:
+    """
+    Indexes a string of lon-lat points, starting from the first point after the largest jump in `diff_exp`.
+
+    Returns
+    -------
+    Expr
+    """
     return (pl.col("index").cast(pl.Int32()) - diff_exp().arg_max()) % pl.col("index").max()
 
 
-def sort_by_index(df, index_columns, other):
+def sort_by_index(df: pl.DataFrame, index_columns: list[str], other: str) -> pl.DataFrame:
+    """
+    Sorts by index_columns and other, plus some random order for what's left, indexed by "index"
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        _description_
+    index_columns : list[str]
+        _description_
+    other : str
+        _description_
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     return (
         df.with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, other]))
         .unique([*index_columns, other, "index"])
@@ -258,7 +322,24 @@ def sort_by_index(df, index_columns, other):
     )
 
 
-def sort_by_difflon(df, index_columns, other):
+def sort_by_difflon(df: pl.DataFrame, index_columns: list[str], other: str) -> pl.DataFrame:
+    """
+    Sorts purely by increasing longitude after the jump
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        _description_
+    index_columns : _type_
+        _description_
+    other : _type_
+        _description_
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     return (
         df.with_columns(diff_exp().over([*index_columns, other]))
         .unique([*index_columns, other, "index"])
@@ -266,7 +347,7 @@ def sort_by_difflon(df, index_columns, other):
     )
 
 
-def sort_by_newindex(df, index_columns, other):
+def sort_by_newindex(df: pl.DataFrame, index_columns: list[str], other: str):
     return (
         df.with_columns(index=pl.int_range(0, pl.len()).over([*index_columns, other]))
         .with_columns(newindex().over([*index_columns, other]))
@@ -368,6 +449,29 @@ def detect_contours(
     ctx: str | None = None,
     do_round: bool = True,
 ) -> DataFrame:
+    """
+    Potentially parallel wrapper around `inner_detect_contours`. Finds contours in a DataArray at levels specified by the user, returns the results as a polars DataFrame with index columns gathered from `da`.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        _description_
+    levels : list[float]
+        _description_
+    spatial_dims : tuple, optional
+        _description_, by default ("lon", "lat")
+    processes : int, optional
+        _description_, by default 1
+    ctx : str | None, optional
+        _description_, by default None
+    do_round : bool, optional
+        _description_, by default True
+
+    Returns
+    -------
+    DataFrame
+        _description_
+    """
     extra_dims = {dim: da[dim] for dim in da.dims if dim not in spatial_dims}
     extra_dims_values = {key: val.values for key, val in extra_dims.items()}
     key = list(extra_dims_values)[0]
@@ -421,7 +525,7 @@ def detect_contours_lonlat(
     do_round: bool = False,
 ) -> DataFrame:
     """
-    Potentially parallel wrapper around `inner_detect_contours`. Finds all zero-sigma-contours in all timesteps of `df`. Extend in longitude to capture the contours over the -180 line
+    Wrapper around `detect_contours` with extra heuristics for spherical geometry. Can extend in longitude to capture the contours over the -180 line
     """
     if repeat_lons > 0:
         da = xr.concat(
@@ -549,73 +653,33 @@ def compute_alignment(all_contours: DataFrame, periodic: bool = False) -> DataFr
     )
 
 
-def gather_normal_da_jets_wrapper(
-    jets: pl.DataFrame,
-    times: pl.DataFrame,
-    da: xr.DataArray,
-    n_interp: int = 30,
-    clim: xr.DataArray | None = None,
-    clim_std: xr.DataArray | None = None,
-    half_length: float = 1.2e6,
-    dn: float = 5e4,
-    in_meters: bool = False,
-    grad: bool = False,
-):
-    jets = times.join(jets, on="time", how="left")
-    jets = gather_normal_da_jets(
-        jets, da, half_length=half_length, dn=dn, in_meters=in_meters
-    )
-    varname = da.name + "_interp"
-
-    jets = interp_jets_to_zero_one(jets, [varname, "is_polar"], n_interp=n_interp)
-
-    if grad:
-        expr = central_diff(pl.col(varname).sort_by("n")) / central_diff(
-            pl.col("n").sort()
-        )
-        possible_cols = get_index_columns(jets, ["time", "sample_index"])
-        jets = jets.filter(
-            pl.col("n").len().over([*possible_cols, "jet ID", "norm_index"]) > 2
-        )
-        jets = jets.with_columns(
-            **{varname: expr.over([*possible_cols, "jet ID", "norm_index"])}
-        )
-
-    if clim is None:
-        return jets
-    if grad and clim_std is not None:
-        print("Grad and clim_std, not possible")
-        raise NotImplementedError
-    clim = xarray_to_polars(clim)
-    jets = jets.with_columns(
-        dayofyear=pl.col("time").dt.ordinal_day(),
-        is_polar=pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5,
-    ).cast({"n": pl.Float64})
-    if grad:
-        clim = clim.with_columns(
-            **{varname: expr.over(["dayofyear", "is_polar", "norm_index"])}
-        )
-    jets = (
-        jets.join(clim, on=["dayofyear", "is_polar", "norm_index", "n"])
-        .with_columns(pl.col(varname) - pl.col(f"{varname}_right"))
-        .drop(f"{varname}_right")
-    )
-    if clim_std is None:
-        return jets.drop("dayofyear")
-    clim_std = xarray_to_polars(clim_std)
-    jets = (
-        jets.join(clim_std, on=["dayofyear", "is_polar", "norm_index", "n"])
-        .with_columns(pl.col(varname) / pl.col(f"{varname}_right"))
-        .drop(f"{varname}_right", "dayofyear")
-    )
-    return jets
-
-
 def event_geometry(
     events: pl.DataFrame,
     mode: Literal["envelope", "convex_hull", "polygon"] = "envelope",
     index_columns: list[str] | None = None,
-):
+) -> pl.DataFrame:
+    """
+    Turns overturning and streamer events into dataframes with a geometry column.
+
+    Parameters
+    ----------
+    events : pl.DataFrame
+        _description_
+    mode : Literal[&quot;envelope&quot;, &quot;convex_hull&quot;, &quot;polygon&quot;], optional
+        _description_, by default "envelope"
+    index_columns : list[str] | None, optional
+        _description_, by default None
+
+    Returns
+    -------
+    DataFrame
+        _description_
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """
     if index_columns is None:
         index_columns = get_index_columns(events, ["member", "time", "level", "index"])
     if mode == "envelope":
@@ -654,12 +718,33 @@ def event_geometry(
 
 
 def detect_overturnings(
-    contours,
+    contours: pl.DataFrame,
     max_difflon: float = 5,
     min_lon_ext: float = 5,
     min_lat_ext: float = 5,
     min_len: int = 5,
-):
+) -> pl.DataFrame:
+    """
+    Detects overturnings from absolute or potential vorticity contours, using Barnes and Hartmann 2013.
+
+    Parameters
+    ----------
+    contours : pl.DataFrame
+        _description_
+    max_difflon : float, optional
+        _description_, by default 5
+    min_lon_ext : float, optional
+        _description_, by default 5
+    min_lat_ext : float, optional
+        _description_, by default 5
+    min_len : int, optional
+        _description_, by default 5
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     index_columns = get_index_columns(
         contours, ["member", "time", "lev", "level", "contour"]
     )
@@ -765,7 +850,7 @@ def detect_streamers(
     min_ratio: float = 10,
 ) -> pl.DataFrame:
     """
-    Broken for now, can't repair it now
+    Detects streamers from potential or absolute vorticity contours using wernli sprenger 2015.
 
     Parameters
     ----------
@@ -974,7 +1059,26 @@ def sjoin_to_grid(
     da: xr.DataArray,
     varname: str = "ones",
     buffer: float | None = None,
-):
+) -> pl.DataFrame:
+    """
+    Taking an events DataFrame containing a geometry, augments it with lon and lat columns which, for each geometry, will contain all the lon, lat points within the geometry. The potential lon, lat points to look for are the ones defined by da, who only needs to be 2D since the other dimensions will be discarded. 
+
+    Parameters
+    ----------
+    events : pl.DataFrame
+        _description_
+    da : xr.DataArray
+        _description_
+    varname : str, optional
+        _description_, by default "ones"
+    buffer : float | None, optional
+        _description_, by default None
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     if da.name is None:
         da = da.rename("dummy")
     da_name = da.name
@@ -1019,7 +1123,30 @@ def to_xarray_sjoin(
     events_on_grid: pl.DataFrame | None = None,
     varname: str = "ones",
     buffer: float | None = None,
-):
+) -> xr.DataArray:
+    """
+    Turns a event dataframe into a gridded DataArray, with zeros everywhere except where and when there is an overlap with a geometry, and there the value of the variable "varname", typically just ones to create a mask.
+    
+    This is an expensive operation, optimise to do this only once. 
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        _description_
+    events : pl.DataFrame | None, optional
+        _description_, by default None
+    events_on_grid : pl.DataFrame | None, optional
+        _description_, by default None
+    varname : str, optional
+        _description_, by default "ones"
+    buffer : float | None, optional
+        _description_, by default None
+
+    Returns
+    -------
+    xr.DataArray
+        _description_
+    """
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, da, varname, buffer)
     index_columns = get_index_columns(events_on_grid, ["member", "time", "level"])
@@ -1047,7 +1174,9 @@ def join_wrapper(
     **kwargs,
 ):
     """
-    Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage
+    Joins a DataFrame with a DataArray on the latter's dimensions. Explicitly iterates over years and members to limit memory usage. 
+    
+    Should be merged cleanly with `join_on_ds` since they do similar things, but also not really.
 
     Parameters
     ----------
@@ -1080,6 +1209,23 @@ def join_wrapper(
 
 
 def event_props(events: pl.DataFrame, das: list[xr.DataArray], events_on_grid: pl.DataFrame | None = None):
+    """
+    Computes various properties of event geometries such as area-mean quantities like zeta or momentum flux.
+
+    Parameters
+    ----------
+    events : pl.DataFrame
+        _description_
+    das : list[xr.DataArray]
+        _description_
+    events_on_grid : pl.DataFrame | None, optional
+        _description_, by default None
+
+    Returns
+    -------
+    pl.DataFrame
+        Same as input but with a few more columns
+    """
     index_columns = get_index_columns(events, ["member", "time", "level", "index"])
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, das[0])
@@ -1400,8 +1546,8 @@ def gather_normal_da_jets(
     jets: DataFrame,
     # da: xr.DataArray,
     *das: tuple[xr.DataArray],
-    half_length: float = 1.2e6,
-    dn: float = 5e4,
+    half_length: float = 2e6,
+    dn: float = 1e5,
     delete_middle: bool = False,
     in_meters: bool = True,
 ) -> DataFrame:
@@ -1600,14 +1746,39 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
     return jets
 
 
-def _bias_correct(
+def bias_correct(
     jets: pl.DataFrame,
     ds: xr.Dataset,
     smooth_index: int = 11,
     smooth_n: int = 2,
     period: int = 15,
     same_len: bool = False
-):
+) -> pl.DataFrame:
+    """
+    Inputs and interpolation need to fit in memory. This will crash your code if you send too much at it
+    
+    Interpolates wind speed around the jet, normal-derive it (like sigma), and finds smooth 0 contours of this alternative sigma in index-n space.
+
+    Parameters
+    ----------
+    jets : pl.DataFrame
+        _description_
+    ds : xr.Dataset
+        _description_
+    smooth_index : int, optional
+        _description_, by default 11
+    smooth_n : int, optional
+        _description_, by default 2
+    period : int, optional
+        _description_, by default 15
+    same_len : bool, optional
+        _description_, by default False
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
     offset = int(np.ceil(period / 2))
     index_columns = get_index_columns(jets)
     idxmax = jets.select(*index_columns, idxmax=pl.col("index").max().over(index_columns))
@@ -1677,26 +1848,73 @@ def create_bias_correction(
     smooth_n: int = 2,
     period: int = 15
 ):
+    """
+    Iterates over time and members and call `bias_correct`.
+
+    Parameters
+    ----------
+    jets : pl.DataFrame
+        _description_
+    ds : xr.Dataset
+        _description_
+    smooth_index : int, optional
+        _description_, by default 20
+    smooth_n : int, optional
+        _description_, by default 2
+    period : int, optional
+        _description_, by default 15
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     indexer = list(iterate_over_year_maybe_member(jets, ds))
     to_average = []
     for idx1, idx2 in tqdm(indexer, total=len(indexer)):
         jets_ = jets.filter(*idx1)
         ds_ = ds.sel(**idx2)
-        jets_ = _bias_correct(jets_, ds_, smooth_index=smooth_index, smooth_n=smooth_n, period=period, same_len=True)
+        jets_ = bias_correct(jets_, ds_, smooth_index=smooth_index, smooth_n=smooth_n, period=period, same_len=True)
         to_average.append(jets_)
     return pl.concat(to_average)
 
 
 def create_jet_relative_dataset(
     jets,
-    da,
+    *das: tuple[xr.DataArray],
     bias_correction: pl.DataFrame | None = None,
     half_length: float = 2e6,
     dn: float = 1e5,
     n_interp: int = 30,
     in_meters: bool = True,
-):
-    indexer = list(iterate_over_year_maybe_member(jets, da))
+    align_2d: str | None = None,
+) -> pl.DataFrame:
+    """
+    Wrapper wrappy wraps. Iterates over time, member etc and calls `gather_normal_da_jets`, potentially bias-correts the results if bias_correction is not None, then interpolates the `index` dimension to 0-1 using `interp_jets_to_zero_one`. 
+
+    Parameters
+    ----------
+    jets : _type_
+        _description_
+    da : _type_
+        _description_
+    bias_correction : pl.DataFrame | None, optional
+        _description_, by default None
+    half_length : float, optional
+        _description_, by default 2e6
+    dn : float, optional
+        _description_, by default 1e5
+    n_interp : int, optional
+        _description_, by default 30
+    in_meters : bool, optional
+        _description_, by default True
+
+    Returns
+    -------
+    pl.DataFrame
+        _description_
+    """
+    indexer = list(iterate_over_year_maybe_member(jets, das[0]))
     to_average = []
     index_columns = get_index_columns(
         jets, 
@@ -1711,10 +1929,12 @@ def create_jet_relative_dataset(
             "inside_index"
         )
     )
-    varname = da.name + "_interp"
+    varnames = [da.name + "_interp" for da in das]
+    if len(das) == 2 and align_2d is not None:
+        varnames.append(f"{align_2d}_interp")
     for idx1, idx2 in tqdm(indexer, total=len(indexer)):
         jets_ = jets.filter(*idx1)
-        da_ = da.sel(**idx2)
+        das_ = [compute(da.sel(**idx2)) for da in das]
         if bias_correction is not None:
             bias_correction_ = bias_correction.filter(*idx1)
             extra_n = bias_correction["n"].abs().max()
@@ -1725,7 +1945,7 @@ def create_jet_relative_dataset(
         try:
             jets_with_interp = gather_normal_da_jets(
                 jets_,
-                da_,
+                *das_,
                 half_length=half_length + extra_n,
                 dn=dn,
                 in_meters=in_meters,
@@ -1744,14 +1964,20 @@ def create_jet_relative_dataset(
             jets_with_interp = (
                 jets_with_interp
                 .join(bias_correction_, on=[*index_columns, "jet ID", "index"])
-                .with_columns(n=pl.col("n") - pl.col("n_right")) # TODO: nearest_mapping
-                .filter(pl.col("n").abs() <= 2e6)
+                .with_columns(n=pl.col("n") - pl.col("n_right"))
+                .filter(pl.col("n").abs() <= half_length)
                 .with_columns(side=pl.col("n").sign().cast(pl.Int32()))
                 .drop("n_right")
             )
-            jets_with_interp = jets_with_interp.filter(pl.col("n").abs() <= 2e6)
+            jets_with_interp = jets_with_interp.filter(pl.col("n").abs() <= half_length)
+        if len(das) == 2 and align_2d is not None:
+            angle = pl.col("angle") - pl.lit(np.pi / 2)
+            agg = angle.cos() * pl.col(varnames[0]) + angle.sin() * pl.col(varnames[1])
+            agg = agg.cast(pl.Float32())
+            agg = {f"{align_2d}_interp": agg}
+            jets_with_interp = jets_with_interp.with_columns(**agg)
         jets_with_interp = interp_jets_to_zero_one(
-            jets_with_interp, [varname, "is_polar"], n_interp=n_interp
+            jets_with_interp, [*varnames, "is_polar"], n_interp=n_interp
         )
         to_average.append(jets_with_interp)
     return pl.concat(to_average)

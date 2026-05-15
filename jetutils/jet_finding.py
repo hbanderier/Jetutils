@@ -63,7 +63,9 @@ from .geospatial import (
     sort_by_index_then_difflon,
     sort_by_index_then_newindex, 
     nearest_mapping,
-    create_jet_relative_dataset, _bias_correct
+    create_jet_relative_dataset, 
+    bias_correct,
+    create_bias_correction,
 )
 
 
@@ -392,7 +394,10 @@ def find_all_jets(
 
 def online_bias_correct(jets: pl.DataFrame, ds: xr.Dataset) -> pl.DataFrame:
     """
-    This is a fun idea but it does not work great. For now, use biased jets and only bias correct the jet-centred composites, it's fine.
+    This is a fun idea but it does not work great. 
+    Use the bias correction function to find how far the actual sigma contour is around the detected (biased) jet is, then send a ray there using the formulae for normallon and normallat, and define the new jet at these new points. You shoud spline-interpolate after this for good measure.
+    
+    For now, use biased jets and only bias correct the jet-centred composites, it's fine. Issue is of course sigma contours are super noisy, and while the smoothing works much better in jet-centred composites it still biases the position so you can't do too much of it. You're left with the same problem as in real space almost.
 
     Parameters
     ----------
@@ -408,7 +413,7 @@ def online_bias_correct(jets: pl.DataFrame, ds: xr.Dataset) -> pl.DataFrame:
     """
     index_columns = get_index_columns(jets)
     jets_orig = jets.clone()
-    jets = _bias_correct(jets, ds, same_len=False)
+    jets = bias_correct(jets, ds, same_len=False)
 
     arc_distances = pl.col("n").first() / RADIUS
     lon = pl.col("lon").first().radians()
@@ -443,6 +448,8 @@ def online_bias_correct(jets: pl.DataFrame, ds: xr.Dataset) -> pl.DataFrame:
 def spline_smooth(jets: pl.DataFrame, s: float = 0., factor: int = 3) -> pl.DataFrame:
     """
     This works but was mostly useful in conjunction with bias_correct. 
+    
+    One day, polars-splines will be updated and this function will use it to be even faster instead of looping. maybe.
 
     Parameters
     ----------
@@ -1686,7 +1693,7 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
 
 def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, **find_jets_kwargs):
     """
-    Faster than object-oriented approach for quick testing
+    Faster than object-oriented approach for quick testing of the whole pipeline
 
     Parameters
     ----------
@@ -1710,7 +1717,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     props_path = save_path.joinpath("props.parquet")
     props_final_path = save_path.joinpath("props_full.parquet")
     cross_path = save_path.joinpath("cross.parquet")
-    s_interp_path = save_path.joinpath("s_interp.parquet")
+    bc_path = save_path.joinpath("bias_correct.parquet")
     if not jets_path.is_file():
         iterator = iterate_over_year_maybe_member(da=ds, several_years=1)
         jets = []
@@ -1774,11 +1781,9 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     else:
         phat_props = pl.read_parquet(props_final_path)
         
-    if not s_interp_path.is_file():
-        jets_with_s = create_jet_relative_dataset(jets, ds["s"], None, dn=5e4, n_interp=40)
-        jets_with_s.write_parquet(s_interp_path)
-    else:
-        jets_with_s = pl.read_parquet(s_interp_path)
+    if not do_bias_correct and not bc_path.is_file():
+        bc = create_bias_correction(phat_jets, ds)
+        bc.write_parquet(bc_path)
 
     return jets, phat_jets, props, phat_props
 

@@ -62,7 +62,6 @@ from .jet_finding import gather_normal_da_jets
 from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
 from .data import periodic_rolling_pl
 from .anyspell import extend_spells
-from .geospatial import gather_normal_da_jets_wrapper
 import jetutils
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
