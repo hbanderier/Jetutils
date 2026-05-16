@@ -1423,10 +1423,17 @@ def plot_interp(
         is_polar = jet == "EDJ"
         levels = MaxNLocator(nlevels).tick_values(min_, max_)
         factor = FACTORS.get(varname, 1)
-        ofile = ipath.joinpath(f"{prefix}_{jet}_{varname_full}{suffix}.nc")
-        to_plot = xr.open_dataarray(ofile)
+        ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}.nc")
+        try:
+            to_plot = xr.open_dataarray(ofile)
+        except FileNotFoundError:
+            if varname == "PV":
+                varname = "PV350" if jet == "STJ" else "PV330"
+                varname_full = f"{varname}:{mode}"
+                ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}.nc")
+                to_plot = xr.open_dataarray(ofile)
         y = to_plot.n / 1e6
-        ofile_pvals = ipath.joinpath(f"{prefix}_{jet}_{varname_full}{suffix}_pvals.nc")
+        ofile_pvals = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}_pvals.nc")
         if ofile_pvals.is_file():
             if handle_pvals != "hide":
                 levels = np.delete(levels, np.where(np.abs(levels) < 1e-7)[0])
@@ -1483,7 +1490,7 @@ def plot_interp(
         else:
             factor_str = str(int(np.log10(np.abs(factor))))
             factor_str = r"$10^{" + factor_str + r"} \times $"
-        unit = UNITS[varname_no_number]
+        unit = UNITS.get(varname_no_number, UNITS.get(varname, "$~$"))
         unit = factor_str + unit
         unit = unit + r"$/10^{6}\mathrm{m}$" if grad else unit
         unit = "pp" if unit == r"$\%$" and mode == "anom" else unit
