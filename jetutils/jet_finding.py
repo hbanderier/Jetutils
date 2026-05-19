@@ -1768,7 +1768,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
             width.append(width_)
         width = pl.concat(width)
         index_columns = get_index_columns(width)
-        props = props.join(width, on=index_columns, how="inner").sort(index_columns)
+        props = props.join(width, on=index_columns, how="left").sort(index_columns)
         props.write_parquet(props_path)
     else:
         props = pl.read_parquet(props_path)
@@ -1776,9 +1776,13 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     if not props_final_path.is_file():
         phat_props = props.filter(phat_filter)
         index_columns = get_index_columns(phat_props)
-        phat_props = phat_props.join(cross[*index_columns, "pers"], on=index_columns)
         
         phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
+        cross = cross.filter(pl.col("jet ID") == pl.col("jet ID_right"))
+        pers = cross.select("time", jet=pl.when(pl.col("jet ID") == 0).then(pl.lit("STJ")).otherwise(pl.lit("EDJ")), pers="pers")
+        idc = index_columns
+        idc.remove("jet ID")
+        phat_props = phat_props.join(pers[*index_columns, "pers"], on=[*idc, "jet"])
         phat_props.write_parquet(props_final_path)
     else:
         phat_props = pl.read_parquet(props_final_path)

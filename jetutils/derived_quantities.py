@@ -203,7 +203,7 @@ def setup_derivatives(ds: xr.Dataset):
     _, dlonx = np.gradient(xlon)
 
     dx = RADIUS * np.radians(dlonx) * degcos(ylat)
-    dy = RADIUS * np.radians(dlaty) * degcos(ylat)
+    dy = RADIUS * np.radians(dlaty)
     
     axis_x = find_axis(ds, "lon")
     axis_y = find_axis(ds, "lat")
@@ -220,7 +220,7 @@ def compute_norm_derivative(ds: xr.Dataset, of: str = "s"):
     s = np.hypot(u, v)
     da = ds[of]
     
-    ddady = da.copy(data=np.gradient(da * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy)
+    ddady = da.copy(data=np.gradient(da, axis=axis_y)) / this_expand_dims(dy)
     ddadx = da.copy(data=np.gradient(da, axis=axis_x)) / this_expand_dims(dx)
     
     return (- u * ddady + v * ddadx) / s
@@ -230,7 +230,7 @@ def compute_relative_vorticity(ds: xr.Dataset):
     dx, dy, axis_x, axis_y, this_expand_dims, coslat = setup_derivatives(ds)
     
     dvdx = ds["v"].copy(data=np.gradient(ds["v"], axis=axis_x)) / this_expand_dims(dx)
-    dudy = ds["u"].copy(data=np.gradient(ds["u"] * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy)
+    dudy = ds["u"].copy(data=np.gradient(ds["u"] * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy) / this_expand_dims(coslat)
     return dvdx - dudy
 
 
@@ -252,18 +252,8 @@ def compute_2d_conv(ds: xr.Dataset, u: str | None = None, v: str | None = None):
         da = ds[list(ds.data_vars)[0]]
         dudx = da.copy(data=np.zeros(da.shape))
     if v is not None:
-        dvdy = ds[v].copy(data=np.gradient(ds[v] * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy)
+        dvdy = ds[v].copy(data=np.gradient(ds[v] * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy) / this_expand_dims(coslat)
     else:
         da = ds[list(ds.data_vars)[0]]
         dvdy = da.copy(data=np.zeros(da.shape))
     return dudx + dvdy
-
-
-def compute_emf_2d_conv(ds: xr.Dataset):
-    dx, dy, axis_x, axis_y, this_expand_dims, coslat = setup_derivatives(ds)
-    
-    e1 = 0.5 * (ds["vp"] ** 2 - ds["up"] ** 2)
-    e2 = - ds["up"] * ds["vp"]
-    de1dx = ds["up"].copy(data=np.gradient(e1, axis=axis_x)) / this_expand_dims(dx)
-    de2dy = ds["vp"].copy(data=np.gradient(e2 * this_expand_dims(coslat), axis=axis_y)) / this_expand_dims(dy)
-    return de1dx + de2dy
