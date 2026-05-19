@@ -1691,7 +1691,7 @@ def interp_jets_to_zero_one(
         [*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"],
         maintain_order=True,
     ).agg([pl.col(varname).mean() for varname in varnames])
-    return jets
+    return standardize_polars_dtypes(jets)
 
 
 def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
