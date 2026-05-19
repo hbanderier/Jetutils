@@ -1740,7 +1740,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         jets = standardize_polars_dtypes(jets)
         jets.write_parquet(jets_path)
     else:
-        jets = pl.read_parquet(jets_path)
+        jets = standardize_polars_dtypes(pl.read_parquet(jets_path))
     if "is_polar" not in jets.columns:
         jets = is_polar_gmix(jets, ("s", "theta"))
         jets.write_parquet(jets_path)
@@ -1752,7 +1752,8 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         cross = pers_from_cross_catd(cross)
         cross.write_parquet(cross_path)
     else:
-        cross = pl.read_parquet(cross_path)
+        cross = standardize_polars_dtypes(pl.read_parquet(cross_path))
+        cross = pers_from_cross_catd(cross)
     
     if not props_path.is_file():
         props = compute_jet_props(jets)
@@ -1769,7 +1770,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         props = props.join(width, on=index_columns, how="inner").sort(index_columns)
         props.write_parquet(props_path)
     else:
-        props = pl.read_parquet(props_path)
+        props = standardize_polars_dtypes(pl.read_parquet(props_path))
         
     if not props_final_path.is_file():
         phat_props = props.filter(phat_filter)
@@ -1779,7 +1780,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
         phat_props.write_parquet(props_final_path)
     else:
-        phat_props = pl.read_parquet(props_final_path)
+        phat_props = standardize_polars_dtypes(pl.read_parquet(props_final_path))
         
     if not do_bias_correct and not bc_path.is_file():
         bc = create_bias_correction(phat_jets, ds)
