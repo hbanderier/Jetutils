@@ -554,6 +554,8 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
         ).alias("int_over_europe"),
         pl.col("is_polar").mean(),
     ]
+    
+    aggregations = [agg.replace([float("-inf"), float("inf"), float("nan")], None) for agg in aggregations]
 
     df_lazy = df.lazy()
     index_columns = get_index_columns(df)
