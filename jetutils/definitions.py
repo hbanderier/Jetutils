@@ -266,11 +266,10 @@ if "DATADIR" not in globals():
         "wavinessFV15": 1e-2,
         "pers": 1e-2,
         #
-        "EMFconv250": 1e6,
         "F3": 1e-1, 
-        "hor": -1e-5, 
-        "vert": -1e-5, 
-        "vert_extra": -1e-5,
+        "hor": -1e2, 
+        "vert": -1e2, 
+        "vert_extra": -1e2,
     }
     
     FACTORS_UNITS = {
