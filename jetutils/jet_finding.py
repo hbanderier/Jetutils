@@ -2,6 +2,7 @@
 """
 This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
 """
+from operator import index
 from cmath import polar
 import datetime
 from itertools import product
@@ -488,11 +489,11 @@ def spline_smooth(jets: pl.DataFrame, s: float = 0., factor: int = 3) -> pl.Data
     return newjets
 
 
-def compute_jet_props(df: DataFrame) -> DataFrame:
+def compute_jet_props(jets: DataFrame) -> DataFrame:
     """
     Computes all basic jet properties from a DataFrame containing many jets.
     """
-    position_columns = [col for col in ["lat", "lev", "theta"] if col in df.columns]
+    position_columns = [col for col in ["lat", "lev", "theta"] if col in jets.columns]
 
     def dl(col):
         return pl.col(col).max() - pl.col(col).min()
@@ -558,10 +559,10 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
     
     aggregations = [agg.replace([float("-inf"), float("inf"), float("nan")], None) for agg in aggregations]
 
-    df_lazy = df.lazy()
-    index_columns = get_index_columns(df)
+    jets_lazy = jets.lazy()
+    index_columns = get_index_columns(jets)
     if "member" not in index_columns:
-        gb = df_lazy.group_by(index_columns, maintain_order=True)
+        gb = jets_lazy.group_by(index_columns, maintain_order=True)
         props_as_df = gb.agg(*aggregations)
         props_as_df = props_as_df.with_columns(
             [
@@ -575,20 +576,21 @@ def compute_jet_props(df: DataFrame) -> DataFrame:
     else:
         # streaming mode doesn't work well
         collected = []
-        for member in tqdm(df["member"].unique(maintain_order=True).to_numpy()):
-            gb = df_lazy.filter(pl.col("member") == member).group_by(
+        for member in tqdm(jets["member"].unique(maintain_order=True).to_numpy()):
+            gb = jets_lazy.filter(pl.col("member") == member).group_by(
                 index_columns, maintain_order=True
             )
             props_as_df = gb.agg(*aggregations)
             collected.append(props_as_df.collect())
         props_as_df = pl.concat(collected).sort("member")
-    index_columns.remove("jet ID")
-    unique_lon_over_europe = df["lon"].unique()
+    which_jet = "jet" if "jet" in index_columns else "jet ID"
+    index_columns.remove(which_jet)
+    unique_lon_over_europe = jets["lon"].unique()
     unique_lon_over_europe = unique_lon_over_europe.filter(unique_lon_over_europe > -10)
-    dji = df.group_by([*index_columns, "lon"]).agg(
-        pl.col("jet ID").n_unique()
+    dji = jets.group_by([*index_columns, "lon"]).agg(
+        pl.col(which_jet).n_unique()
     )
-    dji = unique_lon_over_europe.to_frame().join(dji, on="lon", how="left").group_by(index_columns).agg(double_jet_index=(pl.col("jet ID").fill_null(0) >= 2).mean())
+    dji = unique_lon_over_europe.to_frame().join(dji, on="lon", how="left").group_by(index_columns).agg(double_jet_index=(pl.col(which_jet).fill_null(0) >= 2).mean())
     props_as_df = props_as_df.join(dji, on=index_columns)
     props_as_df = standardize_polars_dtypes(props_as_df)
     return props_as_df
@@ -601,7 +603,7 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     jets = gather_normal_da_jets(jets, da, half_length=1.3e6, dn=5e4, delete_middle=True, in_meters=True)
 
     index_columns = get_index_columns(
-        jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID")
+        jets, ("member", "time", "cluster", "spell", "relative_index", "jet ID", "jet")
     )
 
     # Expr half_width
@@ -783,7 +785,7 @@ def one_gmix_v2(
 
 
 def is_polar_gmix(
-    df: DataFrame,
+    jets: DataFrame,
     feature_names: list,
     mode: (
         Literal["all"] | Literal["season"] | Literal["month"] | Literal["week"]
@@ -819,14 +821,14 @@ def is_polar_gmix(
     # TODO: assumes at least one year of data, check for season / month actually existing in the data, figure out output
     kwargs = dict(n_init=n_init, init_params=init_params)
     gmix_fn = one_gmix_v2 if v2 else one_gmix
-    if "time" not in df.columns:
+    if "time" not in jets.columns:
         mode = "all"
     if mode == "all":
-        X = extract_features(df, feature_names)
+        X = extract_features(jets, feature_names)
         kwargs["n_components"] = n_components
         probas = gmix_fn(X, **kwargs)
-        return df.with_columns(is_polar=probas)
-    index_columns = get_index_columns(df, ["member", "number", "forecast_init", "time", "jet ID", "index"])
+        return jets.with_columns(is_polar=probas)
+    index_columns = get_index_columns(jets, ["member", "number", "forecast_init", "time", "jet ID", "index"])
     to_concat = []
     if mode == "season":
         if isinstance(n_components, int):
@@ -836,37 +838,37 @@ def is_polar_gmix(
         for season, n_components_ in zip(
             tqdm(["DJF", "MAM", "JJA", "SON"]), n_components
         ):
-            X = extract_season_from_df(df, season)
+            X = extract_season_from_df(jets, season)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
             probas = gmix_fn(X[feature_names], **kwargs)
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "month":
-        months = df["time"].dt.month().unique().sort().to_numpy()
+        months = jets["time"].dt.month().unique().sort().to_numpy()
         if isinstance(n_components, int):
             n_components = [n_components] * len(months)
         else:
             assert len(n_components) == len(months)
         for month, n_components_ in zip(tqdm(months), n_components):
-            X = extract_season_from_df(df, month)
+            X = extract_season_from_df(jets, month)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
             probas = gmix_fn(X[feature_names], **kwargs)
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "week":
-        weeks = df["time"].dt.week().unique().sort().to_numpy()
+        weeks = jets["time"].dt.week().unique().sort().to_numpy()
         if isinstance(n_components, int):
             n_components = [n_components] * len(weeks)
         else:
             assert len(n_components) == len(weeks)
         for week, n_components_ in zip(tqdm(weeks, total=len(weeks)), n_components):
-            X = df.filter(pl.col("time").dt.week() == week)
+            X = jets.filter(pl.col("time").dt.week() == week)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
             probas = gmix_fn(X[feature_names], **kwargs)
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
 
-    return df.join(pl.concat(to_concat), on=index_columns).sort(index_columns)
+    return jets.join(pl.concat(to_concat), on=index_columns).sort(index_columns)
 
 
 def add_feature_for_cat(
@@ -1170,13 +1172,8 @@ def to_one_large(jets, int_EDJ_threshold: float = 1.3e8):
             & (pl.col("int").mode().first().over(["time", "jet ID"]) > int_EDJ_threshold)
         )
     )
-    jets = jets.with_columns(
-        **{
-            "jet ID": (pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5).cast(
-                pl.UInt32()
-            )
-        }
-    )
+    jet = pl.when(pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5).then(pl.lit("EDJ")).otherwise(pl.lit("STJ"))
+    jets = jets.with_columns(jet=jet).drop("jet ID")
     return jets
 
 
@@ -1211,7 +1208,7 @@ def _frechet_st(
     
 
 def track_jets_(
-    jets: DataFrame, member: str | None = None, year: int | None = None, month: int | None = None, catd: bool = False,
+    jets: DataFrame, member: str | None = None, year: int | None = None, month: int | None = None,
 ) -> DataFrame:
     """
     Performs jet tracking for real
@@ -1237,7 +1234,8 @@ def track_jets_(
     if "is_polar" in jets.columns:
         deltas.append("is_polar")
     deltas2 = [f"d{col}" for col in deltas]
-    typical_group_by = ["time", "time_right", "jet ID", "jet ID_right"]
+    which_jet = "jet" if "jet" in jets.columns else "jet ID"
+    typical_group_by = ["time", "time_right", which_jet, f"{which_jet}_right"]
     filter_ = pl.lit(True) 
     if year is not None:
         filter_ = filter_ & (pl.col("time").dt.year() == year)
@@ -1255,13 +1253,13 @@ def track_jets_(
         filter_ = filter_ & (pl.col("member") == member)
         typical_group_by.insert(0, "member")
 
-    cols_i_want = get_index_columns(jets, ["member", "time", "jet ID", "lon", "lat"])
+    cols_i_want = get_index_columns(jets, ["member", "time", "jet ID", "jet", "lon", "lat"])
     jets_current = (
         jets.filter(filter_)
         .select(*cols_i_want, *deltas)
         .with_columns(
-            len=pl.col("lon").len().over(["time", "jet ID"]),
-            index=pl.int_range(0, pl.col("lon").len()).over(["time", "jet ID"]),
+            len=pl.col("lon").len().over(["time", which_jet]),
+            index=pl.int_range(0, pl.col("lon").len()).over(["time", which_jet]),
         )
     )
     dt = jets_current["time"].unique().bottom_k(2).sort()
@@ -1275,13 +1273,13 @@ def track_jets_(
     
     memb = ["member"] if "member" in jets_current.columns else []
 
-    jets_current = jets_current.group_by(*memb, "time", "jet ID").agg(**aggs_first)
-    jets_next = jets_next.group_by(*memb, "time", "time_shifted", "jet ID").agg(**aggs_first)
+    jets_current = jets_current.group_by(*memb, "time", which_jet).agg(**aggs_first)
+    jets_next = jets_next.group_by(*memb, "time", "time_shifted", which_jet).agg(**aggs_first)
     cross = jets_current.join(
         jets_next, left_on=[*memb, "time"], right_on=[*memb, "time_shifted"], how="left"
     )
-    if catd:
-        cross = cross.filter(pl.col("jet ID") == pl.col("jet ID_right"))
+    if which_jet == "jet":
+        cross = cross.filter(pl.col(which_jet) == pl.col(f"{which_jet}_right"))
     cross = cross.filter(pl.col("points").is_not_null(), pl.col("points_right").is_not_null())
     overlap = _lon_overlap()
     more_aggs = {
@@ -1300,7 +1298,7 @@ def track_jets_(
     return standardize_polars_dtypes(cross)
 
 
-def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False, catd: bool = False) -> DataFrame:
+def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False) -> DataFrame:
     """
     Iterates over maybe years and maybe members and performs explicit jet tracking. Only use yearly and monthly if severely memory bound, it makes everything much slower
 
@@ -1340,7 +1338,6 @@ def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool =
                 member,
                 year,
                 month,
-                catd=catd
             )
         )
     cross = pl.concat(cross)
@@ -1348,15 +1345,15 @@ def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool =
 
 
 def connected_from_cross(
-    all_jets_one_df: DataFrame,
+    jets: DataFrame,
     cross: DataFrame | None = None,
     dist_thresh: float = 2e5,
     overlap_thresh: float = 0.5,
     dis_polar_thresh: float | None = 1.0,
 ) -> DataFrame:
-    all_jets_one_df = all_jets_one_df.cast({"time": pl.Datetime("ms")})
+    jets = jets.cast({"time": pl.Datetime("ms")})
     if cross is None:
-        cross = track_jets(all_jets_one_df, catd=False)
+        cross = track_jets(jets)
     cross = cross.filter(
         pl.col("dist") < dist_thresh,
         pl.col("lon_overlap") > overlap_thresh,
@@ -1365,14 +1362,14 @@ def connected_from_cross(
     gb = ["time", "jet ID"]
     mem = []
     mem_k = []
-    if "member" in all_jets_one_df.columns:
+    if "member" in jets.columns:
         gb_ = ["member"]
         gb_.extend(gb)
         gb = gb_
         mem = ["member"]
         mem_k = ["member_k"]
     summary = (
-        all_jets_one_df.group_by("time", "jet ID", maintain_order=True)
+        jets.group_by("time", "jet ID", maintain_order=True)
         .agg()
         .with_row_index()
     )
@@ -1412,7 +1409,7 @@ def connected_from_cross(
         .rename({"index": "b"})
     )
     deltas = ["s", "theta"]
-    if "is_polar" in all_jets_one_df.columns:
+    if "is_polar" in jets.columns:
         deltas.append("is_polar")
 
     edges = cross[
@@ -1475,7 +1472,7 @@ def persistence_expr() -> Expr:
         
 
 def spells_from_cross(
-    all_jets_one_df: DataFrame,
+    jets: DataFrame,
     cross: DataFrame,
     dist_thresh: float = 2e5,
     overlap_thresh: float = 0.5,
@@ -1489,7 +1486,7 @@ def spells_from_cross(
     polar_cutoff: float = 0.6,
 ):
     _, summary_comp = connected_from_cross(
-        all_jets_one_df,
+        jets,
         cross,
         dist_thresh=dist_thresh,
         overlap_thresh=overlap_thresh,
@@ -1554,50 +1551,48 @@ def spells_from_cross(
     return spells_list
 
 
-def pers_from_cross_catd(cross: DataFrame) -> DataFrame:
-    cross = cross.filter(pl.col("jet ID") == pl.col("jet ID_right")).with_columns(
-        spell_of=pl.when(pl.col("jet ID") == 0)
-        .then(pl.lit("STJ"))
-        .otherwise(pl.lit("EDJ")),
-        pers=persistence_expr(),
-    )
-    # cross = (
-    #     cross
-    #     .with_columns(
-    #         dt=((pl.col("time_right") - pl.col("time")) / (pl.col("time_right") - pl.col("time")).min()).cast(pl.Int32())
-    #     )
-    #     .with_columns(pers2=pl.col("pers") / pl.col("dt"))
-    #     .group_by("time", "jet ID", maintain_order=True)
-    #     .agg(
-    #         pl.col("time_right").get(pl.col("pers").arg_max()),
-    #         pl.col("jet ID_right").get(pl.col("pers").arg_max()),
-    #         pl.col("dt").get(pl.col("pers").arg_max())
-    #     )
-    #     .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
-    # )
-    return cross
+def pers_from_cross(cross: DataFrame) -> DataFrame:
+    index_columns = get_index_columns(cross)
+    if "jet" in index_columns:
+        return (
+            cross
+            .filter(pl.col("jet") == pl.col("jet_right"))
+            .with_columns(pers=persistence_expr())
+            .group_by(index_columns, maintain_order=True)
+            .agg(
+                pers=pl.col("pers").max(),
+                is_polar=pl.col("is_polar").mean()
+            )
+        )
+    else:
+        return (
+            cross
+            .with_columns(pers=persistence_expr())
+            .group_by(index_columns, maintain_order=True)
+            .agg(
+                pers=pl.col("pers").max(),
+                is_polar=pl.col("is_polar").mean()
+            )
+        )
 
 
 def spells_from_cross_catd_simple(
     cross: DataFrame,
     q_STJ: float = 0.99,
     q_EDJ: float = 0.95,
-    season: Series | None = None,
+    season: pl.DataFrame | None = None,
     minlen: datetime.timedelta = datetime.timedelta(days=5),
     smooth: datetime.timedelta | None = None,
     fill_holes: datetime.timedelta | int = 0,
 ) -> dict[str, DataFrame]:
-    cross = pers_from_cross_catd(cross)
-    cross = squarify(cross, ["time", "spell_of"])
-    cross = cross.with_columns(
-        **{"jet ID": (pl.col("spell_of") == "EDJ").cast(pl.UInt32())}
-    )
+    cross = cross.with_columns(pers=persistence_expr())
+    cross = squarify(cross, ["time", "jet"])
 
     if smooth is not None:
         cross = cross.rolling(
             pl.col("time"),
             period=smooth,
-            group_by=["jet ID", "spell_of"],
+            group_by="jet",
         ).agg(
             *[
                 pl.col(col).mean()
@@ -1606,16 +1601,16 @@ def spells_from_cross_catd_simple(
         )
 
     if season is not None:
-        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
+        cross = season.join(cross, on="time", how="left")
 
     spells_list: dict[str, DataFrame] = {
-        spell_of: get_spells(
-            cross.filter(pl.col("spell_of") == spell_of),
+        jet: get_spells(
+            cross.filter(pl.col("jet") == jet),
             pl.col("pers") > pl.col("pers").quantile(q),
             minlen=minlen,
             fill_holes=fill_holes,
-        ).with_columns(spell_of=pl.lit(spell_of))
-        for spell_of, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
+        ).with_columns(spell_of=pl.lit(jet))
+        for jet, q in zip(["STJ", "EDJ"], [q_STJ, q_EDJ])
     }
     return spells_list
 
@@ -1625,22 +1620,19 @@ def spells_from_cross_catd(
     base_q: float = 0.5,
     n_STJ: int = 30,
     n_EDJ: int = 30,
-    season: Series | None = None,
+    season: pl.DataFrame | None = None,
     minlen: datetime.timedelta = datetime.timedelta(days=5),
     smooth: datetime.timedelta | None = None,
     fill_holes: datetime.timedelta | int = 0,
 ) -> dict[str, DataFrame]:
-    cross = pers_from_cross_catd(cross)
-    cross = squarify(cross, ["time", "spell_of"])
-    cross = cross.with_columns(
-        **{"jet ID": (pl.col("spell_of") == "EDJ").cast(pl.UInt32())}
-    )
+    cross = cross.with_columns(pers=persistence_expr())
+    cross = squarify(cross, ["time", "jet"])
 
     if smooth is not None:
         cross = cross.rolling(
             pl.col("time"),
             period=smooth,
-            group_by=["jet ID", "spell_of"],
+            group_by="jet",
         ).agg(
             *[
                 pl.col(col).mean()
@@ -1649,46 +1641,47 @@ def spells_from_cross_catd(
         )
 
     if season is not None:
-        cross = season.rename("time").to_frame().join(cross, on="time", how="left")
+        cross = season.join(cross, on="time", how="left")
 
     spells_base = get_spells(
         cross,
         pl.col("pers") > pl.col("pers").quantile(base_q),
-        group_by=["spell_of"],
+        group_by=["jet"],
         minlen=minlen,
         fill_holes=fill_holes,
     )
     stats: DataFrame = spells_base.group_by(
-        ["spell_of", "spell"], maintain_order=True
+        ["jet", "spell"], maintain_order=True
     ).agg(pl.col("len").first(), pl.col("pers").sum())
 
     spells_list: dict[str, DataFrame] = {
-        spell_of: (
-            stats.filter(pl.col("spell_of") == spell_of)
+        jet: (
+            stats.filter(pl.col("jet") == jet)
             .top_k(n, by="pers")
             .rename({"pers": "pers_sum"})
             .join(
-                spells_base.filter(pl.col("spell_of") == spell_of).drop("len", "value"),
-                on=["spell_of", "spell"],
+                spells_base.filter(pl.col("jet") == jet).drop("len", "value"),
+                on=["jet", "spell"],
             )
             .with_columns(spell=pl.col("spell").rle_id())
+            .with_columns(spell_of=pl.lit(jet))
         )
-        for spell_of, n in zip(["STJ", "EDJ"], [n_STJ, n_EDJ])
+        for jet, n in zip(["STJ", "EDJ"], [n_STJ, n_EDJ])
     }
     return spells_list
 
 
 def jet_position_as_da(
-    all_jets_one_df: DataFrame,
+    jets: DataFrame,
 ) -> xr.DataArray:
     """
     Constructs a `DataArray` of dimensions (*index_columns, lat, lon) from jets. The DataArray starts with NaNs everywhere. Then, for every jet point, the DataArray is filled with the jet point's `"is_polar"` value.
     """
     index_columns = get_index_columns(
-        all_jets_one_df, ("member", "time", "cluster", "spell", "relative_index")
+        jets, ("member", "time", "cluster", "spell", "relative_index")
     )
     all_jets_pandas = (
-        all_jets_one_df.group_by([*index_columns, "lon", "lat"], maintain_order=True)
+        jets.group_by([*index_columns, "lon", "lat"], maintain_order=True)
         .agg(pl.col("is_polar").mean())
         .to_pandas()
     )
@@ -1710,9 +1703,9 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
 
-def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, **find_jets_kwargs):
+def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, track_large: bool = True, **find_jets_kwargs):
     """
-    Faster than object-oriented approach for quick testing of the whole pipeline
+    More easily maintainable than object-oriented approach for quick testing of the whole pipeline
 
     Parameters
     ----------
@@ -1767,12 +1760,15 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     phat_jets = to_one_large(jets, int_EDJ_threshold=1.3e8)
     phat_filter = (pl.col("is_polar") < 0.5) | ((pl.col("is_polar") > 0.5) & (pl.col("int") > 1.3e8))
     if not cross_path.is_file():
-        cross = track_jets(phat_jets, catd=True, yearly=True)
-        cross = pers_from_cross_catd(cross)
+        if track_large:
+            cross = track_jets(phat_jets)
+        else:
+            cross = track_jets(jets)
         cross.write_parquet(cross_path)
     else:
         cross = standardize_polars_dtypes(pl.read_parquet(cross_path))
-        cross = pers_from_cross_catd(cross)
+        
+    pers = pers_from_cross(cross)    
     
     if not props_path.is_file():
         props = compute_jet_props(jets)
@@ -1792,15 +1788,14 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         props = standardize_polars_dtypes(pl.read_parquet(props_path))
         
     if not props_final_path.is_file():
+        if not track_large:
+            props = props.join(pers, on=index_columns)
         phat_props = props.filter(phat_filter)
         index_columns = get_index_columns(phat_props)
-        
+
         phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
-        cross = cross.filter(pl.col("jet ID") == pl.col("jet ID_right"))
-        pers = cross.select("time", jet=pl.when(pl.col("jet ID") == 0).then(pl.lit("STJ")).otherwise(pl.lit("EDJ")), pers="pers")
-        idc = index_columns
-        idc.remove("jet ID")
-        phat_props = phat_props.join(pers[*index_columns, "pers"], on=[*idc, "jet"])
+        if track_large:
+            phat_props = phat_props.join(pers, on=index_columns)
         phat_props.write_parquet(props_final_path)
     else:
         phat_props = standardize_polars_dtypes(pl.read_parquet(props_final_path))

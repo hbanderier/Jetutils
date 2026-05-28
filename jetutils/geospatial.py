@@ -1416,6 +1416,7 @@ def add_normals_meters(
             "relative_index",
             "relative_time",
             "jet ID",
+            "jet",
             "sample_index",
             "inside_index",
         ],
@@ -1511,6 +1512,7 @@ def add_normals(
             "relative_index",
             "relative_time",
             "jet ID",
+            "jet",
             "sample_index",
             "inside_index",
         ),
@@ -1584,6 +1586,7 @@ def gather_normal_da_jets(
             "relative_index",
             "relative_time",
             "jet ID",
+            "jet",
             "sample_index",
             "inside_index",
         ),
@@ -1714,7 +1717,7 @@ def expand_jets(jets: DataFrame, max_t: float, dt: float) -> DataFrame:
 
     TODO: redo using https://www.movable-type.co.uk/scripts/latlong.html
     """
-    index_columns = get_index_columns(jets, ["member", "time", "jet ID"])
+    index_columns = get_index_columns(jets, ["member", "time", "jet ID", "jet"])
     jets = jets.sort(*index_columns, "lon", "lat")
     angle = pl.arctan2(pl.col("v"), pl.col("u")).interpolate("linear")
     tangent_n = pl.linear_space(0, max_t, int(max_t / dt) + 1)
@@ -1929,6 +1932,7 @@ def create_jet_relative_dataset(
             "inside_index"
         )
     )
+    which_jet = "jet" if "jet" in jets.columns else "jet ID"
     varnames = [da.name + "_interp" for da in das]
     if len(das) == 2 and align_2d is not None:
         varnames.append(f"{align_2d}_interp")
@@ -1963,7 +1967,7 @@ def create_jet_relative_dataset(
             )
             jets_with_interp = (
                 jets_with_interp
-                .join(bias_correction_, on=[*index_columns, "jet ID", "index"])
+                .join(bias_correction_, on=[*index_columns, which_jet, "index"])
                 .with_columns(n=pl.col("n") - pl.col("n_right"))
                 .filter(pl.col("n").abs() <= half_length)
                 .with_columns(side=pl.col("n").sign().cast(pl.Int32()))
@@ -1983,29 +1987,31 @@ def create_jet_relative_dataset(
     return pl.concat(to_average)
 
 
-def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str) -> pl.DataFrame:
+def compute_relative_clim(jets: pl.DataFrame | pl.LazyFrame, varname: str) -> pl.DataFrame:
+    which_jet = "jet" if "jet" in jets.columns else "jet ID" 
     return (
-        df.group_by(
+        jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
             "norm_index",
             "n",
-            "jet ID",
+            which_jet,
         )
         .agg(pl.col(f"{varname}_interp").mean())
-        .sort("jet ID", "dayofyear", "norm_index", "n")
+        .sort(which_jet, "dayofyear", "norm_index", "n")
     )
 
 
-def compute_relative_std(df: pl.DataFrame | pl.LazyFrame, varname: str):
+def compute_relative_std(jets: pl.DataFrame | pl.LazyFrame, varname: str):
+    which_jet = "jet" if "jet" in jets.columns else "jet ID" 
     return (
-        df.group_by(
+        jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
             "norm_index",
             "n",
-            "jet ID",
+            which_jet,
         )
         .agg(pl.col(f"{varname}_interp").std())
-        .sort("jet ID", "dayofyear", "norm_index", "n")
+        .sort(which_jet, "dayofyear", "norm_index", "n")
     )
 
 
@@ -2014,36 +2020,38 @@ def compute_relative_sm(
 ):
     if season_doy is None:
         season_doy = JJADOYS
+    which_jet = "jet" if "jet" in clim.columns else "jet ID"
     return clim.with_columns(
         **{
             f"{varname}_interp": pl.col(f"{varname}_interp")
             .filter(pl.col("dayofyear").is_in(season_doy.implode()))
             .mean()
-            .over("jet ID", "n", "norm_index")
+            .over(which_jet, "n", "norm_index")
         }
     )
 
 
 def compute_relative_anom(
-    df: pl.DataFrame | pl.LazyFrame,
+    jets: pl.DataFrame | pl.LazyFrame,
     varname: str,
     clim: pl.DataFrame | pl.LazyFrame,
     clim_std: pl.DataFrame | None = None,
 ):
+    which_jet = "jet" if "jet" in clim.columns else "jet ID"
     varname_ = f"{varname}_interp"
     if clim_std is None:
         return (
-            df.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-            .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
+            jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+            .join(clim, on=[which_jet, "dayofyear", "norm_index", "n"])
             .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
             .drop(f"{varname_}_right", "dayofyear")
         )
     return (
-        df.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-        .join(clim, on=["jet ID", "dayofyear", "norm_index", "n"])
+        jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
+        .join(clim, on=[which_jet, "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right")
-        .join(clim_std, on=["jet ID", "dayofyear", "norm_index", "n"])
+        .join(clim_std, on=[which_jet, "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) / pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right", "dayofyear")
     )

@@ -1,12 +1,12 @@
 # coding: utf-8
-from jetutils.definitions import squarify
+from matplotlib.axes import Axes
 from itertools import product
+from functools import partial
 from typing import Mapping, Sequence, Tuple, Literal, Iterable, Callable
-from math import log10, floor
+from math import log10, floor, ceil
 
-import os
 import numpy as np
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, chi2, norm as normal_dist, t
 from scipy.interpolate import LinearNDInterpolator
 import xarray as xr
 from xarray import DataArray
@@ -35,7 +35,7 @@ from matplotlib.colors import (
     hsv_to_rgb,
 )
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import MaxNLocator, FormatStrFormatter, ScalarFormatter
+from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 from matplotlib.dates import MonthLocator, DateFormatter
 import colormaps
 import cartopy.crs as ccrs
@@ -49,19 +49,17 @@ from .definitions import (
     UNITS,
     SEASONS,
     JJADOYS,
-    DEFAULT_VALUES,
     FACTORS,
     maybe_circular_mean,
     get_index_columns,
     infer_direction,
     polars_to_xarray,
-    xarray_to_polars,
     squarify,
 )
-from .jet_finding import gather_normal_da_jets
+from .geospatial import central_diff, compute_relative_anom, compute_relative_clim, compute_relative_sm
 from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
 from .data import periodic_rolling_pl
-from .anyspell import extend_spells
+from .anyspell import mask_from_spells_pl
 import jetutils
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
@@ -483,7 +481,7 @@ class Clusterplot:
         if numbering:
             plt.draw()
             for i, ax in enumerate(self.axes):
-                if isinstance(numbering, Callable):
+                if isinstance(numbering, Callable[[int], int]):
                     j = str(numbering(i))
                 elif isinstance(numbering, Sequence):
                     j = str(numbering[i])
@@ -771,7 +769,7 @@ class Clusterplot:
         for ax, signif in zip(self.axes, significances):
             if invert:
                 signif = ~signif
-            cs = ax.pcolor(
+            ax.pcolor(
                 lon,
                 lat,
                 da[0].where(signif),
@@ -972,7 +970,6 @@ def plot_trends(
         bootstrap_len=bootstrap_len,
         n_bootstraps=n_bootstraps,
     )
-    ncat = props_as_df["jet"].n_unique()
 
     for letter, varname, ax in zip(ascii_lowercase, data_vars, axes):
         dji = varname == "double_jet_index"
@@ -1375,6 +1372,237 @@ def plot_dayofyear_trends(
     return fig
 
 
+def func_mean(col):
+    if ":" in col and col.split(":")[-1] == "var":
+        return pl.col(col.split(":")[0]).var()
+    return pl.col(col).mean()
+
+
+def mean_confidence(col: pl.Series, q: float) -> pl.Series:
+    n = (col.is_not_null() & col.is_not_nan()).sum()
+    mu = col.mean()
+    s_sq = col.var()
+    if s_sq is None:
+        return None
+    s = np.sqrt(s_sq)
+    sign = 1 - 2 * int(q < 0.5)
+    q = q if q < 0.5 else 1 - q
+    if n > 10:
+        to_ret = mu + sign * np.abs(normal_dist.ppf(q=q)) / np.sqrt(n) * s
+    else:
+        to_ret = mu + sign * s / np.sqrt(n) * t.ppf(q=1 - q, df=n - 1)
+    to_ret = np.clip(to_ret, mu - 5 * s, mu + 5 * s)
+    return to_ret
+
+
+def var_confidence(col: pl.Series, q) -> float:
+    n = (col.is_not_null() & col.is_not_nan()).sum()
+    s_sq = col.var()
+    if s_sq is None:
+        return None
+    sign = 1 - 2 * int(q < 0.5)
+    if n > 50:
+        q = q if q < 0.5 else 1 - q
+        to_ret = s_sq + sign * np.sqrt(2 / n) * np.abs(normal_dist.ppf(q)) * s_sq
+    else:
+        to_ret = (n - 1) * s_sq / chi2.ppf(1 - q, df=n - 1)
+    return np.clip(to_ret, 0, s_sq * 2)
+
+
+def func_q(col, q):
+    if ":" in col and col.split(":")[-1] == "var":
+        return pl.col(col.split(":")[0]).map_batches(
+            partial(var_confidence, q=q), return_dtype=pl.Float64(), returns_scalar=True
+        )
+    return pl.col(col).map_batches(
+        partial(mean_confidence, q=q), return_dtype=pl.Float64(), returns_scalar=True
+    )
+
+
+def plot_relative_time(
+    props: pl.DataFrame,
+    spells: pl.DataFrame,
+    data_vars: list[str],
+    n_figs: int = 1,
+    n_col: int = 2,
+    n_row: int | None = None,
+    col_width: float = 1.5,
+    row_height: float = 2.,
+    q_mean: float = 1e-15,
+    show_alive: bool = False,
+) -> Figure:
+    spell_ofs = spells["spell_of"].unique().sort(descending=True).to_list()
+    if n_row is None:
+        n_row = int(ceil(len(data_vars) / n_col))
+    total_width = col_width * n_col * n_figs
+    total_height = row_height * n_row
+    bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
+    subfigs: Sequence[Figure] = bigfig.subfigures(1, n_figs)
+    for (spell_of, fig) in zip(spell_ofs, subfigs):
+        spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
+        props_masked = mask_from_spells_pl(
+            spells_from_jet, props, time_before=datetime.timedelta(days=4)
+        )
+        props_masked = props_masked.filter(
+            pl.col("spell").n_unique().over("relative_index") > 12
+        )
+        aggs = {col: func_mean(col) for col in data_vars}
+        aggs = aggs | {"alive": pl.col("time").len()}
+        mean_ps = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
+            **aggs
+        )
+        aggs_ = {col: func_q(col, 0.95) for col in data_vars}
+        q25 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
+            **aggs_
+        )
+        aggs_ = {col: func_q(col, 0.05) for col in data_vars}
+        q75 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
+            **aggs_
+        )
+        axes = fig.subplots(n_row, n_col, sharex="all")
+        axes: Sequence[Axes] = axes.ravel()
+        means = props.group_by("jet", maintain_order=True).agg(**aggs)
+        if show_alive:
+            alive_spells = (
+                props_masked.group_by("relative_index")
+                .agg(pl.col("spell").n_unique())
+                .sort("relative_index")["spell"]
+                .to_numpy()
+            )
+        for j, jet in enumerate(["STJ", "EDJ"]):
+            to_plot = mean_ps.filter(pl.col("jet") == jet)
+            q25_ = q25.filter(pl.col("jet") == jet)
+            q75_ = q75.filter(pl.col("jet") == jet)
+            x = to_plot["relative_index"].unique().to_numpy() / 4
+            for ax, data_var, letter in zip(axes, data_vars, ascii_lowercase):
+                factor = 1e9 if data_var in ["int_over_europe", "int"] else 1
+                factor = 1e5 if data_var == "width" else factor
+                ax.plot(x, to_plot[data_var] / factor, color=COLORS[2 - j], lw=2.5)
+                ax.fill_between(
+                    x,
+                    q25_[data_var] / factor,
+                    q75_[data_var] / factor,
+                    color=COLORS[2 - j],
+                    alpha=0.4,
+                )
+                mean = means.filter(pl.col("jet") == jet)[data_var].item() / factor
+                ax.plot([x[0], x[-1]], [mean, mean], color=COLORS[2 - j], ls="dashed", lw=2)
+                if j == 0:
+                    factor_str = (
+                        "" if factor == 1 else rf"$10^{int(np.log10(factor))} \times $"
+                    )
+                    ax.set_title(
+                        rf"{letter}) {PRETTIER_VARNAME.get(data_var, data_var)} [{factor_str}{UNITS.get(data_var, '~')}]"
+                    )
+                ax.yaxis.set_major_locator(MaxNLocator(4, integer=True))
+        for i, ax in enumerate(axes):
+            ax.axvline(0, zorder=1, color="black", lw=2)
+            if i > 11:
+                ax.set_xlabel("Relative time around onset [days]", color="black")
+            if show_alive:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                ybounds = [
+                    ylim[0] - 0.05 * (ylim[1] - ylim[0]),
+                    ylim[0] + 0.05 * (ylim[1] - ylim[0]),
+                ]
+                ax.pcolormesh(
+                    x,
+                    ybounds,
+                    alive_spells[None, :-1],
+                    zorder=-10,
+                    cmap=colormaps.greys,
+                    alpha=0.7,
+                    vmin=0,
+                )
+                ax.set_xlim(*xlim)
+                ax.set_ylim(*ylim)
+        fig.set_constrained_layout(True)
+        fig.suptitle(
+            f"Persistent episodes of the {spell_of[:3]}. {props_masked['spell'].n_unique()} spells"
+        )    
+    return bigfig
+
+
+def create_relative_plot(varname: str, basepath: Path, jet: "str", spells: pl.DataFrame, season: pl.Series, n_bootstraps: int = 40, factor: float = 1.):
+    season_doy = season.dt.ordinal_day().unique()
+    varname, mode = varname.split(":")
+    varname_no_number = varname.rstrip("0123456789")
+    varname_ = f"{varname}_interp"
+    grad = mode[-4:] == "grad"
+
+    df = pl.scan_parquet(basepath.joinpath(f"{varname}_relative.parquet"))
+    if varname_ not in df.collect_schema().names():
+        print(varname_)
+        if f"{varname_no_number}_interp" in df.collect_schema().names():
+            df = df.rename({f"{varname_no_number}_interp": varname_})
+        else:
+            df = df.rename({"vort_interp": varname_})
+    grad_expr = (
+        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
+        * 1e6
+    ).abs()
+    if grad:
+        df = df.with_columns(
+            **{varname_: grad_expr.over("norm_index", "time", "jet")}
+        )
+    clim = compute_relative_clim(df, varname)
+    if mode in ["clim", "clim_grad"]:
+        to_plot = compute_relative_sm(clim, varname, season_doy)
+        to_plot = to_plot.filter(pl.col("dayofyear") == 1, pl.col("jet") == jet)
+        to_plot = to_plot.drop("jet", "dayofyear")
+        pvals = None
+    elif mode in ["anom", "anom_grad"]:
+        winsize = 31
+        halfwinsize = int(
+            winsize / 2
+        )  # TODO: make data.periodic_rolling_pl work with lazyframes. UPDATE: looks really hard
+        clim = clim.rolling(
+            pl.col("dayofyear").cast(pl.UInt32()),
+            period=f"{winsize}i",
+            offset=f"-{halfwinsize + 1}i",
+            group_by=["jet", "norm_index", "n"],
+        ).agg(pl.col(varname_).mean())
+        to_plot = compute_relative_anom(df, varname, clim)
+        ts_bootstrapped = create_bootstrapped_times(spells, season, n_bootstraps).lazy()
+        to_plot = (
+            ts_bootstrapped.join(to_plot, on="time")
+            .filter(pl.col("jet") == jet)
+            .sort("sample_index", "spell", "inside_index", "norm_index", "n")
+        )
+        to_plot = to_plot.group_by(
+            "sample_index", "norm_index", "n", maintain_order=True
+        ).agg(pl.col(varname_).mean())
+        pvals = (
+            to_plot.group_by("norm_index", "n", maintain_order=True)
+            .agg((pl.col(varname_).rank().last() - 1) / n_bootstraps)
+            .sort("norm_index", "n")
+        )
+        pvals = pvals.with_columns(
+            **{varname_: 2 * pl.min_horizontal(pl.col(varname_), 1 - pl.col(varname_))}
+        )
+        to_plot = (
+            to_plot.filter(pl.col("sample_index") == n_bootstraps)
+            .drop("sample_index")
+            .sort("norm_index", "n")
+        )
+    else:
+        to_plot = spells.lazy().join(df.filter(pl.col("jet") == jet), on="time")
+        to_plot = (
+            to_plot.group_by("norm_index", "n")
+            .agg(pl.col(varname_).mean())
+            .sort("norm_index", "n")
+        )
+        pvals = None
+    to_plot = to_plot.with_columns(pl.col(varname_) * factor)
+    to_plot = to_plot.collect()
+    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
+    if pvals is not None:
+        pvals = pvals.collect()
+        pvals = polars_to_xarray(pvals, ["norm_index", "n"]).T
+    return to_plot, pvals
+
+
 def plot_interp(
     variables: dict, 
     prefix: str, 
@@ -1388,7 +1616,7 @@ def plot_interp(
     transpose: bool = False,
     bias_correction: bool = False,
     handle_pvals: Literal["hide", "hatch"] = "hide"
-) -> plt.Figure:
+) -> Figure:
     suffix = "_bc" if bias_correction else ""
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
     if transpose:
@@ -1483,7 +1711,7 @@ def plot_interp(
                 cmap=cmap,
                 norm=norm,
             )
-        ax.plot([-0.5, 1.5], [0, 0], lw=4, color=COLORS[2 - int(is_polar)])
+        ax.plot([-0.5, 1.5], [0, 0], lw=2, color=COLORS[2 - int(is_polar)])
         ax.set_xlim(0, 1)
         if factor == 1:
             factor_str = ""

@@ -638,6 +638,7 @@ default_index_columns = (
     "time",
     "cluster",
     "jet ID",
+    "jet",
     "spell",
     "relative_index",
     "relative_time",
@@ -921,8 +922,6 @@ def last_elements(arr: np.ndarray, n_elements: int, sort: bool = False) -> np.nd
     if sort:
         return idxs[np.argsort(arr[idxs])]
     return idxs
-
-
 
 
 def iterate_over_year_maybe_member(
