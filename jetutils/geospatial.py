@@ -1983,7 +1983,7 @@ def create_jet_relative_dataset(
     return pl.concat(to_average)
 
 
-def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str):
+def compute_relative_clim(df: pl.DataFrame | pl.LazyFrame, varname: str) -> pl.DataFrame:
     return (
         df.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),

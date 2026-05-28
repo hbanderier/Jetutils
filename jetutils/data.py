@@ -1446,24 +1446,25 @@ def periodic_rolling_pl(
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
     if other_columns is None:
-        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "dummy", "start", "level")) # needs a better solution!
+        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "n", "dummy", "start", "level")) # needs a better solution!
     descending = [False, *[col == "jet" for col in other_columns]]
-    len_ = [df[col].unique().len() for col in other_columns]
+    len_ = [df.select(col).n_unique() for col in other_columns]
     len_ = int(np.prod(len_))
-    min_doy = df[dim].min()
-    max_doy = df[dim].max()
+    min_doy = df.select(dim).min().item()
+    max_doy = df.select(dim).max().item()
     df = df.sort([dim, *other_columns], descending=descending)
-    df = pl.concat(
-        [
-            df.tail(halfwinsize * len_).with_columns(
-                pl.col(dim) - max_doy + min_doy - 1
-            ),
-            df,
-            df.head(halfwinsize * len_).with_columns(
-                pl.col(dim) + max_doy - min_doy + 1
-            ),
-        ]
-    )
+    if min_doy == 1 and max_doy >= 365:
+        df = pl.concat(
+            [
+                df.tail(halfwinsize * len_).with_columns(
+                    pl.col(dim) - max_doy + min_doy - 1
+                ),
+                df,
+                df.head(halfwinsize * len_).with_columns(
+                    pl.col(dim) + max_doy - min_doy + 1
+                ),
+            ]
+        )
     df = df.rolling(
         pl.col(dim),
         period=f"{winsize}i",
@@ -1471,7 +1472,8 @@ def periodic_rolling_pl(
         group_by=other_columns,
     ).agg(*[pl.col(col).mean() for col in data_vars])
     df = df.sort([dim, *other_columns], descending=descending)
-    df = df.slice(halfwinsize * len_, (max_doy - min_doy + 1) * len_)
+    if min_doy == 1 and max_doy >= 365:
+        df = df.slice(halfwinsize * len_, (max_doy - min_doy + 1) * len_)
     return df
 
 

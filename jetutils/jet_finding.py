@@ -2,6 +2,7 @@
 """
 This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
 """
+from cmath import polar
 import datetime
 from itertools import product
 from pathlib import Path
@@ -1296,7 +1297,7 @@ def track_jets_(
         .drop_nulls("lon_overlap")
         .sort(*typical_group_by)
     )
-    return cross
+    return standardize_polars_dtypes(cross)
 
 
 def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False, catd: bool = False) -> DataFrame:
@@ -1355,7 +1356,7 @@ def connected_from_cross(
 ) -> DataFrame:
     all_jets_one_df = all_jets_one_df.cast({"time": pl.Datetime("ms")})
     if cross is None:
-        cross = track_jets(all_jets_one_df)
+        cross = track_jets(all_jets_one_df, catd=False)
     cross = cross.filter(
         pl.col("dist") < dist_thresh,
         pl.col("lon_overlap") > overlap_thresh,
@@ -1458,16 +1459,20 @@ def connected_from_cross(
 def persistence_expr() -> Expr:
     return (
         pl.col("lon_overlap")
-        / pl.col("dist").replace(0, RADIUS * 0.1)
-        * pl.col("time")
-        .diff()
-        .mode()
-        .first()
-        .cast(pl.Duration("ms"))
-        .cast(pl.Float64())
-        / 1000
+        / pl.col("dist")
+        * (
+            pl.col("time").unique()
+            .diff()
+            .mode()
+            .first()
+            .cast(pl.Duration("ms"))
+            .cast(pl.Float32())
+            / 1000
+        )
+        .replace([float("inf"), float("nan")], 0.)
+        .cast(pl.Float32())
     )
-
+        
 
 def spells_from_cross(
     all_jets_one_df: DataFrame,
@@ -1475,8 +1480,10 @@ def spells_from_cross(
     dist_thresh: float = 2e5,
     overlap_thresh: float = 0.5,
     dis_polar_thresh: float | None = 1.0,
-    q_STJ: float = 0.99,
-    q_EDJ: float = 0.95,
+    q_STJ: float | None = None,
+    q_EDJ: float | None = None,
+    n_STJ: int | None = None,
+    n_EDJ: int | None = None,
     season: Series | None = None,
     subtropical_cutoff: float = 0.4,
     polar_cutoff: float = 0.6,
@@ -1501,39 +1508,49 @@ def spells_from_cross(
         .agg(
             pl.col("time"),
             pl.col("jet ID"),
-            pl.col("len").first(),
             pl.col("lon_overlap"),
             pl.col("pers"),
             pl.col("dis_polar"),
             pl.col("is_polar"),
+            len=pl.len(),
             mean_is_polar=pl.col("is_polar").mean(),
             pers_sum=pl.col("pers").sum(),
         )
     )
-
+    
     spells_list = {}
-    spells_list["STJ"] = (
-        spells.filter(pl.col("mean_is_polar") < subtropical_cutoff)
-        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_STJ))
-        .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
-        .with_columns(
-            spell_of=pl.lit("STJ"),
-            spell2=pl.col("spell").rle_id(),
-            relative_index=pl.col("time").rle_id().over("spell"),
+    filters = {
+        "STJ": pl.col("mean_is_polar") < subtropical_cutoff,
+        "EDJ": pl.col("mean_is_polar") > polar_cutoff,
+    }
+    for jet, q, n in zip(
+        ["STJ", "EDJ"],
+        [q_STJ, q_EDJ],
+        [n_STJ, n_EDJ],
+    ):
+        spell =  spells.filter(filters[jet])
+        if n is not None:
+            other_filter = spell.select(pl.col("spell").top_k_by("len", 30))
+            spell = other_filter.join(spell, on="spell")
+        elif q is not None:
+            filter_ = pl.col("pers_sum") > pl.col("pers_sum").quantile(q)
+            spell = spell.filter(filter_)
+        else:
+            raise ValueError
+        spell = (
+            spell
+            .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
+            .with_columns(
+                spell_of=pl.lit(jet),
+                spell_orig=pl.col("spell"),
+                spell=pl.col("spell").rle_id(),
+                relative_index=pl.col("time").rle_id().over("spell").cast(pl.Int32()),
+                relative_time=pl.col("time") - pl.col("time").first().over("spell")
+            )
+            .drop("is_polar")
+            
         )
-        .drop("is_polar")
-    )
-    spells_list["EDJ"] = (
-        spells.filter(pl.col("mean_is_polar") > polar_cutoff)
-        .filter(pl.col("pers_sum") > pl.col("pers_sum").quantile(q_EDJ))
-        .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
-        .with_columns(
-            spell_of=pl.lit("EDJ"),
-            spell2=pl.col("spell").rle_id(),
-            relative_index=pl.col("time").rle_id().over("spell"),
-        )
-        .drop("is_polar")
-    )
+        spells_list[jet] = spell
     return spells_list
 
 

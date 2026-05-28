@@ -1059,7 +1059,7 @@ def plot_seasonal(
         sharex="all",
     )
     axes = axes.flatten()
-    jets = props_as_df["jet"].unique().to_numpy()
+    jets = props_as_df["jet"].unique().sort(descending=True).to_numpy()
     njets = len(jets)
     gb = props_as_df.group_by(
         [pl.col("time").dt.ordinal_day().alias("dayofyear"), pl.col("jet")],
@@ -1143,7 +1143,7 @@ def plot_seasonal(
         wherex = np.isin(x, JJADOYS)
         ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
-    axes.ravel()[0].legend().set_zorder(102)
+    axes.ravel()[3].legend().set_zorder(102)
     if save:
         if folder is None:
             folder = "jet_props_misc"
