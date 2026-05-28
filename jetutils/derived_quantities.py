@@ -243,7 +243,7 @@ def compute_absolute_vorticity(ds: xr.Dataset):
     return this_expand_dims(f[:, None]) + zeta
 
 
-def compute_2d_conv(ds: xr.Dataset, u: str | None = None, v: str | None = None):
+def compute_2d_div(ds: xr.Dataset, u: str | None = None, v: str | None = None):
     dx, dy, axis_x, axis_y, this_expand_dims, coslat = setup_derivatives(ds)
     
     if u is not None:
