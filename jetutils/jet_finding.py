@@ -1786,6 +1786,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         props.write_parquet(props_path)
     else:
         props = standardize_polars_dtypes(pl.read_parquet(props_path))
+        index_columns = get_index_columns(props)
         
     if not props_final_path.is_file():
         if not track_large:
