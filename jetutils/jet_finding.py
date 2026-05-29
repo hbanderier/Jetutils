@@ -1791,9 +1791,9 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         if not track_large:
             props = props.join(pers, on=index_columns)
         phat_props = props.filter(phat_filter)
-        index_columns = get_index_columns(phat_props)
 
         phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
+        index_columns = get_index_columns(phat_props)
         if track_large:
             phat_props = phat_props.join(pers, on=index_columns)
         phat_props.write_parquet(props_final_path)
