@@ -1988,7 +1988,7 @@ def create_jet_relative_dataset(
 
 
 def compute_relative_clim(jets: pl.DataFrame | pl.LazyFrame, varname: str) -> pl.DataFrame:
-    which_jet = "jet" if "jet" in jets.columns else "jet ID" 
+    which_jet = "jet" if "jet" in jets.collect_schema().names() else "jet ID" 
     return (
         jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
@@ -2002,7 +2002,7 @@ def compute_relative_clim(jets: pl.DataFrame | pl.LazyFrame, varname: str) -> pl
 
 
 def compute_relative_std(jets: pl.DataFrame | pl.LazyFrame, varname: str):
-    which_jet = "jet" if "jet" in jets.columns else "jet ID" 
+    which_jet = "jet" if "jet" in jets.collect_schema().names() else "jet ID" 
     return (
         jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
@@ -2020,7 +2020,7 @@ def compute_relative_sm(
 ):
     if season_doy is None:
         season_doy = JJADOYS
-    which_jet = "jet" if "jet" in clim.columns else "jet ID"
+    which_jet = "jet" if "jet" in clim.collect_schema().names() else "jet ID"
     return clim.with_columns(
         **{
             f"{varname}_interp": pl.col(f"{varname}_interp")
@@ -2037,7 +2037,7 @@ def compute_relative_anom(
     clim: pl.DataFrame | pl.LazyFrame,
     clim_std: pl.DataFrame | None = None,
 ):
-    which_jet = "jet" if "jet" in clim.columns else "jet ID"
+    which_jet = "jet" if "jet" in clim.collect_schema().names() else "jet ID"
     varname_ = f"{varname}_interp"
     if clim_std is None:
         return (

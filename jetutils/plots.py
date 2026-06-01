@@ -6,7 +6,7 @@ from typing import Mapping, Sequence, Tuple, Literal, Iterable, Callable
 from math import log10, floor, ceil
 
 import numpy as np
-from scipy.stats import gaussian_kde, chi2, norm as normal_dist, t
+from scipy.stats import gaussian_kde, chi2, norm as normal_dist, t, ttest_ind_from_stats
 from scipy.interpolate import LinearNDInterpolator
 import xarray as xr
 from xarray import DataArray
@@ -47,6 +47,7 @@ from .definitions import (
     FIGURES,
     PRETTIER_VARNAME,
     UNITS,
+    FACTORS_UNITS,
     SEASONS,
     JJADOYS,
     FACTORS,
@@ -56,7 +57,13 @@ from .definitions import (
     polars_to_xarray,
     squarify,
 )
-from .geospatial import central_diff, compute_relative_anom, compute_relative_clim, compute_relative_sm
+from .geospatial import (
+    central_diff,
+    compute_relative_anom,
+    compute_relative_clim,
+    compute_relative_sm,
+    compute_relative_std,
+)
 from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
 from .data import periodic_rolling_pl
 from .anyspell import mask_from_spells_pl
@@ -248,10 +255,10 @@ def figtitle(
     maxlat: float,
     season: str,
 ) -> str:
-    title = f'${np.abs(minlon):.1f}°$ {"W" if minlon < 0 else "E"} - '
-    title += f'${np.abs(maxlon):.1f}°$ {"W" if maxlon < 0 else "E"}, '
-    title += f'${np.abs(minlat):.1f}°$ {"S" if minlat < 0 else "N"} - '
-    title += f'${np.abs(maxlat):.1f}°$ {"S" if maxlat < 0 else "N"} '
+    title = f"${np.abs(minlon):.1f}°$ {'W' if minlon < 0 else 'E'} - "
+    title += f"${np.abs(maxlon):.1f}°$ {'W' if maxlon < 0 else 'E'}, "
+    title += f"${np.abs(minlat):.1f}°$ {'S' if minlat < 0 else 'N'} - "
+    title += f"${np.abs(maxlat):.1f}°$ {'S' if maxlat < 0 else 'N'} "
     title += season
     return title
 
@@ -310,7 +317,10 @@ def make_transparent(
 
 
 def create_levels(
-    to_plot: list, levels: int | Sequence | None = None, q: float = 0.99, direction: int | None = None
+    to_plot: list,
+    levels: int | Sequence | None = None,
+    q: float = 0.99,
+    direction: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
         return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
@@ -454,7 +464,9 @@ class Clusterplot:
             if fig is not None:
                 self.fig = fig
             else:
-                self.fig = plt.figure(figsize=(row_height * self.ncol, row_height * self.ncol * ratio))
+                self.fig = plt.figure(
+                    figsize=(row_height * self.ncol, row_height * self.ncol * ratio)
+                )
             if isinstance(self.fig, Figure):
                 self.fig.set_size_inches(
                     row_height * self.ncol, row_height * self.ncol * ratio
@@ -481,7 +493,7 @@ class Clusterplot:
         if numbering:
             plt.draw()
             for i, ax in enumerate(self.axes):
-                if isinstance(numbering, Callable[[int], int]):
+                if isinstance(numbering, Callable):
                     j = str(numbering(i))
                 elif isinstance(numbering, Sequence):
                     j = str(numbering[i])
@@ -565,7 +577,9 @@ class Clusterplot:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)  # d r y too much
         lon = lon + self.central_longitude
 
-        levelsc, levelscf, _, direction = create_levels(to_plot, levels, q=q, direction=direction)
+        levelsc, levelscf, _, direction = create_levels(
+            to_plot, levels, q=q, direction=direction
+        )
 
         if direction == 0 and linestyles is None:
             linestyles = ["dashed", "solid"]
@@ -621,7 +635,9 @@ class Clusterplot:
         direction: int | None = None,
         **kwargs,
     ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
-        levelsc, levelscf, extend, direction = create_levels(to_plot, levels, q=q, direction=direction)
+        levelsc, levelscf, extend, direction = create_levels(
+            to_plot, levels, q=q, direction=direction
+        )
 
         if isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
@@ -1021,17 +1037,22 @@ def plot_trends(
                 label=label,
             )
             # ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
-            # ax.ticklabel_format(style="sci", axis="y", scilimits=(0,2))  
+            # ax.ticklabel_format(style="sci", axis="y", scilimits=(0,2))
             if dji:
                 break
-        ax.legend(ncol=1, borderpad=0.2, labelspacing=0.3, handlelength=1.5, handletextpad=0.6, borderaxespad=0.2)
+        ax.legend(
+            ncol=1,
+            borderpad=0.2,
+            labelspacing=0.3,
+            handlelength=1.5,
+            handletextpad=0.6,
+            borderaxespad=0.2,
+        )
     if save:
         if folder is None:
             subtitle = "_std_" if std else "_"
             folder = f"jet_props{subtitle}trends"
-        fig.savefig(
-            f"{FIGURES}/{folder}/trends_{season}{suffix}.pdf"
-        )
+        fig.savefig(f"{FIGURES}/{folder}/trends_{season}{suffix}.pdf")
     return fig
 
 
@@ -1127,7 +1148,12 @@ def plot_seasonal(
         for i in range(njets):
             color = "black" if dji else COLORS[color_order[i]]
             ax.fill_between(
-                x, qs[:, i, 0] / factor, qs[:, i, 1] / factor, color=color, alpha=0.2, zorder=-10
+                x,
+                qs[:, i, 0] / factor,
+                qs[:, i, 1] / factor,
+                color=color,
+                alpha=0.2,
+                zorder=-10,
             )
             ax.plot(x, median[:, i] / factor, lw=2, color=color, ls="dotted", zorder=0)
             ax.plot(x, ys[:, i] / factor, lw=3, color=color, label=jets[i], zorder=10)
@@ -1244,7 +1270,7 @@ def plot_dayofyear_trends(
 
     sample_indices = rng.choice(
         n_years - bootstrap_len - 1, size=(n_bootstraps, n_years // bootstrap_len)
-        )
+    )
     sample_indices = sample_indices[..., None] + np.arange(bootstrap_len)[None, None, :]
     sample_indices = sample_indices.reshape(n_bootstraps, num_blocks * bootstrap_len)
     sample_indices = np.append(sample_indices, np.arange(n_years)[None, :], axis=0)
@@ -1262,18 +1288,30 @@ def plot_dayofyear_trends(
 
     period = f"{win_size}d"
     offset = f"{-win_size // 2}d"
+
     def target(col):
-        return pl.col(col).cast(pl.Float32()).replace((float("-inf"), float("inf"), float("nan")), None).cast(pl.Float32())
+        return (
+            pl.col(col)
+            .cast(pl.Float32())
+            .replace((float("-inf"), float("inf"), float("nan")), None)
+            .cast(pl.Float32())
+        )
+
     if std:
         aggs = {data_var: target(data_var).std() for data_var in data_vars}
     else:
         aggs = {data_var: target(data_var).mean() for data_var in data_vars}
     props_as_df_smoothed = (
-        props_as_df.rolling(pl.col("time"), period=period, offset=offset, group_by=["jet"])
+        props_as_df.rolling(
+            pl.col("time"), period=period, offset=offset, group_by=["jet"]
+        )
         .agg(**aggs)
         .sort("time", "jet")
         .filter(pl.col("time").dt.ordinal_day() <= 365)
-        .with_columns(hourofyear=pl.col("time").dt.ordinal_day() * 24 + pl.col("time").dt.hour(), year=pl.col("time").dt.year())
+        .with_columns(
+            hourofyear=pl.col("time").dt.ordinal_day() * 24 + pl.col("time").dt.hour(),
+            year=pl.col("time").dt.year(),
+        )
     )
     ts_bootstrapped = (
         props_as_df_smoothed.group_by(
@@ -1281,7 +1319,10 @@ def plot_dayofyear_trends(
             maintain_order=True,
         )
         .agg(
-            **{data_var: pl.col(data_var).gather(sample_indices) for data_var in data_vars},
+            **{
+                data_var: pl.col(data_var).gather(sample_indices)
+                for data_var in data_vars
+            },
             year=pl.col("year").gather(sample_indices),
             inside_index=pl.int_range(len(sample_indices)) % n_years,
             sample_index=pl.int_range(len(sample_indices)) // n_years,
@@ -1292,14 +1333,14 @@ def plot_dayofyear_trends(
         ["hourofyear", "sample_index", "jet"], maintain_order=True
     ).agg(
         **{
-            data_var: 
-            pds.lin_reg_report(
+            data_var: pds.lin_reg_report(
                 pl.col("inside_index"),
                 target=pl.col(data_var),
                 add_bias=True,
-                null_policy="skip"
+                null_policy="skip",
             )
-            .struct.field("beta").first()
+            .struct.field("beta")
+            .first()
             for data_var in data_vars
         }
     )
@@ -1308,15 +1349,20 @@ def plot_dayofyear_trends(
             data_var: pl.col(data_var)
             .head(n_bootstraps)
             .sort()
-            .search_sorted(pl.col(data_var).get(-1)).item()
+            .search_sorted(pl.col(data_var).get(-1))
+            .item()
             / n_bootstraps
             for data_var in data_vars
         }
     )
     ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
-    
+
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), constrained_layout=True, sharex="all"
+        nrows,
+        ncols,
+        figsize=(ncols * 3.5, nrows * 2.4),
+        constrained_layout=True,
+        sharex="all",
     )
     axes = axes.flatten()
 
@@ -1330,9 +1376,13 @@ def plot_dayofyear_trends(
             factor_str = str(int(np.log10(factor)))
             factor_str = r"$10^{" + factor_str + r"} \times $"
         if numbering:
-            ax.set_title(f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]")
+            ax.set_title(
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+            )
         else:
-            ax.set_title(f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]")
+            ax.set_title(
+                f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+            )
         if varname in ["mean_lev", "mean_theta"]:
             ax.invert_yaxis()
         for i, jet in enumerate(["STJ", "EDJ"]):
@@ -1426,8 +1476,8 @@ def plot_relative_time(
     n_figs: int = 1,
     n_col: int = 2,
     n_row: int | None = None,
-    col_width: float = 1.5,
-    row_height: float = 2.,
+    col_width: float = 2.0,
+    row_height: float = 1.7,
     q_mean: float = 1e-15,
     show_alive: bool = False,
 ) -> Figure:
@@ -1438,7 +1488,9 @@ def plot_relative_time(
     total_height = row_height * n_row
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs: Sequence[Figure] = bigfig.subfigures(1, n_figs)
-    for (spell_of, fig) in zip(spell_ofs, subfigs):
+    if not isinstance(subfigs, Iterable):
+        subfigs = [subfigs]
+    for spell_of, fig in zip(spell_ofs, subfigs):
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
         props_masked = mask_from_spells_pl(
             spells_from_jet, props, time_before=datetime.timedelta(days=4)
@@ -1448,9 +1500,9 @@ def plot_relative_time(
         )
         aggs = {col: func_mean(col) for col in data_vars}
         aggs = aggs | {"alive": pl.col("time").len()}
-        mean_ps = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
-            **aggs
-        )
+        mean_ps = props_masked.group_by(
+            ["relative_index", "jet"], maintain_order=True
+        ).agg(**aggs)
         aggs_ = {col: func_q(col, 0.95) for col in data_vars}
         q25 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
             **aggs_
@@ -1486,7 +1538,9 @@ def plot_relative_time(
                     alpha=0.4,
                 )
                 mean = means.filter(pl.col("jet") == jet)[data_var].item() / factor
-                ax.plot([x[0], x[-1]], [mean, mean], color=COLORS[2 - j], ls="dashed", lw=2)
+                ax.plot(
+                    [x[0], x[-1]], [mean, mean], color=COLORS[2 - j], ls="dashed", lw=2
+                )
                 if j == 0:
                     factor_str = (
                         "" if factor == 1 else rf"$10^{int(np.log10(factor))} \times $"
@@ -1517,14 +1571,21 @@ def plot_relative_time(
                 )
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
-        fig.set_constrained_layout(True)
         fig.suptitle(
             f"Persistent episodes of the {spell_of[:3]}. {props_masked['spell'].n_unique()} spells"
-        )    
+        )
     return bigfig
 
 
-def create_relative_plot(varname: str, basepath: Path, jet: "str", spells: pl.DataFrame, season: pl.Series, n_bootstraps: int = 40, factor: float = 1.):
+def create_relative_plot(
+    varname: str,
+    basepath: Path,
+    jet: "str",
+    spells: pl.DataFrame,
+    season: pl.Series,
+    n_bootstraps: int = 40,
+    factor: float = 1.0,
+):
     season_doy = season.dt.ordinal_day().unique()
     varname, mode = varname.split(":")
     varname_no_number = varname.rstrip("0123456789")
@@ -1543,9 +1604,7 @@ def create_relative_plot(varname: str, basepath: Path, jet: "str", spells: pl.Da
         * 1e6
     ).abs()
     if grad:
-        df = df.with_columns(
-            **{varname_: grad_expr.over("norm_index", "time", "jet")}
-        )
+        df = df.with_columns(**{varname_: grad_expr.over("norm_index", "time", "jet")})
     clim = compute_relative_clim(df, varname)
     if mode in ["clim", "clim_grad"]:
         to_plot = compute_relative_sm(clim, varname, season_doy)
@@ -1603,11 +1662,163 @@ def create_relative_plot(varname: str, basepath: Path, jet: "str", spells: pl.Da
     return to_plot, pvals
 
 
+def create_all_relative_plots(
+    spells_list: dict[str, pl.DataFrame],
+    data_vars: list[str],
+    basepath: Path,
+    odir: Path,
+    season: pl.DataFrame | None = None,
+    n_bootstraps: int = 100,
+) -> None:
+    for spells, name in spells_list.items():
+        if "_" in name:
+            rest, jet = name.split("_")
+            ipath = basepath.joinpath(rest)
+        else:
+            jet = name
+            ipath = basepath
+        for varname in tqdm(data_vars):
+            varname_, rest = varname.split(":")
+            if varname_ == "PV":
+                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
+            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
+            ofile = Path(odir, f"{name}_{varname}.nc")
+            ofile_pvals = Path(odir, f"{name}_{varname}_pvals.nc")
+            if ofile.is_file():
+                continue
+            to_plot, pvals = create_relative_plot(
+                varname, ipath, jet, spells, season, n_bootstraps, factor
+            )
+            to_plot.to_netcdf(ofile)
+            if pvals is not None:
+                pvals.to_netcdf(ofile_pvals)
+
+
+def create_relative_diff_plot(
+    varname: str,
+    basepath: Path,
+    jet: str,
+    spells_list: dict[str, pl.DataFrame],
+    season: pl.Series,
+    factor: float,
+):
+    season_doy = season.dt.ordinal_day().unique()
+    varname, mode = varname.split(":")
+    varname_no_number = varname.rstrip("0123456789")
+    varname_ = f"{varname}_interp"
+    grad = mode[-4:] == "grad"
+
+    grad_expr = (
+        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
+        * 1e6
+    ).abs()
+
+    dfs = {
+        run: pl.scan_parquet(basepath.joinpath(f"{run}/{varname}_relative.parquet"))
+        for run in spells_list.keys()
+    }
+
+    for run, df in dfs.items():
+        if varname_ not in df.collect_schema().names():
+            if f"{varname_no_number}_interp" in df.collect_schema().names():
+                df = df.rename({f"{varname_no_number}_interp": varname_})
+            else:
+                df = df.rename({"vort_interp": varname_})
+
+        if grad:
+            df = df.with_columns(
+                **{varname_: grad_expr.over("norm_index", "time", "jet")}
+            )
+    to_plot = []
+    if mode in ["clim", "clim_grad"]:
+        filter_ = (pl.col("dayofyear") == 1, pl.col("jet") == jet)
+        but_also = []
+        for df in dfs.values():
+            clim = compute_relative_clim(df, varname)
+            clim = compute_relative_sm(clim, varname, season_doy)
+            clim = clim.filter(*filter_)
+            clim = clim.drop("jet", "dayofyear")
+            to_plot.append(clim.collect())
+
+            clim_std = compute_relative_std(df, varname)
+            clim_std = compute_relative_sm(clim_std, varname, season_doy)
+            clim_std = clim_std.filter(*filter_)
+            clim_std = clim_std.drop("jet", "dayofyear")
+            but_also.append(clim_std.collect())
+        ddof_clim = len(season_doy) * to_plot[0]["time"].dt.year().n_unique()
+        pvals = ttest_ind_from_stats(
+            to_plot[0][varname_],
+            but_also[0][varname_],
+            ddof_clim,
+            to_plot[1][varname_],
+            but_also[1][varname_],
+            ddof_clim,
+            equal_var=False,
+        ).pvalue
+    else:
+        for spell, df in zip([spells_list.values()], dfs.values()):
+            df = spell.lazy().join(df, on="time").filter(pl.col("jet") == jet)
+            aggs = {
+                varname_: pl.col(varname_).mean(),
+                f"{varname_}_std": pl.col(varname_).std(),
+                "ddof": pl.col(varname_).len(),
+            }
+            df = df.group_by("norm_index", "n").agg(**aggs).sort("norm_index", "n")
+            df = df.collect()
+            to_plot.append(df)
+        pvals = ttest_ind_from_stats(
+            to_plot[0][varname_].to_numpy(),
+            to_plot[0][f"{varname_}_std"].to_numpy(),
+            to_plot[0]["ddof"].to_numpy(),
+            to_plot[1][varname_].to_numpy(),
+            to_plot[1][f"{varname_}_std"].to_numpy(),
+            to_plot[1]["ddof"].to_numpy(),
+            equal_var=False,
+        ).pvalue
+        to_plot[0] = to_plot[0].drop(f"{varname_}_std", "ddof")
+        to_plot[1] = to_plot[1].drop(f"{varname_}_std", "ddof")
+    to_plot = to_plot[0].join(to_plot[1], on=["norm_index", "n"])
+    to_plot = to_plot.with_columns(
+        **{varname_: pl.col(varname_) - pl.col(f"{varname_}_right")}
+    ).drop(f"{varname_}_right")
+    to_plot = to_plot.with_columns(pl.col(varname_) * factor)
+    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
+    pvals = to_plot.copy(data=pvals.reshape(to_plot.T.shape).T)
+    return to_plot, pvals
+
+
+def create_all_relative_diff_plots(
+    spells_list: dict[str, pl.DataFrame],
+    data_vars: list[str],
+    runs: list[str],
+    basepath: Path,
+    odir: Path,
+    season: pl.DataFrame | None = None,
+) -> None:
+    for jet in ["STJ", "EDJ"]:
+        sub_spells_list = {run: spells_list[f"{run}_{jet}"] for run in runs}
+        for varname in tqdm(data_vars):
+            varname_, rest = varname.split(":")
+            if varname_ == "PV":
+                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
+            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
+            ofile = Path(odir, f"diff_{jet}_{varname}.nc")
+            ofile_pvals = Path(odir, f"diff_{jet}_{varname}_pvals.nc")
+            if ofile.is_file():
+                continue
+            to_plot, pvals = create_relative_diff_plot(
+                varname, basepath, jet, sub_spells_list, season, factor
+            )
+            to_plot.to_netcdf(ofile)
+            if pvals is not None:
+                pvals.to_netcdf(ofile_pvals)
+
+
 def plot_interp(
-    variables: dict, 
-    prefix: str, 
+    variables: dict,
+    prefix: str,
     ipath: Path,
-    jet: str, 
+    jet: str,
     square_len: float = 3,
     n_col: int = 4,
     pad: float = 0.02,
@@ -1615,7 +1826,7 @@ def plot_interp(
     alpha: float = 0.05,
     transpose: bool = False,
     bias_correction: bool = False,
-    handle_pvals: Literal["hide", "hatch"] = "hide"
+    handle_pvals: Literal["hide", "hatch"] = "hide",
 ) -> Figure:
     suffix = "_bc" if bias_correction else ""
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
@@ -1625,9 +1836,14 @@ def plot_interp(
         width = square_len * n_col * (1 + pad + fraction)
         height = square_len * n_row
         fig, axes = plt.subplots(
-            n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
+            n_row,
+            n_col,
+            figsize=(width, height),
+            sharex="all",
+            sharey="all",
+            constrained_layout=True,
         )
-        letters = np.asarray(list(ascii_lowercase[:n_col * n_row]))
+        letters = np.asarray(list(ascii_lowercase[: n_col * n_row]))
         letters = letters.reshape(axes.shape)
         axes = axes.T.ravel()
         letters = letters.T.ravel()
@@ -1636,7 +1852,12 @@ def plot_interp(
         width = square_len * n_col * (1 + pad + fraction)
         height = square_len * n_row
         fig, axes = plt.subplots(
-            n_row, n_col, figsize=(width, height), sharex="all", sharey="all", constrained_layout=True
+            n_row,
+            n_col,
+            figsize=(width, height),
+            sharex="all",
+            sharey="all",
+            constrained_layout=True,
         )
         axes = axes.ravel()
         letters = ascii_lowercase
