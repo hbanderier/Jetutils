@@ -1,0 +1,62 @@
+#!/bin/env bash
+# UniBE 2020
+# this tool provides portforwarding from the submitted node to the compute node and
+# starts jupyter lab
+#  mandes.schoenherr@id.unibe.ch
+
+print_help(){
+      echo "Usage: $0 port [OPTIONS...] "
+      echo "Wrapper to launch the Jupyter Lab server on an UBELIX compute nodes."
+      echo "Note: All options are forwarded to SLURM, beside of the ones listed below. "
+      echo "      The port needs to be first argument, then the order is arbitrary"
+      echo " "
+      echo "  port                             needs to be a number between 2000 and 65000"
+      echo "options:"
+      echo "  -h, --help                       show brief help"
+      echo "  --jupyter_args='--help'          valid Jupyter Lab can be specified"
+      echo " "
+      echo "For more information visit: https://hpc-unibe-ch.github.io/user-guide/software/JupyterLab.html"
+      exit 0
+}
+
+### check if called within SLURM allocation
+if ! [ -z ${SLURM_JOBID+x} ]; then
+  echo "ERROR: it seems that you called $0 from within a SLURM allocation."
+  echo "ERROR: $0 needs to be called from the login node and without srun or sbatch. "
+  echo " "
+  print_help
+  exit 0
+fi
+
+### get the Jupyter port number, needs to be first argument
+port=${1:-15051}
+[[ $port =~ ^[0-9]+$ ]] || { echo "ERROR: first argument needs to be the selected port number"; print_help; }
+if ! (( port >= 2000 && port <= 650000 )); then
+   echo "ERROR: the port number needs to be within range [2000,65000]"
+   echo " "
+   print_help
+fi
+shift
+
+args=""
+### Sort the remaining arguments
+###   In general all arguments are consideres as slurm arguments
+###   Jupyter arguments are taken separetly with "--jupyter_args=" prefix
+while test $# -gt 0; do
+  case "$1" in
+    -h|--help)
+      print_help
+      ;;
+    --jupyter_args*)
+      jupyter_args="`echo $1 | sed -e 's/^[^=]*=//g'`"
+      shift
+      ;;
+    *)
+      args="$args $1"
+      shift
+      ;;
+  esac
+done
+
+srun $args /storage/homefs/hb22g102/persistent-extremes-era5/jupyter_remote_port_forward $port $jupyter_args
+

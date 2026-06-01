@@ -29,6 +29,3 @@ dependencies = [
 "Homepage" = "https://github.com/hbanderi/jestex"
 "Bug Tracker" = "https://github.com/hbanderi/jestex/issues"
 
-# [tool.ty.environment]
-# python = "../local_code/.venv"
-# extra-paths = ["../simpsom-dask/simpsom_dask"]
