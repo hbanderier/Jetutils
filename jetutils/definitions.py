@@ -52,10 +52,10 @@ if "DATADIR" not in globals():
         DATADIR = Path.cwd().joinpath("data")
         # print("Guessed DATADIR : ", DATADIR)
     if FIGURES == "guess":
-        FIGURES = Path.cwd().joinpath("figures")
+        FIGURES = Path.cwd().joinpath("Figures")
         # print("Guessed FIGURES : ", FIGURES)
     if RESULTS == "guess":
-        RESULTS = Path.cwd().joinpath("results")
+        RESULTS = Path.cwd().joinpath("Results")
         # print("Guessed RESULTS : ", RESULTS)
     if N_WORKERS == "guess":
         if "SLURM_NTASKS" not in os.environ and "SLURM_CPUS_ON_NODE" not in os.environ:

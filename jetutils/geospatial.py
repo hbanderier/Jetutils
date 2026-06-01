@@ -10,14 +10,12 @@ import polars.selectors as cs
 import polars_st as st
 import xarray as xr
 from contourpy import contour_generator
-from numba import njit
 from polars import DataFrame, Expr, Series
 from tqdm import tqdm
 
 from .definitions import (
     JJADOYS,
     RADIUS,
-    YEARS,
     get_index_columns,
     iterate_over_year_maybe_member,
     map_maybe_parallel,
@@ -386,37 +384,6 @@ def round_contour(contour: np.ndarray, x: np.ndarray, y: np.ndarray):
     x_ = x[np.argmin(np.abs(x[:, None] - x_[None, :]), axis=0)]
     y_ = y[np.argmin(np.abs(y[:, None] - y_[None, :]), axis=0)]
     return np.stack([x_, y_], axis=1)
-
-
-@njit
-def distance(x1: float, x2: np.ndarray, y1: float, y2: np.ndarray) -> float:
-    dx = x2 - x1
-    if np.abs(dx) >= 180:
-        dx = 360 - np.abs(dx)  # sign is irrelevant
-    dy = y2 - y1
-    return np.sqrt(dx**2 + np.sum(dy**2))
-
-
-@njit()
-def my_pairwise(X1: np.ndarray, X2: np.ndarray | None = None) -> np.ndarray:
-    x1 = X1[:, 0]
-    y1 = X1[:, 1:]
-    half = False
-    if X2 is None:
-        X2 = X1
-        half = True
-    x2 = X2[:, 0]
-    y2 = X2[:, 1:]
-    output = np.zeros((len(X1), len(X2)))
-    for i in range(X1.shape[0] - int(half)):
-        if half:
-            for j in range(i + 1, X1.shape[0]):
-                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
-                output[j, i] = output[i, j]
-        else:
-            for j in range(X2.shape[0]):
-                output[i, j] = distance(x1[j], x2[i], y1[j], y2[i])
-    return output
 
 
 def inner_detect_contours(args):

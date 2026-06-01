@@ -1,3 +1,4 @@
+from numpy.typing import NDArray
 import numpy as np
 import dask.array as darr
 import xarray as xr
@@ -38,6 +39,7 @@ def convolve_dask(in1, in2, mode="full", method="fft", axes=None):
         _description_
     """
     from scipy.signal import fftconvolve, oaconvolve
+    from scipy.ndimage import convolve
     from scipy.signal._signaltools import _init_freq_conv_axes
 
     in1 = darr.asarray(in1)
@@ -108,7 +110,7 @@ def convolve_dask(in1, in2, mode="full", method="fft", axes=None):
             in1 = in1.reshape(new_shape)
             for a in not_axes_but_s1_1:
                 in1 = darr.stack([in1] * s2[a], axis=a)
-            return convolve(in1, in2, mode=mode, method=method, axes=axes)
+            return convolve(in1, in2, mode=mode, axes=axes)
 
         # Deals with the case where there is at least one axis a in which we do not
         # do the convolution that has s2[a] == s1[a] != 1
@@ -237,9 +239,9 @@ def compute_relative_vorticity(ds: xr.Dataset):
 def compute_absolute_vorticity(ds: xr.Dataset):
     _, _, _, _, this_expand_dims, _ = setup_derivatives(ds)
     
-    lat = ds["lat"].values
+    lat: NDArray = ds["lat"].values
     zeta = compute_relative_vorticity(ds)
-    f = 2 * OMEGA * degsin(lat)
+    f: NDArray = 2 * OMEGA * degsin(lat)
     return this_expand_dims(f[:, None]) + zeta
 
 
