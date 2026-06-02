@@ -426,6 +426,7 @@ def standardize(da, unify_dtypes: bool = True):
             chunks = None
             if "preferred_chunks" in da[var].encoding and da[var].chunks is None:
                 chunks = da[var].encoding["preferred_chunks"]
+                chunks = {standard_dict[key]: val for key, val in chunks.items()}
                 chunking = True
             if chunking:
                 chunks = chunks if chunks is not None else "auto"
@@ -437,6 +438,7 @@ def standardize(da, unify_dtypes: bool = True):
     else:
         if "preferred_chunks" in da.encoding and da.chunks is None:
             chunks = da.encoding["preferred_chunks"]
+            chunks = {standard_dict[key]: val for key, val in chunks.items()}
             chunks = chunks if chunks is not None else "auto"
             da = da.chunk(chunks)
         if da.dtype == np.float64:

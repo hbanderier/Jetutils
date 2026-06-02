@@ -53,6 +53,24 @@ from tqdm import tqdm, trange
 
 os.environ["RUST_BACKTRACE"] = "full"
 
+# block 0: uv to zarr 
+
+import warnings
+uv_sample = []
+basepath = Path(DATADIR, "ERA5/plev/uv/6H")
+if not basepath.joinpath("full.zarr").is_dir():
+    for i, f in enumerate(tqdm(list(basepath.glob("*.nc")))):
+        uv_sample = standardize(xr.open_dataset(f))
+        uv_sample["theta"] = uv_sample["t"] * (1000 / uv_sample["lev"]) ** KAPPA
+        uv_sample = uv_sample.drop_vars("t")
+        for var in ["u", "v", "theta"]:
+            uv_sample[f"f{var}dp"] = uv_sample[var].differentiate("lev")
+        uv_sample = uv_sample.sel(lev=250)
+        kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            uv_sample.to_zarr(basepath.joinpath("full250.zarr"), **kwargs)
+
 # block 1: compute eddy stuff
 opath = Path(
     f"{DATADIR}/ERA5/plev/uv/6H/results",
