@@ -9,9 +9,11 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "cartopy>=0.25.0",
+    "cdsapi>=0.7.7",
     "colormaps>=0.5.0",
     "dask>=2026.3.0",
     "distributed>=2026.3.0",
+    "ipython>=9.14.0",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
     "mkdocstrings-python>=2.0.3",
@@ -27,6 +29,7 @@ dependencies = [
     "simpsom-dask>=1.0.3",
     "tqdm>=4.67.3",
     "xarray>=2026.4.0",
+    "zarr>=3.2.1",
 ]
 
 [build-system]
