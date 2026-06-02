@@ -347,3 +347,27 @@ def field_significance_v2(
     fdrcorr = to_test[0].copy(data=np.sum(fdrcorr, axis=0) > (1 - q) * n_sel)
     return nocorr, fdrcorr
 
+
+def common_OR(i: int, spell_of: str) -> Tuple[pl.Expr]:
+    spell_c = pl.col(f"reg{i}")
+    jet_c = pl.col(f"spell_{spell_of}")
+    yesyes = (spell_c & jet_c).sum()
+    yesno = (spell_c & ~jet_c).sum()
+    noyes = (~spell_c & jet_c).sum()
+    nono = (~spell_c & ~jet_c).sum()
+    return yesyes, nono, noyes, yesno
+    
+    
+def odds_ratio(i: int, spell_of: str) -> pl.Expr:
+    yesyes, nono, noyes, yesno = common_OR(i, spell_of)
+    OR_ = yesyes * nono / yesno / noyes
+    return OR_.fill_nan(0.)
+
+
+def is_signif_OR(i: int, spell_of: str) -> pl.Expr:
+    yesyes, nono, noyes, yesno = common_OR(i, spell_of)
+    OR = yesyes * nono / yesno / noyes
+    SE = (1 / yesyes + 1 / nono + 1 / yesno + 1 / noyes).sqrt()
+    L = OR.log()
+    one_not_in_CI = ((L - 1.96 * SE).exp() > 1) | ((L + 1.96 * SE).exp() < 1)
+    return pl.when(OR.is_nan()).then(False).otherwise(one_not_in_CI)

@@ -484,6 +484,27 @@ def mask_from_spells_pl(
     time_before: datetime.timedelta = datetime.timedelta(0),
     time_after: datetime.timedelta = datetime.timedelta(0),
 ):
+    """
+    Huh i think this is borken
+
+    Parameters
+    ----------
+    spells : pl.DataFrame
+        _description_
+    to_mask : xr.DataArray | xr.Dataset | pl.DataFrame
+        _description_
+    force_pl : bool, optional
+        _description_, by default False
+    time_before : datetime.timedelta, optional
+        _description_, by default datetime.timedelta(0)
+    time_after : datetime.timedelta, optional
+        _description_, by default datetime.timedelta(0)
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
     spells = extend_spells(spells, time_before=time_before, time_after=time_after)
     index_columns = get_index_columns(spells, ("member", "time"))
     unique_index_spells = spells.select(index_columns).unique(index_columns)

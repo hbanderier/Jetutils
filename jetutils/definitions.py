@@ -667,7 +667,7 @@ def get_index_columns(
     """
     if potentials is None:
         potentials: tuple[str] = default_index_columns
-    index_columns: list[str] = [ic for ic in potentials if ic in df.columns]
+    index_columns: list[str] = [ic for ic in potentials if ic in df.collect_schema().names()]
     return index_columns
 
 

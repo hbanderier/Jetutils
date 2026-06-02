@@ -1490,7 +1490,9 @@ def plot_relative_time(
     subfigs: Sequence[Figure] = bigfig.subfigures(1, n_figs)
     if not isinstance(subfigs, Iterable):
         subfigs = [subfigs]
-    for spell_of, fig in zip(spell_ofs, subfigs):
+    for n_fig, (spell_of, fig) in enumerate(zip(spell_ofs, subfigs)):
+        letters = (n_fig % n_figs) * n_row * n_col
+        letters = ascii_lowercase[letters:]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
         props_masked = mask_from_spells_pl(
             spells_from_jet, props, time_before=datetime.timedelta(days=4)
@@ -1526,7 +1528,7 @@ def plot_relative_time(
             q25_ = q25.filter(pl.col("jet") == jet)
             q75_ = q75.filter(pl.col("jet") == jet)
             x = to_plot["relative_index"].unique().to_numpy() / 4
-            for ax, data_var, letter in zip(axes, data_vars, ascii_lowercase):
+            for ax, data_var, letter in zip(axes, data_vars, letters):
                 factor = 1e9 if data_var in ["int_over_europe", "int"] else 1
                 factor = 1e5 if data_var == "width" else factor
                 ax.plot(x, to_plot[data_var] / factor, color=COLORS[2 - j], lw=2.5)
@@ -1572,246 +1574,9 @@ def plot_relative_time(
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
         fig.suptitle(
-            f"Persistent episodes of the {spell_of[:3]}. {props_masked['spell'].n_unique()} spells"
+            f"{props_masked['spell'].n_unique()} persistent episodes of the {spell_of[:3]}"
         )
     return bigfig
-
-
-def create_relative_plot(
-    varname: str,
-    basepath: Path,
-    jet: "str",
-    spells: pl.DataFrame,
-    season: pl.Series,
-    n_bootstraps: int = 40,
-    factor: float = 1.0,
-):
-    season_doy = season.dt.ordinal_day().unique()
-    varname, mode = varname.split(":")
-    varname_no_number = varname.rstrip("0123456789")
-    varname_ = f"{varname}_interp"
-    grad = mode[-4:] == "grad"
-
-    df = pl.scan_parquet(basepath.joinpath(f"{varname}_relative.parquet"))
-    if varname_ not in df.collect_schema().names():
-        print(varname_)
-        if f"{varname_no_number}_interp" in df.collect_schema().names():
-            df = df.rename({f"{varname_no_number}_interp": varname_})
-        else:
-            df = df.rename({"vort_interp": varname_})
-    grad_expr = (
-        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
-        * 1e6
-    ).abs()
-    if grad:
-        df = df.with_columns(**{varname_: grad_expr.over("norm_index", "time", "jet")})
-    clim = compute_relative_clim(df, varname)
-    if mode in ["clim", "clim_grad"]:
-        to_plot = compute_relative_sm(clim, varname, season_doy)
-        to_plot = to_plot.filter(pl.col("dayofyear") == 1, pl.col("jet") == jet)
-        to_plot = to_plot.drop("jet", "dayofyear")
-        pvals = None
-    elif mode in ["anom", "anom_grad"]:
-        winsize = 31
-        halfwinsize = int(
-            winsize / 2
-        )  # TODO: make data.periodic_rolling_pl work with lazyframes. UPDATE: looks really hard
-        clim = clim.rolling(
-            pl.col("dayofyear").cast(pl.UInt32()),
-            period=f"{winsize}i",
-            offset=f"-{halfwinsize + 1}i",
-            group_by=["jet", "norm_index", "n"],
-        ).agg(pl.col(varname_).mean())
-        to_plot = compute_relative_anom(df, varname, clim)
-        ts_bootstrapped = create_bootstrapped_times(spells, season, n_bootstraps).lazy()
-        to_plot = (
-            ts_bootstrapped.join(to_plot, on="time")
-            .filter(pl.col("jet") == jet)
-            .sort("sample_index", "spell", "inside_index", "norm_index", "n")
-        )
-        to_plot = to_plot.group_by(
-            "sample_index", "norm_index", "n", maintain_order=True
-        ).agg(pl.col(varname_).mean())
-        pvals = (
-            to_plot.group_by("norm_index", "n", maintain_order=True)
-            .agg((pl.col(varname_).rank().last() - 1) / n_bootstraps)
-            .sort("norm_index", "n")
-        )
-        pvals = pvals.with_columns(
-            **{varname_: 2 * pl.min_horizontal(pl.col(varname_), 1 - pl.col(varname_))}
-        )
-        to_plot = (
-            to_plot.filter(pl.col("sample_index") == n_bootstraps)
-            .drop("sample_index")
-            .sort("norm_index", "n")
-        )
-    else:
-        to_plot = spells.lazy().join(df.filter(pl.col("jet") == jet), on="time")
-        to_plot = (
-            to_plot.group_by("norm_index", "n")
-            .agg(pl.col(varname_).mean())
-            .sort("norm_index", "n")
-        )
-        pvals = None
-    to_plot = to_plot.with_columns(pl.col(varname_) * factor)
-    to_plot = to_plot.collect()
-    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
-    if pvals is not None:
-        pvals = pvals.collect()
-        pvals = polars_to_xarray(pvals, ["norm_index", "n"]).T
-    return to_plot, pvals
-
-
-def create_all_relative_plots(
-    spells_list: dict[str, pl.DataFrame],
-    data_vars: list[str],
-    basepath: Path,
-    odir: Path,
-    season: pl.DataFrame | None = None,
-    n_bootstraps: int = 100,
-) -> None:
-    for spells, name in spells_list.items():
-        if "_" in name:
-            rest, jet = name.split("_")
-            ipath = basepath.joinpath(rest)
-        else:
-            jet = name
-            ipath = basepath
-        for varname in tqdm(data_vars):
-            varname_, rest = varname.split(":")
-            if varname_ == "PV":
-                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
-            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
-            ofile = Path(odir, f"{name}_{varname}.nc")
-            ofile_pvals = Path(odir, f"{name}_{varname}_pvals.nc")
-            if ofile.is_file():
-                continue
-            to_plot, pvals = create_relative_plot(
-                varname, ipath, jet, spells, season, n_bootstraps, factor
-            )
-            to_plot.to_netcdf(ofile)
-            if pvals is not None:
-                pvals.to_netcdf(ofile_pvals)
-
-
-def create_relative_diff_plot(
-    varname: str,
-    basepath: Path,
-    jet: str,
-    spells_list: dict[str, pl.DataFrame],
-    season: pl.Series,
-    factor: float,
-):
-    season_doy = season.dt.ordinal_day().unique()
-    varname, mode = varname.split(":")
-    varname_no_number = varname.rstrip("0123456789")
-    varname_ = f"{varname}_interp"
-    grad = mode[-4:] == "grad"
-
-    grad_expr = (
-        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
-        * 1e6
-    ).abs()
-
-    dfs = {
-        run: pl.scan_parquet(basepath.joinpath(f"{run}/{varname}_relative.parquet"))
-        for run in spells_list.keys()
-    }
-
-    for run, df in dfs.items():
-        if varname_ not in df.collect_schema().names():
-            if f"{varname_no_number}_interp" in df.collect_schema().names():
-                df = df.rename({f"{varname_no_number}_interp": varname_})
-            else:
-                df = df.rename({"vort_interp": varname_})
-
-        if grad:
-            df = df.with_columns(
-                **{varname_: grad_expr.over("norm_index", "time", "jet")}
-            )
-    to_plot = []
-    if mode in ["clim", "clim_grad"]:
-        filter_ = (pl.col("dayofyear") == 1, pl.col("jet") == jet)
-        but_also = []
-        for df in dfs.values():
-            clim = compute_relative_clim(df, varname)
-            clim = compute_relative_sm(clim, varname, season_doy)
-            clim = clim.filter(*filter_)
-            clim = clim.drop("jet", "dayofyear")
-            to_plot.append(clim.collect())
-
-            clim_std = compute_relative_std(df, varname)
-            clim_std = compute_relative_sm(clim_std, varname, season_doy)
-            clim_std = clim_std.filter(*filter_)
-            clim_std = clim_std.drop("jet", "dayofyear")
-            but_also.append(clim_std.collect())
-        ddof_clim = len(season_doy) * to_plot[0]["time"].dt.year().n_unique()
-        pvals = ttest_ind_from_stats(
-            to_plot[0][varname_],
-            but_also[0][varname_],
-            ddof_clim,
-            to_plot[1][varname_],
-            but_also[1][varname_],
-            ddof_clim,
-            equal_var=False,
-        ).pvalue
-    else:
-        for spell, df in zip([spells_list.values()], dfs.values()):
-            df = spell.lazy().join(df, on="time").filter(pl.col("jet") == jet)
-            aggs = {
-                varname_: pl.col(varname_).mean(),
-                f"{varname_}_std": pl.col(varname_).std(),
-                "ddof": pl.col(varname_).len(),
-            }
-            df = df.group_by("norm_index", "n").agg(**aggs).sort("norm_index", "n")
-            df = df.collect()
-            to_plot.append(df)
-        pvals = ttest_ind_from_stats(
-            to_plot[0][varname_].to_numpy(),
-            to_plot[0][f"{varname_}_std"].to_numpy(),
-            to_plot[0]["ddof"].to_numpy(),
-            to_plot[1][varname_].to_numpy(),
-            to_plot[1][f"{varname_}_std"].to_numpy(),
-            to_plot[1]["ddof"].to_numpy(),
-            equal_var=False,
-        ).pvalue
-        to_plot[0] = to_plot[0].drop(f"{varname_}_std", "ddof")
-        to_plot[1] = to_plot[1].drop(f"{varname_}_std", "ddof")
-    to_plot = to_plot[0].join(to_plot[1], on=["norm_index", "n"])
-    to_plot = to_plot.with_columns(
-        **{varname_: pl.col(varname_) - pl.col(f"{varname_}_right")}
-    ).drop(f"{varname_}_right")
-    to_plot = to_plot.with_columns(pl.col(varname_) * factor)
-    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
-    pvals = to_plot.copy(data=pvals.reshape(to_plot.T.shape).T)
-    return to_plot, pvals
-
-
-def create_all_relative_diff_plots(
-    spells_list: dict[str, pl.DataFrame],
-    data_vars: list[str],
-    runs: list[str],
-    basepath: Path,
-    odir: Path,
-    season: pl.DataFrame | None = None,
-) -> None:
-    for jet in ["STJ", "EDJ"]:
-        sub_spells_list = {run: spells_list[f"{run}_{jet}"] for run in runs}
-        for varname in tqdm(data_vars):
-            varname_, rest = varname.split(":")
-            if varname_ == "PV":
-                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
-            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
-            ofile = Path(odir, f"diff_{jet}_{varname}.nc")
-            ofile_pvals = Path(odir, f"diff_{jet}_{varname}_pvals.nc")
-            if ofile.is_file():
-                continue
-            to_plot, pvals = create_relative_diff_plot(
-                varname, basepath, jet, sub_spells_list, season, factor
-            )
-            to_plot.to_netcdf(ofile)
-            if pvals is not None:
-                pvals.to_netcdf(ofile_pvals)
 
 
 def plot_interp(

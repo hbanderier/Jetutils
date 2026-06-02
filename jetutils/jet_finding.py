@@ -2,14 +2,11 @@
 """
 This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
 """
-from operator import index
-from cmath import polar
 import datetime
 from itertools import product
 from pathlib import Path
 from typing import Literal, Sequence, Callable
 
-import dask
 import numpy as np
 import polars as pl
 import polars_ds as pds
@@ -557,21 +554,13 @@ def compute_jet_props(jets: DataFrame) -> DataFrame:
         pl.col("is_polar").mean(),
     ]
     
-    aggregations = [agg.replace([float("-inf"), float("inf"), float("nan")], None) for agg in aggregations]
+    aggregations = [agg.replace([float("-inf"), float("inf"), float("nan")], None).first() for agg in aggregations]
 
     jets_lazy = jets.lazy()
     index_columns = get_index_columns(jets)
     if "member" not in index_columns:
         gb = jets_lazy.group_by(index_columns, maintain_order=True)
         props_as_df = gb.agg(*aggregations)
-        props_as_df = props_as_df.with_columns(
-            [
-                pl.col(col)
-                .replace([float("inf"), float("-inf"), float("nan")], None)
-                .clip(pl.col(col).quantile(0.00001), pl.col(col).quantile(0.99999))
-                for col in ["tilt", "waviness1", "wavinessDC16", "wavinessR16"]
-            ]
-        )
         props_as_df = props_as_df.collect()
     else:
         # streaming mode doesn't work well
@@ -1703,7 +1692,7 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
 
-def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False, do_smooth_spline: bool = False, track_large: bool = True, **find_jets_kwargs):
+def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool = False, do_smooth_spline: bool = False, track_large: bool = True, **find_jets_kwargs):
     """
     More easily maintainable than object-oriented approach for quick testing of the whole pipeline
 
@@ -1713,7 +1702,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         _description_
     save_path : Path
         _description_
-    do_bias_correct : bool, optional
+    bias_correct_realspace : bool, optional
         _description_, by default False
     do_smooth_spline : bool, optional
         _description_, by default False
@@ -1736,11 +1725,11 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
         for indexer in tqdm(list(iterator)):
             ds_ = compute(ds.isel(**indexer), progress_flag=False)
             these_jets = find_all_jets(ds_, **find_jets_kwargs)
-            if do_bias_correct:
+            if bias_correct_realspace:
                 these_jets = online_bias_correct(these_jets, ds_)
             if do_smooth_spline:
                 these_jets = spline_smooth(these_jets, s=2, factor=1)
-            if do_bias_correct or do_smooth_spline:
+            if bias_correct_realspace or do_smooth_spline:
                 these_jets = join_on_ds(these_jets, ds_, fix_id=True)
             jets.append(these_jets)
         jets = pl.concat(jets)
@@ -1801,7 +1790,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, do_bias_correct: bool = False
     else:
         phat_props = standardize_polars_dtypes(pl.read_parquet(props_final_path))
         
-    if not do_bias_correct and not bc_path.is_file():
+    if not bias_correct_realspace and not bc_path.is_file():
         bc = create_bias_correction(phat_jets, ds)
         bc.write_parquet(bc_path)
 
