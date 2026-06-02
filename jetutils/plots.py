@@ -66,7 +66,7 @@ from .geospatial import (
 )
 from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
 from .data import periodic_rolling_pl
-from .anyspell import mask_from_spells_pl
+from .anyspell import mask_from_spells_pl, extend_spells
 import jetutils
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
@@ -1494,9 +1494,8 @@ def plot_relative_time(
         letters = (n_fig % n_figs) * n_row * n_col
         letters = ascii_lowercase[letters:]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
-        props_masked = mask_from_spells_pl(
-            spells_from_jet, props, time_before=datetime.timedelta(days=4)
-        )
+        spells_from_jet = extend_spells(spells_from_jet, time_before=datetime.timedelta(days=4))
+        props_masked = spells_from_jet.join(props, on="time").sort("jet", "spell", "relative_index")
         props_masked = props_masked.filter(
             pl.col("spell").n_unique().over("relative_index") > 12
         )
