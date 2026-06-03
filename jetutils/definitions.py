@@ -976,6 +976,8 @@ def iterate_over_year_maybe_member(
         indexer_xarray = (indexer[0] | indexer[1] for indexer in indexer_xarray)
         return indexer_xarray
     years = df["time"].dt.year().unique(maintain_order=True).to_numpy()
+    years_ = np.unique(da["time"].dt.year.values)
+    years = np.intersect1d(years, years_)
     year_lists = np.array_split(years, len(years) // several_years)
     indexer_polars = (
         pl.col("time").dt.year().is_in(year_list) for year_list in year_lists

@@ -1154,14 +1154,15 @@ def average_jet_categories(
 
 
 def to_one_large(jets, int_EDJ_threshold: float = 1.3e8):
+    index_columns = get_index_columns(jets)
     jets = jets.filter(
-        (pl.col("is_polar").mean().over(["time", "jet ID"]) < 0.5)
+        (pl.col("is_polar").mean().over(index_columns) < 0.5)
         | (
-            (pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5)
-            & (pl.col("int").mode().first().over(["time", "jet ID"]) > int_EDJ_threshold)
+            (pl.col("is_polar").mean().over(index_columns) > 0.5)
+            & (pl.col("int").mode().first().over(index_columns) > int_EDJ_threshold)
         )
     )
-    jet = pl.when(pl.col("is_polar").mean().over(["time", "jet ID"]) > 0.5).then(pl.lit("EDJ")).otherwise(pl.lit("STJ"))
+    jet = pl.when(pl.col("is_polar").mean().over(index_columns) > 0.5).then(pl.lit("EDJ")).otherwise(pl.lit("STJ"))
     jets = jets.with_columns(jet=jet).drop("jet ID")
     return jets
 
@@ -1692,7 +1693,7 @@ def get_double_jet_index(jet_pos_da: xr.DataArray, diff_cat: bool = False):
     return xarray_to_polars(overlap.sel(lon=slice(-20, None, None)).mean("lon"))
     
 
-def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool = False, do_smooth_spline: bool = False, track_large: bool = True, feature_names: tuple | None = None, **find_jets_kwargs):
+def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool = False, do_smooth_spline: bool = False, track_large: bool = True, feature_names: tuple | None = None, n_init: int = 10, **find_jets_kwargs):
     """
     More easily maintainable than object-oriented approach for quick testing of the whole pipeline
 
@@ -1745,7 +1746,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool 
     if "is_polar" not in jets.columns:
         if feature_names is None:
             feature_names = ("s", "theta")
-        jets = is_polar_gmix(jets, feature_names=feature_names)
+        jets = is_polar_gmix(jets, feature_names=feature_names, n_init=n_init)
         jets.write_parquet(jets_path)
         
     phat_jets = to_one_large(jets, int_EDJ_threshold=1.3e8)
