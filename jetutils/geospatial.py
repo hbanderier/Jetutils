@@ -2318,20 +2318,17 @@ def prepare_last_step_1(
     cold = pl.col("n") >= 0
     warm = pl.col("n") <= 0
     reduced = pl.col("n").abs() <= 1e6
-    mid = [pl.col("norm_index") >= 0.33, pl.col("norm_index") <= 0.66]
-    entrance = pl.col("norm_index") <= 0.33
-    exit_ = pl.col("norm_index") >= 0.66
+    entrance = pl.col("norm_index") <= 0.5
+    exit_ = pl.col("norm_index") >= 0.5
     all_region_filters = {
         "cold": [cold, reduced],
         "warm": [warm, reduced],
         "cold_entrance": [cold, entrance, reduced],
         "warm_entrance": [warm, entrance, reduced],
-        "cold_mid": [cold, *mid, reduced],
-        "warm_mid": [warm, *mid, reduced],
         "cold_exit": [cold, exit_, reduced],
         "warm_exit": [warm, exit_, reduced],
         "core": [pl.col("n").abs() <= 5e5],
-        "warm_far": [pl.col("n") <= -1.2e6, pl.col("norm_index") <= 0.5],
+        "warm_far_entrance": [pl.col("n") <= -1e6, entrance],
     }
 
     for varname, filter_list in tqdm(filters_for_variables.items()):
@@ -2363,7 +2360,7 @@ def prepare_last_step_1(
             )
         reduce_func = reduce_dict.get(varname, pl.Expr.mean)
         aggs = {
-            f"{oname}_{filter_name}": reduce_func(
+            f"{oname}-{filter_name}": reduce_func(
                 pl.col(varname_).filter(*all_region_filters[filter_name])
             )
             for filter_name in filter_list
@@ -2394,7 +2391,7 @@ def prepare_last_step_2(
     props_with_extras = compute_anomalies_pl(
         props_with_extras, other_index_columns=["jet"], standardize=True
     )
-    props_with_extras = props_with_extras.pivot(on="jet", index="time")
+    props_with_extras = props_with_extras.pivot(on="jet", index="time", separator="-")
     data_vars = [col for col in props_with_extras.columns if col not in index_columns]
     masked = times.join(props_with_extras, on="time").sort(
         "sample_index", "spell", "relative_index"
@@ -2453,7 +2450,7 @@ def prepare_last_step_2(
         .group_by("spell")
         .agg(
             **{
-                f"regime_{when}": pl.col("winner")
+                f"regime.{when}": pl.col("winner")
                 .filter(time_filter_, pl.col("winner") != 0)
                 .mode()
                 .first()
@@ -2463,4 +2460,11 @@ def prepare_last_step_2(
         )
     )
     masked = masked.join(regime_stuff, on="spell", how="left")
+    
+    early = season.dt.ordinal_day().unique().head(10)
+    early = pl.col("time").dt.ordinal_day().is_in(early.implode())
+    late = season.dt.ordinal_day().unique().tail(10)
+    late = pl.col("time").dt.ordinal_day().is_in(late.implode())
+    is_early_or_late = spells.filter(pl.col("relative_index") >= 0).group_by(pl.col("spell").cast(pl.Int32())).agg(is_early_or_late=(early.mean() > 0.5) | (late.mean() > 0.5))
+    masked = masked.join(is_early_or_late, on="spell", how="left")
     return masked

@@ -1491,7 +1491,7 @@ def compute_anomalies_pl(
     smooth_clim: int = 0,
     standardize: bool = False,
     # mode: Literal["dayofyear"] | Literal["season"] = "dayofyear",
-):
+) -> pl.DataFrame:
     """
     Anomalizes a polars DataFrame. All columns except `"time"` and the columns in `other_index_columns` will be amomalized.
 
