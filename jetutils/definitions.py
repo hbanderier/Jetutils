@@ -283,6 +283,10 @@ if "DATADIR" not in globals():
         "CAVO": 100,
         "APVO": 100,
         "CPVO": 100,
+        "SAPVS": 100,
+        "SCPVS": 100,
+        "TAPVS": 100,
+        "TCPVS": 100,
     }
 
     LATEXY_VARNAME = {
