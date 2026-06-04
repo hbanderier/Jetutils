@@ -443,7 +443,7 @@ def standardize(da, unify_dtypes: bool = True, do_chunk: bool = False):
         if "preferred_chunks" in da.encoding and da.chunks is None:
             chunks = da.encoding["preferred_chunks"]
             chunks = {standard_dict.get(key, key): val for key, val in chunks.items()}
-            chunks = {key: val for key, val in chunks.items() if key in da[var].dims}
+            chunks = {key: val for key, val in chunks.items() if key in da.dims}
             chunks = chunks if chunks is not None else "auto"
         if do_chunk:
             da = da.chunk(chunks)

@@ -103,43 +103,65 @@ for run in ["ctrl", "dobl", "ctrl_p4"]:
     
     
 # block 3: EP Flux
-# for run in ["ctrl", "dobl", "ctrl_p4"]:
-#     ipath = Path(
-#         f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results",
-#         "Eddy_NH_10days.zarr",
-#     )
-#     odir = Path(f"{DATADIR}/Henrik_data/{run}/EPF/6H")
-#     odir.mkdir(parents=True, exist_ok=True)
-#     bigds = xr.open_dataset(ipath).sel(lev=[20000, 30000]).chunk("auto")
-#     for year in trange(1969, 2021):
-#         ofile = odir.joinpath(f"{year}.nc")
-#         if ofile.is_file():
-#             continue
-#         ds = bigds.sel(time=bigds.time.dt.year == year)
-#         other = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/vertical/6H/{year}.nc").sel(lat=slice(0, None))
-#         ds = xr.merge([ds, other])
-#         ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
+for run in ["ctrl", "dobl", "ctrl_p4"]:
+    ipath = Path(
+        f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results",
+        "Eddy_NH_10days.zarr",
+    )
+    odir = Path(f"{DATADIR}/Henrik_data/{run}/EPF/6H")
+    odir.mkdir(parents=True, exist_ok=True)
+    ozarr = odir.joinpath("full.zarr")
+    if ozarr.is_dir():
+        continue
+    bigds = xr.open_dataset(ipath).sel(lev=[20000, 30000]).chunk("auto")
+    for year in trange(1969, 2021):
+        ofile = odir.joinpath(f"{year}.nc")
+        if ofile.is_file():
+            continue
+        ds = bigds.sel(time=bigds.time.dt.year == year)
+        other = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/vertical/6H/{year}.nc").sel(lat=slice(0, None))
+        ds = xr.merge([ds, other])
+        ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
         
-#         gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
-#         EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
-#         S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
-#         f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
+        gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
+        EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
+        S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
+        f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
 
-#         ## Base 2 * 3
-#         ds["F11"] = ds["up"] ** 2 - S
-#         ds["F12"] = ds["up"] * ds["vp"]
-#         ds["F13"] = - ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
-#         ds["F21"] = ds["up"] * ds["vp"]
-#         ds["F22"] = ds["vp"] ** 2 - S
-#         ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
+        ## Base 2 * 3
+        ds["F11"] = ds["up"] ** 2 - S
+        ds["F12"] = ds["up"] * ds["vp"]
+        ds["F13"] = - ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
+        ds["F21"] = ds["up"] * ds["vp"]
+        ds["F22"] = ds["vp"] ** 2 - S
+        ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
 
-#         ## Additional from original EP:
-#         ds["F12_extra"] = - ds["dudp"] * ds["vp"] * ds["thetap"] / ds["dthetadp"]
-#         ds["F13_extra"] = ds["up"] * ds["omegap"]
-#         ds["F23_extra"] = ds["vp"] * ds["omegap"]
-#         ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] != "F"])
-#         ds = compute(ds, progress_flag=False)
-#         ds.to_netcdf(ofile)
+        ## Additional from original EP:
+        ds["F12_extra"] = - ds["dudp"] * ds["vp"] * ds["thetap"] / ds["dthetadp"]
+        ds["F13_extra"] = ds["up"] * ds["omegap"]
+        ds["F23_extra"] = ds["vp"] * ds["omegap"]
+        ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] != "F"])
+        
+        # scaling! from Jucker 2021, or simply Edmon et al. 1980
+        for g in ds.data_vars:
+            ds[g] = ds[g] * RADIUS * degcos(ds.lat)
+            
+        # derivatives, what actually affects the "jet"
+        ds["vert1"] = ds["F13"].differentiate("lev")
+        ds["vert2"] = ds["F23"].differentiate("lev")
+        ds["vert_extra1"] = ds["F13_extra"].differentiate("lev")
+        ds["vert_extra2"] = ds["F23_extra"].differentiate("lev")
+        ds = ds.sel(lev=30000)
+        ds["hor1"] = compute_2d_div(ds, "F11", "F12")
+        ds["hor2"] = compute_2d_div(ds, "F12", "F22")
+        
+        ds = compute(ds, progress_flag=False)
+        if ozarr.is_dir():
+            kwargs = {"mode": "a", "append_dim": "time"}
+        else:
+            kwargs = {"mode": "w"}
+        kwargs = kwargs | {"align_chunks": True, "consolidated": False}
+        ds.to_zarr(ozarr, **kwargs)
     
 
 # block 4: WB
@@ -339,69 +361,23 @@ for run in ["ctrl", "dobl"]:
 
 
 for run in ["ctrl", "dobl"]:
-    jets = both_jets[run]    
-    opaths = {}
-    half_length = 2e6
-    dn = 1e5
-    n_interp = 30
-    mapping = {
-        f"F{j}": [f"F1{j}", f"F2{j}"]
-        for j in ["1", "2", "3", "3_extra"]
-    } | {
-        key: [f"{key}1", f"{key}2"]
-        for key in ["hor", "vert", "vert_extra"]
+    jets = both_jets[run]   
+    bc = both_paths[run].joinpath("bias_correct.parquet") 
+    to_do = {
+        "F1": ("F11", "F12"),
+        "F2": ("F12", "F22"),
+        "F3": ("F13", "F23"),
+        "F3_extra": ("F13_extra", "F23_extra"),
+        "hor": ("hor1", "hor2"),
+        "vert": ("vert1", "vert2"),
+        "vert_extra": ("vert_extra1", "vert_extra2"),
     }
-    for key in mapping:
-        opaths[key] = both_paths[run].joinpath(f"{key}_relative.parquet")
-    if all([opath.is_file() for opath in opaths.values()]):
-        continue
-    tmp_folder = both_paths[run].joinpath("tmp_rel")
-    tmp_folder.mkdir(exist_ok=True)
-    for year in trange(1969, 2021):
-        df = jets.filter(pl.col("time").dt.year() == year)
-        ds = xr.open_dataset(f"{DATADIR}/Henrik_data/ctrl/EPF/6H/{year}.nc")
-        ds = extract(ds, *args)
-        for f in ds.data_vars:
-            if f[0] == "F":
-                ds[f] = ds[f] * RADIUS * degcos(ds["lat"])
-        if not opaths["vert"].is_file():
-            ds["vert1"] = ds["F13"].differentiate("lev")
-            ds["vert2"] = ds["F23"].differentiate("lev")
-        if not opaths["vert_extra"].is_file():
-            ds["vert_extra1"] = ds["F13_extra"].differentiate("lev")
-            ds["vert_extra2"] = ds["F23_extra"].differentiate("lev")
-        if not opaths["hor"].is_file():
-            ds = ds.sel(lev=30000)
-            ds["hor1"] = compute_2d_div(ds, "F11", "F12")
-            ds["hor2"] = compute_2d_div(ds, "F21", "F22")
-        for dest, sources in mapping.items():
-            this_ofile = tmp_folder.joinpath(f"{dest}_{year}.parquet")
-            if this_ofile.is_file() or opaths[dest].is_file():
-                continue
-            varname = f"{dest}_interp"
-            df_interp = gather_normal_da_jets(
-                df, ds[sources[0]], ds[sources[1]], half_length=half_length, dn=dn, in_meters=True
-            )
-            angle = pl.col("angle") - pl.lit(np.pi / 2)
-            agg = angle.cos() * pl.col(f"{sources[0]}_interp") + angle.sin() * pl.col(f"{sources[1]}_interp")
-            agg = agg.cast(pl.Float32())
-            
-            df_interp = df_interp.with_columns(**{varname: agg}).drop(f"{sources[0]}_interp", f"{sources[1]}_interp")
-            
-            df_interp = interp_jets_to_zero_one(
-                df_interp, [varname, "is_polar"], n_interp=n_interp
-            )
-            df_interp.write_parquet(this_ofile)
-    for key in mapping:
-        opath = opaths[key]
-        if opath.is_file():
+    ds = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/EPF/6H/full.zarr")
+    ds = ds.sel(lat=slice(None, 85))
+    for dest, sources in to_do.items():
+        opath = both_paths[run].joinpath(f"{dest}_relative.parquet")
+        if ofile.is_file():
             continue
-        df = []
-        for year in range(1969, 2021):
-            df.append(pl.read_parquet(tmp_folder.joinpath(f"{key}_{year}.parquet")))
-        df = pl.concat(df).cast({"norm_index": pl.Float32(), "n": pl.Float32(), f"{key}_interp": pl.Float32()})
-        df.write_parquet(opath)
-    for f in tmp_folder.iterdir():
-        f.unlink()
-    tmp_folder.rmdir()
-            
+        das = [ds[source] for source in sources]
+        interpd = create_jet_relative_dataset(ph_jets, *das, bias_correction=bc, align_2d=dest, dn=1e5, n_interp=30)
+        interpd.write_parquet(ofile)

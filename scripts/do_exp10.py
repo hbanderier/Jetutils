@@ -280,6 +280,10 @@ to_do = (
     ("PV350", "thetalev", "PV350", {}),
     ("APVO", "thetalev", "APVO", {}),
     ("CPVO", "thetalev", "CPVO", {}),
+    ("SAPVS", "thetalev", "SAPVS", {}),
+    ("TAPVS", "thetalev", "TAPVS", {}),
+    ("SCPVS", "thetalev", "SCPVS", {}),
+    ("TCPVS", "thetalev", "TCPVS", {}),
     ("theta", "surf", ("alot2pvu", "theta"), {}),
     ("EKE250", "plev", ("eddy_stuff", "EKE"), {}),
 )
@@ -292,8 +296,8 @@ for huh in to_do:
     if ofile.is_file():
         continue
     da = open_da("ERA5", levtype, name, "6H", *args, **kwargs).rename(rename)
-    if rename in ["APVO", "CPVO"]:
-        da = da.sel(lev=slice(320, 350)).any("lev")
+    if rename in ["APVO", "CPVO", "SAPVS", "TAPVS", "SCPVS", "TCPVS"]:
+        da = da.sel(lev=slice(340, 350)).any("lev")
     interpd = create_jet_relative_dataset(ph_jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
     del da
     interpd.write_parquet(ofile)
