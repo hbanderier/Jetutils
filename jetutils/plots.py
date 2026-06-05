@@ -323,7 +323,10 @@ def create_levels(
     direction: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
-        return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
+        if levels is None: 
+            return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
+        else:
+            return levels, levels, "neither", 1
     extend = {-1: "min", 0: "both", 1: "max"}
     if direction is None:
         direction = infer_direction(to_plot)

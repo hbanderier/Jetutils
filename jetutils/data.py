@@ -1831,7 +1831,6 @@ class DataHandler(object):
         )
         if levels != "all" and levels is not None:
             levels, level_names = unpack_levels(levels)
-
         region = (minlon, maxlon, minlat, maxlat)
 
         if isinstance(period, str) and period == "all":
