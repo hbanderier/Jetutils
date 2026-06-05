@@ -662,7 +662,9 @@ def event_geometry(
         _description_
     """
     if index_columns is None:
-        index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+        # lev is vertical level (e.g, 250 hPa, 330K, 2PVU)
+        # level is contour level (e.g. 2PVU, 9.4AVU)
+        index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
     if mode == "envelope":
         geometry = st.linestring("points").st.envelope()
     elif mode == "convex_hull":
@@ -737,8 +739,6 @@ def detect_overturnings(
     overturnings = contours.join(
         unique_counts, on=[*index_columns, "lon"], how="left"
     ).filter(pl.col("counts") >= 3)
-
-    index_columns = get_index_columns(contours, ["member", "time", "level", "contour"])
 
     subindex = (difflon() > max_difflon).fill_null(False).cum_sum()
     newindex = (pl.int_range(pl.len()) - difflon().arg_max()) % pl.len()
@@ -857,7 +857,7 @@ def detect_streamers(
     pl.DataFrame
         _description_
     """
-    index_columns = get_index_columns(contours, ["member", "time", "level", "contour"])
+    index_columns = get_index_columns(contours, ["member", "time", "lev", "level", "contour"])
 
     ds = haversine(
         "lon",
@@ -1086,7 +1086,7 @@ def sjoin_to_grid(
         .with_columns(geometry=st.point(pl.concat_arr("lon", "lat")))
     )
 
-    index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+    index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
     events = events.drop(
         "points", "side"
     )  # .with_columns(pl.col("geometry").st.buffer(buffer))
@@ -1132,7 +1132,7 @@ def to_xarray_sjoin(
     """
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, da, varname, buffer)
-    index_columns = get_index_columns(events_on_grid, ["member", "time", "level"])
+    index_columns = get_index_columns(events_on_grid, ["member", "time", "lev", "level"])
     index_columns.extend(["lon", "lat"])
     for i, index_column in enumerate(index_columns):
         if index_column in da.dims:
@@ -1213,7 +1213,7 @@ def event_props(
     pl.DataFrame
         Same as input but with a few more columns
     """
-    index_columns = get_index_columns(events, ["member", "time", "level", "index"])
+    index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, das[0])
 
