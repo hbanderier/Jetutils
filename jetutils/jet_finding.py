@@ -2,6 +2,7 @@
 """
 This probably too big module contains all the utilities relative to jet extraction from 2D fields, jet tracking, jet categorization and jet properties. All of the functions are wrapped by the convenience class `JetFindingExperiment`.
 """
+from numpy.typing import NDArray
 import datetime
 from itertools import product
 from pathlib import Path
@@ -729,6 +730,7 @@ def one_gmix_v2(
     n_components=2,
     n_init=20,
     init_params="random_from_data",
+    previous: np.ndarray | None = None
 ):
     """
     Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
@@ -754,7 +756,7 @@ def one_gmix_v2(
     https://scikit-learn.org/stable/modules/generated/sklearn.mixture.GaussianMixture.html
     """
     model = GaussianMixture(
-        n_components=n_components, init_params=init_params, n_init=n_init
+        n_components=n_components, init_params=init_params, n_init=n_init, means_init=previous
     )
     if "ratio" in X.columns:
         X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
@@ -770,7 +772,7 @@ def one_gmix_v2(
     else:
         order = np.argsort(model.means_[:, 1])[::-1]
     otherscores = np.sum([scores[k] for k in order[:-1]], axis=0)
-    return 1 / (1 + otherscores / scores[order[-1]])
+    return 1 / (1 + otherscores / scores[order[-1]]), previous
 
 
 def is_polar_gmix(
@@ -783,6 +785,7 @@ def is_polar_gmix(
     n_init: int = 20,
     init_params: str = "random_from_data",
     v2: bool = True,
+    use_prev: bool = True,
 ) -> DataFrame:
     """
     Trains one or several Gaussian Mixture model independently, depending on the `mode` argument.
@@ -819,6 +822,7 @@ def is_polar_gmix(
         return jets.with_columns(is_polar=probas)
     index_columns = get_index_columns(jets, ["member", "number", "forecast_init", "time", "jet ID", "index"])
     to_concat = []
+    previous = None
     if mode == "season":
         if isinstance(n_components, int):
             n_components = [n_components] * 4
@@ -830,7 +834,9 @@ def is_polar_gmix(
             X = extract_season_from_df(jets, season)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X[feature_names], **kwargs)
+            probas, previous = gmix_fn(X[feature_names], **kwargs, previous=previous)
+            if not use_prev:
+                previous = None
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "month":
         months = jets["time"].dt.month().unique().sort().to_numpy()
@@ -842,7 +848,9 @@ def is_polar_gmix(
             X = extract_season_from_df(jets, month)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X[feature_names], **kwargs)
+            probas, previous = gmix_fn(X[feature_names], **kwargs, previous=previous)
+            if not use_prev:
+                previous = None
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
     elif mode == "week":
         weeks = jets["time"].dt.week().unique().sort().to_numpy()
@@ -854,7 +862,9 @@ def is_polar_gmix(
             X = jets.filter(pl.col("time").dt.week() == week)
             X = X[[*index_columns, *feature_names]]
             kwargs["n_components"] = n_components_
-            probas = gmix_fn(X[feature_names], **kwargs)
+            probas, previous = gmix_fn(X[feature_names], **kwargs, previous=previous)
+            if not use_prev:
+                previous = None
             to_concat.append(X.with_columns(is_polar=probas).drop(feature_names))
 
     return jets.join(pl.concat(to_concat), on=index_columns).sort(index_columns)

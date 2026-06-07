@@ -1129,7 +1129,7 @@ def plot_seasonal(
         else:
             factor_str = str(int(np.log10(factor)))
             factor_str = r"$10^{" + factor_str + r"} \times $"
-        if varname in ["mean_lev", "mean_theta"]:
+        if varname in ["mean_lev"]:
             ax.invert_yaxis()
         if numbering:
             ax.set_title(
@@ -1169,7 +1169,7 @@ def plot_seasonal(
         wherex = np.isin(x, JJADOYS)
         ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
-    axes.ravel()[3].legend().set_zorder(102)
+    axes.ravel()[1].legend().set_zorder(102)
     if save:
         if folder is None:
             folder = "jet_props_misc"
