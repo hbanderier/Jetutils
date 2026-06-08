@@ -12,7 +12,7 @@ for run in ["historical", "ssp370"]:
     path = Path(DATADIR, "CESM2/high_wind", run, "results/1")
     jets = pl.read_parquet(path.joinpath("jets.parquet"))
     jets_newcat = is_polar_gmix(jets, ("s", "theta"), mode="week", n_init=20, init_params="random_from_data", v2=True, use_prev=True)
-    jets_newcat = jets_newcat.rename({"is_polar": "is_polar_old", "is_polar_right": "is_polar"})
+    jets = jets_newcat.rename({"is_polar": "is_polar_old", "is_polar_right": "is_polar"})
     
     newpath = Path(DATADIR, "CESM2/high_wind", run, "results/2")
     newpath.mkdir(exist_ok=True)
