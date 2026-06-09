@@ -55,114 +55,114 @@ os.environ["RUST_BACKTRACE"] = "full"
 
 # block 0: uv to zarr 
 
-import warnings
-uv_sample = []
-basepath = Path(DATADIR, "ERA5/plev/uv/6H")
-if not basepath.joinpath("full.zarr").is_dir():
-    for i, f in enumerate(tqdm(list(basepath.glob("*.nc")))):
-        uv_sample = standardize(xr.open_dataset(f))
-        uv_sample["theta"] = uv_sample["t"] * (1000 / uv_sample["lev"]) ** KAPPA
-        uv_sample = uv_sample.drop_vars("t")
-        for var in ["u", "v", "theta"]:
-            uv_sample[f"f{var}dp"] = uv_sample[var].differentiate("lev")
-        uv_sample = uv_sample.sel(lev=250)
-        kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            uv_sample.to_zarr(basepath.joinpath("full250.zarr"), **kwargs)
+# import warnings
+# uv_sample = []
+# basepath = Path(DATADIR, "ERA5/plev/uv/6H")
+# if not basepath.joinpath("full.zarr").is_dir():
+#     for i, f in enumerate(tqdm(list(basepath.glob("*.nc")))):
+#         uv_sample = standardize(xr.open_dataset(f))
+#         uv_sample["theta"] = uv_sample["t"] * (1000 / uv_sample["lev"]) ** KAPPA
+#         uv_sample = uv_sample.drop_vars("t")
+#         for var in ["u", "v", "theta"]:
+#             uv_sample[f"f{var}dp"] = uv_sample[var].differentiate("lev")
+#         uv_sample = uv_sample.sel(lev=250)
+#         kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
+#         with warnings.catch_warnings():
+#             warnings.simplefilter("ignore")
+#             uv_sample.to_zarr(basepath.joinpath("full250.zarr"), **kwargs)
 
-# block 1: compute eddy stuff
-opath = Path(
-    f"{DATADIR}/ERA5/plev/uv/6H/results",
-    "Eddy_uv_natl_10days.zarr",
-)
-if not opath.is_dir() and False:
-    half_len = 20
-    ds = standardize(
-        xr.open_mfdataset(
-            f"{DATADIR}/ERA5/plev/uv/6H/*.nc",
-            combine="nested",
-            concat_dim="time",
-        )[["u", "v", "omega", "theta"]]
-        .sel(lat=slice(0, 90), lev=250)
-        .chunk("auto")
-    )
-    l_win = lanczos(2 * half_len + 1)[:, None, None, None]
-    dims = ds.dims
-    for var in ds.data_vars:
-        ds[f"{var}bar"] = (
-            dims,
-            (
-                convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
-            ).astype(np.float32),
-        )
-        ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
-        del ds[f"{var}bar"]
-        del ds[var]
-    ds = ds.chunk({"time": 1390, "lat": 72, "lon": 161})
-    res = ds.to_zarr(opath, compute=False)
-    compute(res, progress=True)
+# # block 1: compute eddy stuff
+# opath = Path(
+#     f"{DATADIR}/ERA5/plev/uv/6H/results",
+#     "Eddy_uv_natl_10days.zarr",
+# )
+# if not opath.is_dir() and False:
+#     half_len = 20
+    # ds = standardize(
+    #     xr.open_mfdataset(
+    #         f"{DATADIR}/ERA5/plev/uv/6H/*.nc",
+    #         combine="nested",
+    #         concat_dim="time",
+    #     )[["u", "v", "omega", "theta"]]
+    #     .sel(lat=slice(0, 90), lev=250)
+    #     .chunk("auto")
+    # )
+    # l_win = lanczos(2 * half_len + 1)[:, None, None, None]
+    # dims = ds.dims
+    # for var in ds.data_vars:
+    #     ds[f"{var}bar"] = (
+    #         dims,
+    #         (
+    #             convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
+    #         ).astype(np.float32),
+    #     )
+    #     ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
+    #     del ds[f"{var}bar"]
+    #     del ds[var]
+    # ds = ds.chunk({"time": 1390, "lat": 72, "lon": 161})
+    # res = ds.to_zarr(opath, compute=False)
+    # compute(res, progress=True)
 
 
 # block 3: EP Flux
-ipath = Path(
-    f"{DATADIR}/ERA5/plev/uv/6H/results",
-    "Eddy_uv_natl_10days.zarr",
-)
-odir = Path(f"{DATADIR}/ERA5/plev/eddy_stuff/6H")
-odir.mkdir(parents=True, exist_ok=True)
-bigds = xr.open_dataset(ipath).chunk("auto")
-for year in tqdm(YEARS):
-    ofile = odir.joinpath(f"{year}.nc")
-    if ofile.is_file() or True:
-        continue
-    ds = bigds.sel(time=bigds.time.dt.year == year)
-    # ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
+# ipath = Path(
+#     f"{DATADIR}/ERA5/plev/uv/6H/results",
+#     "Eddy_uv_natl_10days.zarr",
+# )
+# odir = Path(f"{DATADIR}/ERA5/plev/eddy_stuff/6H")
+# odir.mkdir(parents=True, exist_ok=True)
+# bigds = xr.open_dataset(ipath).chunk("auto")
+# for year in tqdm(YEARS):
+#     ofile = odir.joinpath(f"{year}.nc")
+#     if ofile.is_file() or True:
+#         continue
+#     ds = bigds.sel(time=bigds.time.dt.year == year)
+#     # ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
 
-    # gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
-    # EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
-    # S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
-    EKE = 0.5 * (ds["up"] ** 2 + ds["vp"] ** 2)
-    EKE = EKE.astype(np.float32)
-    f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
+#     # gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
+#     # EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
+#     # S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
+#     EKE = 0.5 * (ds["up"] ** 2 + ds["vp"] ** 2)
+#     EKE = EKE.astype(np.float32)
+#     f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
 
-    ## Base 2 * 3
-    ds["EKE"] = EKE
-    ds["F11"] = ds["up"] ** 2 - EKE
-    ds["F12"] = ds["up"] * ds["vp"]
-    # ds["F13"] = - ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
-    # ds["F21"] = ds["up"] * ds["vp"]
-    ds["F22"] = ds["vp"] ** 2 - EKE
-    # ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
+#     ## Base 2 * 3
+#     ds["EKE"] = EKE
+#     ds["F11"] = ds["up"] ** 2 - EKE
+#     ds["F12"] = ds["up"] * ds["vp"]
+#     # ds["F13"] = - ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
+#     # ds["F21"] = ds["up"] * ds["vp"]
+#     ds["F22"] = ds["vp"] ** 2 - EKE
+#     # ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
 
-    ## Additional from original EP:
-    # ds["F12_extra"] = - ds["dudp"] * ds["vp"] * ds["thetap"] / ds["dthetadp"]
-    # ds["F13_extra"] = ds["up"] * ds["omegap"]
-    # ds["F23_extra"] = ds["vp"] * ds["omegap"]
-    ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] not in ["E", "F"]])
-    ds = compute(ds, progress_flag=False)
-    ds.to_netcdf(ofile)
+#     ## Additional from original EP:
+#     # ds["F12_extra"] = - ds["dudp"] * ds["vp"] * ds["thetap"] / ds["dthetadp"]
+#     # ds["F13_extra"] = ds["up"] * ds["omegap"]
+#     # ds["F23_extra"] = ds["vp"] * ds["omegap"]
+#     ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] not in ["E", "F"]])
+#     ds = compute(ds, progress_flag=False)
+#     ds.to_netcdf(ofile)
 
 
-odir = Path(f"{DATADIR}/ERA5/plev/eddy_stuff/6H")
-odir.mkdir(parents=True, exist_ok=True)
-ds_eddies = standardize(
-    xr.open_dataset(Path(DATADIR, "ERA5/plev/uv/6H/results/Eddy_uv_natl_10days.zarr"))
-).sel(lev=250)
-if not odir.joinpath("full.zarr").is_dir():
-    for i, year in enumerate(tqdm(YEARS)):
-        bigds = ds_eddies.sel(time=ds_eddies.time.dt.year == year)
-        ds = {}
-        ds["EKE"] = 0.5 * (bigds["up"] ** 2 + bigds["vp"] ** 2)
-        ds["F11"] = bigds["up"] ** 2 - ds["EKE"]
-        ds["F12"] = bigds["up"] * bigds["vp"]
-        ds["F22"] = bigds["vp"] ** 2 - ds["EKE"]
-        ds = xr.Dataset(ds)
-        ds["hor1"] = compute_2d_div(ds, "F11", "F12")
-        ds["hor2"] = compute_2d_div(ds, "F12", "F22")
-        ds = compute(ds, progress_flag=False)
-        kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
-        ds.to_zarr(odir.joinpath("full.zarr"), **kwargs)
+# odir = Path(f"{DATADIR}/ERA5/plev/eddy_stuff/6H")
+# odir.mkdir(parents=True, exist_ok=True)
+# ds_eddies = standardize(
+#     xr.open_dataset(Path(DATADIR, "ERA5/plev/uv/6H/results/Eddy_uv_natl_10days.zarr"))
+# ).sel(lev=250)
+# if not odir.joinpath("full.zarr").is_dir():
+#     for i, year in enumerate(tqdm(YEARS)):
+#         bigds = ds_eddies.sel(time=ds_eddies.time.dt.year == year)
+#         ds = {}
+#         ds["EKE"] = 0.5 * (bigds["up"] ** 2 + bigds["vp"] ** 2)
+#         ds["F11"] = bigds["up"] ** 2 - ds["EKE"]
+#         ds["F12"] = bigds["up"] * bigds["vp"]
+#         ds["F22"] = bigds["vp"] ** 2 - ds["EKE"]
+#         ds = xr.Dataset(ds)
+#         ds["hor1"] = compute_2d_div(ds, "F11", "F12")
+#         ds["hor2"] = compute_2d_div(ds, "F12", "F22")
+#         ds = compute(ds, progress_flag=False)
+#         kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
+#         ds.to_zarr(odir.joinpath("full.zarr"), **kwargs)
 
 
 # block 4: WB
@@ -336,31 +336,31 @@ for huh in to_do:
         continue
     da = open_da("ERA5", levtype, name, "6H", *args, **kwargs).rename(rename)
     if rename in ["APVO", "CPVO", "SAPVS", "TAPVS", "SCPVS", "TCPVS"]:
-        da = da.sel(lev=slice(340, 350)).any("lev")
+        da = da.sel(lev=slice(320, 350)).any("lev")
     interpd = create_jet_relative_dataset(
         phat_jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30
     )
     del da
     interpd.write_parquet(ofile)
 
-ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
-ds_eddies = ds_eddies.sel(lat=slice(None, 85))
-to_do = {
-    # "F1": ("F11", "F12"),
-    # "F2": ("F12", "F22"),
-    "hor": ("hor1", "hor2"),
-}
-for dest, sources in to_do.items():
-    ofile = path.joinpath(f"{dest}_relative.parquet")
-    if ofile.is_file():
-        continue
-    das = [ds_eddies[source] for source in sources]
-    interpd = create_jet_relative_dataset(
-        phat_jets,
-        *das,
-        bias_correction=bias_correction,
-        align_2d=dest,
-        dn=1e5,
-        n_interp=30,
-    )
-    interpd.write_parquet(ofile)
+# ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
+# ds_eddies = ds_eddies.sel(lat=slice(None, 85))
+# to_do = {
+#     # "F1": ("F11", "F12"),
+#     # "F2": ("F12", "F22"),
+#     "hor": ("hor1", "hor2"),
+# }
+# for dest, sources in to_do.items():
+#     ofile = path.joinpath(f"{dest}_relative.parquet")
+#     if ofile.is_file():
+#         continue
+#     das = [ds_eddies[source] for source in sources]
+#     interpd = create_jet_relative_dataset(
+#         phat_jets,
+#         *das,
+#         bias_correction=bias_correction,
+#         align_2d=dest,
+#         dn=1e5,
+#         n_interp=30,
+#     )
+#     interpd.write_parquet(ofile)
