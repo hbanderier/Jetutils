@@ -947,15 +947,6 @@ def detect_streamers(
         pl.col("range_other")
     ).list.len() / pl.min_horizontal(l1, l2)
 
-    index = (
-        pl.when("forward").then(pl.col("index").min()).otherwise(pl.col("index").max())
-    )
-    index_right = (
-        pl.when("forward")
-        .then(pl.col("index_right").max())
-        .otherwise(pl.col("index_right").min())
-    )
-
     streamers = (
         streamers[
             *index_columns,
@@ -1033,7 +1024,7 @@ def detect_streamers(
     streamers = streamers.with_columns(index=index)
     index_columns.append("index")
     return event_geometry(streamers, "polygon", index_columns=index_columns)
-
+    
 
 def sjoin_to_grid(
     events: pl.DataFrame,
@@ -1252,6 +1243,31 @@ def event_props(
         cs.unsigned_integer().cast(pl.UInt32()),
     )
     return events, events_on_grid
+
+
+def calculate_streamer_angle(streamers: pl.DataFrame, vort_name: str = "PV") -> pl.DataFrame:
+    points = pl.col("points").explode()
+    lon0 = points.list.get(0).arr.get(0)
+    lat0 = points.list.get(0).arr.get(1)
+    lon1 = points.list.get(-1).arr.get(0)
+    lat1 = points.list.get(-1).arr.get(1)
+    lon_midpoint = (lon0 + lon1) / 2
+    lat_midpoint = (lat0 + lat1) / 2
+    
+    lons = points.list.eval(pl.element().arr.first())
+    lats = points.list.eval(pl.element().arr.last())
+    southernmost = lats.list.eval(pl.element().abs()).list.arg_min()
+    lon_southernmost = lons.list.get(southernmost)
+    lat_southernmost = lats.list.get(southernmost)
+    northernmost = lats.list.eval(pl.element().abs()).list.arg_max()
+    lon_northernmost = lons.list.get(northernmost)
+    lat_northernmost = lats.list.get(northernmost)
+    
+    angle_up = pl.arctan2(lat_midpoint - lat_southernmost, lon_midpoint - lon_southernmost).degrees()
+    angle_down = pl.arctan2(lat_northernmost - lat_midpoint, lon_northernmost - lon_midpoint).degrees()
+    angle = pl.when(pl.col(vort_name).abs() > pl.col("level").abs()).then(angle_up).otherwise(angle_down)
+    
+    return streamers.with_columns(axis_angle=angle)
 
 
 def interp_from_other(jets: DataFrame, da_df: DataFrame, varname: str) -> DataFrame:
