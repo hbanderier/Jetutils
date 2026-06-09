@@ -1148,15 +1148,18 @@ def do_rle_fill_hole(
     )
     df1: pl.DataFrame = df.with_columns(condition=condition_expr.not_().over(group_by))
     df = df.with_columns(condition=condition_expr.over(group_by))
-    if isinstance(hole_size, datetime.timedelta):
-        if "time" not in df.columns or (group_by is not None and "time" in group_by):
-            raise ValueError
+    
+    if "time" in df.columns or "time" in group_by:
         times = df["time"].unique().bottom_k(2).sort()
         dt = times[1] - times[0]
-        hole_size = int(hole_size / dt)
         no_time_jump_expr = (pl.col("time").diff() <= dt).fill_null(True)
         df = df.with_columns(condition=pl.col("condition") & no_time_jump_expr.over(group_by))
         df1 = df1.with_columns(condition=pl.col("condition") & no_time_jump_expr.over(group_by))
+        
+    if isinstance(hole_size, datetime.timedelta):
+        if "time" not in df.columns or (group_by is not None and "time" in group_by):
+            raise ValueError
+        hole_size = int(hole_size / dt)
 
     holes_to_fill = do_rle(df1, group_by=group_by)
     holes_to_fill = holes_to_fill.filter(
