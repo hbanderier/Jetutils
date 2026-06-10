@@ -317,12 +317,12 @@ to_do = (
     ("tp", "surf", "tp", {}),
     ("PV330", "thetalev", "PV330", {}),
     ("PV350", "thetalev", "PV350", {}),
-    ("APVO", "thetalev", "APVO", {}),
-    ("CPVO", "thetalev", "CPVO", {}),
-    ("SAPVS", "thetalev", "SAPVS", {}),
-    ("TAPVS", "thetalev", "TAPVS", {}),
-    ("SCPVS", "thetalev", "SCPVS", {}),
-    ("TCPVS", "thetalev", "TCPVS", {}),
+    ("APVO", "thetalev", "APVO_new", {}),
+    ("CPVO", "thetalev", "CPVO_new", {}),
+    ("SAPVS", "thetalev", "SAPVS_new", {}),
+    ("TAPVS", "thetalev", "TAPVS_new", {}),
+    ("SCPVS", "thetalev", "SCPVS_new", {}),
+    ("TCPVS", "thetalev", "TCPVS_new", {}),
     ("theta", "surf", ("alot2pvu", "theta"), {}),
     ("EKE250", "plev", ("eddy_stuff", "EKE"), {}),
 )
@@ -336,11 +336,11 @@ for huh in to_do:
         continue
     da = open_da("ERA5", levtype, name, "6H", *args, **kwargs).rename(rename)
     if rename in ["APVO", "CPVO", "SAPVS", "TAPVS", "SCPVS", "TCPVS"]:
-        da = da.sel(lev=slice(320, 350)).any("lev")
+        da = da.any("lev")
+            
     interpd = create_jet_relative_dataset(
         phat_jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30
     )
-    del da
     interpd.write_parquet(ofile)
 
 # ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
