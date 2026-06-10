@@ -688,6 +688,7 @@ def one_gmix(
     n_components=2,
     n_init=20,
     init_params="random_from_data",
+    previous: NDArray | None = None,
 ):
     """
     Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
