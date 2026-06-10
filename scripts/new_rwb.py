@@ -8,7 +8,7 @@ import polars as pl
 import xarray as xr
 from tqdm import trange
 
-ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/with_EMF.zarr")
+ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/results/with_EMF.zarr")
 ds = ds.chunk(ds["PV"].encoding["preferred_chunks"])
 strato = pl.col("PV") > pl.col("level")
 tropo = pl.col("PV") < pl.col("level")
@@ -23,11 +23,11 @@ filters = {
     "TAPVS": tropo & anti & large,
     "TCPVS": tropo & cyclo & large,
 }
-odirs = {var: Path(f"{DATADIR}/ERA5/thetalev/{var}_new") for var in filters}
+odirs = {var: Path(f"{DATADIR}/ERA5/thetalev/{var}_new/6H") for var in filters}
 odir_pfiles = Path(f"{DATADIR}/ERA5/thetalev/rwb_index")
 odir_pfiles.mkdir(exist_ok=True)
 for odir in odirs.values():
-    odir.mkdir(exist_ok=True)
+    odir.mkdir(exist_ok=True, parents=True)
 for year in trange(1959, 2023):
     ds_ = ds.sel(time=ds.time.dt.year == year).load()
     opaths = {var: path.joinpath(f"{year}.nc") for var, path in odirs.items()}
