@@ -1169,6 +1169,7 @@ def plot_seasonal(
         wherex = np.isin(x, JJADOYS)
         ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
         ax.set_ylim(ylim)
+        ax.grid(True)
     axes.ravel()[1].legend().set_zorder(102)
     if save:
         if folder is None:
