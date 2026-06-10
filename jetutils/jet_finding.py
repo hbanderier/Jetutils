@@ -1528,7 +1528,7 @@ def spells_from_cross(
     ):
         spell =  spells.filter(filters[jet])
         if n is not None:
-            other_filter = spell.select(pl.col("spell").top_k_by("len", 30))
+            other_filter = spell.select(pl.col("spell").top_k_by("len", n))
             spell = other_filter.join(spell, on="spell")
         elif q is not None:
             filter_ = pl.col("pers_sum") > pl.col("pers_sum").quantile(q)
