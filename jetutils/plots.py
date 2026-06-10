@@ -1686,7 +1686,7 @@ def plot_interp(
                     pvals.where(filter_),
                     hatch="\\" * 3,
                     facecolor="none",
-                    edgecolor="grey",
+                    edgecolor="black",
                     hatch_linewidth=2.0,
                     linewidth=0,
                 )
