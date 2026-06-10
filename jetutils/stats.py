@@ -9,8 +9,8 @@ import pickle as pkl
 import numpy as np
 import xarray as xr
 import polars as pl
-from scipy.stats import norm
-from .definitions import N_WORKERS, SEASONS, infer_direction
+from scipy.stats import norm, rankdata
+from .definitions import N_WORKERS, SEASONS, infer_direction, polars_to_xarray
 import polars_ds as pds
 
 
@@ -286,7 +286,21 @@ def field_significance(
     return nocorr, fdr_correction(p, q)
 
 
-def one_ks_cumsum(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int = None):
+def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 50, q: float = 0.025):
+    times = create_bootstrapped_times(spells, all_times, n_bootstraps)
+    result = []
+    for spell in times["spell"].unique():    
+        huh_ = da.sel(time=polars_to_xarray(times.filter(pl.col("spell") == spell)["sample_index", "time", "relative_index"], ["sample_index", "relative_index"]))
+        result.append(huh_)
+    result = xr.concat(result, dim="spell").mean(["spell", "relative_index"])
+    pvals = result.copy(data=rankdata(result, axis=0)) 
+    pvals = pvals.isel(sample_index=-1) / n_bootstraps
+    fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q))
+    to_plot = result.isel(sample_index=-1)
+    return to_plot, pvals, fdr_signif
+
+
+def one_ks_cumsum(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int | None = None):
     if n_sam is None:
         n_sam = len(a)
     x = np.concatenate([a, b], axis=0)
