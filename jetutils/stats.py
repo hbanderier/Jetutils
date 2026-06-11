@@ -296,7 +296,7 @@ def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_ti
     result = xr.concat(result, dim="spell").mean(["spell", "relative_index"])
     pvals = result.copy(data=rankdata(result, axis=0) - 1) 
     pvals = pvals.isel(sample_index=-1) / n_bootstraps
-    fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q))
+    fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q, two_sided=True))
     to_plot = result.isel(sample_index=-1)
     return to_plot, pvals, fdr_signif
 
