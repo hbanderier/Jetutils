@@ -242,16 +242,17 @@ def searchsortednd(
     return (p - na * (np.arange(m)[None, :])).reshape((nx, *orig_shapex))
 
 
-def fdr_correction(p: np.ndarray, q: float = 0.02):
+def fdr_correction(p: np.ndarray, q: float = 0.02, two_sided: bool = False):
     pshape = p.shape
     p = p.ravel()
     num_p = len(p)
     fdrcorr = np.zeros(num_p, dtype=bool)
+    if two_sided:
+        p = 2 * np.amin([p, 1 - p], axis=0)
     argp = np.argsort(p)
     p = p[argp]
     line_below = q * np.arange(num_p) / (num_p - 1)
-    line_above = line_below + (1 - q)
-    fdrcorr[argp] = (p >= line_above) | (p <= line_below)
+    fdrcorr[argp] = p <= line_below
     return fdrcorr.reshape(pshape)
 
 
@@ -293,7 +294,7 @@ def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_ti
         huh_ = da.sel(time=polars_to_xarray(times.filter(pl.col("spell") == spell)["sample_index", "time", "relative_index"], ["sample_index", "relative_index"]))
         result.append(huh_)
     result = xr.concat(result, dim="spell").mean(["spell", "relative_index"])
-    pvals = result.copy(data=rankdata(result, axis=0)) 
+    pvals = result.copy(data=rankdata(result, axis=0) - 1) 
     pvals = pvals.isel(sample_index=-1) / n_bootstraps
     fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q))
     to_plot = result.isel(sample_index=-1)
