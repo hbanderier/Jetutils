@@ -819,7 +819,7 @@ def is_polar_gmix(
     if mode == "all":
         X = extract_features(jets, feature_names)
         kwargs["n_components"] = n_components
-        probas = gmix_fn(X, **kwargs)
+        probas, _ = gmix_fn(X, **kwargs)
         return jets.with_columns(is_polar=probas)
     index_columns = get_index_columns(jets, ["member", "number", "forecast_init", "time", "jet ID", "index"])
     to_concat = []
@@ -1381,12 +1381,12 @@ def connected_from_cross(
                 / (pl.col("time_right") - pl.col("time")).min()
             ).cast(pl.Int32())
         )
-        .with_columns(pers=persistence_expr() / pl.col("dt"))
+        .with_columns(slowness=slowness_expr() / pl.col("dt"))
         .group_by("time", "jet ID", maintain_order=True)
         .agg(
-            pl.col("time_right").get(pl.col("pers").arg_max()),
-            pl.col("jet ID_right").get(pl.col("pers").arg_max()),
-            pl.col("dt").get(pl.col("pers").arg_max()),
+            pl.col("time_right").get(pl.col("slowness").arg_max()),
+            pl.col("jet ID_right").get(pl.col("slowness").arg_max()),
+            pl.col("dt").get(pl.col("slowness").arg_max()),
         )
         .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
     )
@@ -1454,7 +1454,7 @@ def connected_from_cross(
     return cross, summary_comp
 
 
-def persistence_expr() -> Expr:
+def slowness_expr() -> Expr:
     return (
         pl.col("lon_overlap")
         / pl.col("dist")
@@ -1501,18 +1501,18 @@ def spells_from_cross(
         )
     spells = (
         summary_comp.filter(pl.col("len") > 2)
-        .with_columns(pers=persistence_expr())
+        .with_columns(slowness=slowness_expr())
         .group_by("spell", maintain_order=True)
         .agg(
             pl.col("time"),
             pl.col("jet ID"),
             pl.col("lon_overlap"),
-            pl.col("pers"),
+            pl.col("slowness"),
             pl.col("dis_polar"),
             pl.col("is_polar"),
             len=pl.len(),
             mean_is_polar=pl.col("is_polar").mean(),
-            pers_sum=pl.col("pers").sum(),
+            slowness_sum=pl.col("slowness").sum(),
         )
     )
     
@@ -1531,13 +1531,13 @@ def spells_from_cross(
             other_filter = spell.select(pl.col("spell").top_k_by("len", n))
             spell = other_filter.join(spell, on="spell")
         elif q is not None:
-            filter_ = pl.col("pers_sum") > pl.col("pers_sum").quantile(q)
+            filter_ = pl.col("slowness_sum") > pl.col("slowness_sum").quantile(q)
             spell = spell.filter(filter_)
         else:
             raise ValueError
         spell = (
             spell
-            .explode("time", "jet ID", "pers", "is_polar", "lon_overlap", "dis_polar")
+            .explode("time", "jet ID", "slowness", "is_polar", "lon_overlap", "dis_polar")
             .with_columns(
                 spell_of=pl.lit(jet),
                 spell_orig=pl.col("spell"),
@@ -1552,26 +1552,26 @@ def spells_from_cross(
     return spells_list
 
 
-def pers_from_cross(cross: DataFrame) -> DataFrame:
+def slowness_from_cross(cross: DataFrame) -> DataFrame:
     index_columns = get_index_columns(cross)
     if "jet" in index_columns:
         return (
             cross
             .filter(pl.col("jet") == pl.col("jet_right"))
-            .with_columns(pers=persistence_expr())
+            .with_columns(slowness=slowness_expr())
             .group_by(index_columns, maintain_order=True)
             .agg(
-                pers=pl.col("pers").max(),
+                slowness=pl.col("slowness").max(),
                 is_polar=pl.col("is_polar").mean()
             )
         )
     else:
         return (
             cross
-            .with_columns(pers=persistence_expr())
+            .with_columns(slowness=slowness_expr())
             .group_by(index_columns, maintain_order=True)
             .agg(
-                pers=pl.col("pers").max(),
+                slowness=pl.col("slowness").max(),
                 is_polar=pl.col("is_polar").mean()
             )
         )
@@ -1586,7 +1586,7 @@ def spells_from_cross_catd_simple(
     smooth: datetime.timedelta | None = None,
     fill_holes: datetime.timedelta | int = 0,
 ) -> dict[str, DataFrame]:
-    cross = cross.with_columns(pers=persistence_expr())
+    cross = cross.with_columns(slowness=slowness_expr())
     cross = squarify(cross, ["time", "jet"])
 
     if smooth is not None:
@@ -1597,7 +1597,7 @@ def spells_from_cross_catd_simple(
         ).agg(
             *[
                 pl.col(col).mean()
-                for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "pers"]
+                for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "slowness"]
             ]
         )
 
@@ -1607,7 +1607,7 @@ def spells_from_cross_catd_simple(
     spells_list: dict[str, DataFrame] = {
         jet: get_spells(
             cross.filter(pl.col("jet") == jet),
-            pl.col("pers") > pl.col("pers").quantile(q),
+            pl.col("slowness") > pl.col("slowness").quantile(q),
             minlen=minlen,
             fill_holes=fill_holes,
         ).with_columns(spell_of=pl.lit(jet))
@@ -1626,7 +1626,7 @@ def spells_from_cross_catd(
     smooth: datetime.timedelta | None = None,
     fill_holes: datetime.timedelta | int = 0,
 ) -> dict[str, DataFrame]:
-    cross = cross.with_columns(pers=persistence_expr())
+    cross = cross.with_columns(slowness=slowness_expr())
     cross = squarify(cross, ["time", "jet"])
 
     if smooth is not None:
@@ -1637,7 +1637,7 @@ def spells_from_cross_catd(
         ).agg(
             *[
                 pl.col(col).mean()
-                for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "pers"]
+                for col in ["lon_overlap", "ds", "dtheta", "dis_polar", "dist", "slowness"]
             ]
         )
 
@@ -1646,20 +1646,20 @@ def spells_from_cross_catd(
 
     spells_base = get_spells(
         cross,
-        pl.col("pers") > pl.col("pers").quantile(base_q),
+        pl.col("slowness") > pl.col("slowness").quantile(base_q),
         group_by=["jet"],
         minlen=minlen,
         fill_holes=fill_holes,
     )
     stats: DataFrame = spells_base.group_by(
         ["jet", "spell"], maintain_order=True
-    ).agg(pl.col("len").first(), pl.col("pers").sum())
+    ).agg(pl.col("len").first(), pl.col("slowness").sum())
 
     spells_list: dict[str, DataFrame] = {
         jet: (
             stats.filter(pl.col("jet") == jet)
-            .top_k(n, by="pers")
-            .rename({"pers": "pers_sum"})
+            .top_k(n, by="slowness")
+            .rename({"slowness": "slowness_sum"})
             .join(
                 spells_base.filter(pl.col("jet") == jet).drop("len", "value"),
                 on=["jet", "spell"],
@@ -1771,7 +1771,7 @@ def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool 
     else:
         cross = standardize_polars_dtypes(pl.read_parquet(cross_path))
         
-    pers = pers_from_cross(cross)    
+    slowness = slowness_from_cross(cross)    
     
     if not props_path.is_file():
         props = compute_jet_props(jets)
@@ -1793,13 +1793,13 @@ def do_everything(ds: xr.Dataset, save_path: Path, bias_correct_realspace: bool 
         
     if not props_final_path.is_file():
         if not track_large:
-            props = props.join(pers, on=index_columns)
+            props = props.join(slowness, on=index_columns)
         phat_props = props.filter(phat_filter)
 
         phat_props = average_jet_categories(phat_props, polar_cutoff=0.5)
         index_columns = get_index_columns(phat_props)
         if track_large:
-            phat_props = phat_props.join(pers, on=index_columns)
+            phat_props = phat_props.join(slowness, on=index_columns)
         phat_props.write_parquet(props_final_path)
     else:
         phat_props = standardize_polars_dtypes(pl.read_parquet(props_final_path))

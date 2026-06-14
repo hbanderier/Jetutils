@@ -2355,12 +2355,12 @@ def prepare_last_step_1(
             oname = varname
             mode = None
         varname_ = f"{varname}_interp"
-
+        factor = FACTORS_UNITS.get(varname.rstrip("0123456789"), 1)
         df = pl.scan_parquet(basepath.joinpath(f"{varname}_relative.parquet"))
         if varname == "hor":
             df = df.drop("hor1_interp", "hor2_interp")
         df = df.with_columns(
-            pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
+            pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None) * factor
         )
         if mode is not None and mode == "grad":
             df = df.with_columns()

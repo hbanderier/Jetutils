@@ -1482,8 +1482,8 @@ def plot_relative_time(
     n_row: int | None = None,
     col_width: float = 2.0,
     row_height: float = 1.7,
-    q_mean: float = 1e-15,
     show_alive: bool = False,
+    plume: bool = False,
 ) -> Figure:
     spell_ofs = spells["spell_of"].unique().sort(descending=True).to_list()
     if n_row is None:
@@ -1532,26 +1532,38 @@ def plot_relative_time(
             q75_ = q75.filter(pl.col("jet") == jet)
             x = to_plot["relative_index"].unique().to_numpy() / 4
             for ax, data_var, letter in zip(axes, data_vars, letters):
-                factor = 1e9 if data_var in ["int_over_europe", "int"] else 1
-                factor = 1e5 if data_var == "width" else factor
+                if "-" in data_var:
+                    varname, where = data_var.split("-")
+                    where = f", {where}"
+                else:
+                    varname = data_var
+                    where = ""
+                factor = FACTORS.get(varname, 1)
+                if plume:
+                    for _, this_one in props_masked.group_by("spell"):
+                        this_one = this_one.filter(pl.col("jet") == jet)
+                        x_ = this_one["relative_index"].to_numpy() / 4
+                        y = this_one[data_var] / factor
+                        ax.plot(x_, y, color=COLORS[2 - j], lw=.5, alpha=0.5)
+                else:
+                    ax.fill_between(
+                        x,
+                        q25_[data_var] / factor,
+                        q75_[data_var] / factor,
+                        color=COLORS[2 - j],
+                        alpha=0.4,
+                    )
                 ax.plot(x, to_plot[data_var] / factor, color=COLORS[2 - j], lw=2.5)
-                ax.fill_between(
-                    x,
-                    q25_[data_var] / factor,
-                    q75_[data_var] / factor,
-                    color=COLORS[2 - j],
-                    alpha=0.4,
-                )
                 mean = means.filter(pl.col("jet") == jet)[data_var].item() / factor
                 ax.plot(
                     [x[0], x[-1]], [mean, mean], color=COLORS[2 - j], ls="dashed", lw=2
                 )
                 if j == 0:
                     factor_str = (
-                        "" if factor == 1 else rf"$10^{int(np.log10(factor))} \times $"
+                        "" if factor == 1 else rf"${int(np.sign(factor))} \times 10^{int(np.log10(np.abs(factor)))} \times $"
                     )
                     ax.set_title(
-                        rf"{letter}) {PRETTIER_VARNAME.get(data_var, data_var)} [{factor_str}{UNITS.get(data_var, '~')}]"
+                        rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
                     )
                 ax.yaxis.set_major_locator(MaxNLocator(4, integer=True))
         for i, ax in enumerate(axes):

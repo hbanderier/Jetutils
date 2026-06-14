@@ -357,7 +357,7 @@ def extend_spells(
     time_after: datetime.timedelta = datetime.timedelta(0),
     index_columns: Sequence[str] | None = None,
 ) -> pl.DataFrame:
-    times = spells["time"].unique()
+    times = spells["time"].unique().sort()
     dt = times[1] - times[0]
     if index_columns is None:
         index_columns = get_index_columns(spells, ["member", "region", "spell", "jet", "spell_of", "jet ID"])

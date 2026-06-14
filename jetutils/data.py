@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import polars.selectors as cs
+import polars_ds as pds
 import xarray as xr
 from tqdm import tqdm
 
@@ -1489,7 +1490,7 @@ def compute_anomalies_pl(
     other_index_columns: tuple | str = ("jet",),
     smooth_clim: int = 0,
     standardize: bool = False,
-    # mode: Literal["dayofyear"] | Literal["season"] = "dayofyear",
+    detrend: bool = False
 ) -> pl.DataFrame:
     """
     Anomalizes a polars DataFrame. All columns except `"time"` and the columns in `other_index_columns` will be amomalized.
@@ -1515,22 +1516,34 @@ def compute_anomalies_pl(
     data_columns = [
         col for col in df.columns if col not in ["time", *other_index_columns]
     ]
-    df = df.with_columns(dayofyear=pl.col("time").dt.ordinal_day().cast(pl.Int32))
-    clim = df.group_by(pl.col("dayofyear"), *other_index_columns).mean().drop("time")
-    if smooth_clim > 1:
-        clim = periodic_rolling_pl(clim, smooth_clim, data_columns)
-    df = df.join(clim, on=["dayofyear", *other_index_columns], suffix="_clim")
+    aggs = {"dayofyear": pl.col("time").dt.ordinal_day().cast(pl.Int32)}
+    if detrend:
+        aggs = aggs | {"year": pl.col("time").dt.year()}
+    df = df.with_columns(**aggs)
+    if detrend:
+        aggs = {data_column: pds.lin_reg("year", target=data_column, add_bias=True, return_pred=True).struct.field("pred") for data_column in data_columns}
+        clim = df.group_by("region", "year", "dayofyear").agg([pl.col(data_var).mean() for data_var in data_columns]).group_by("region", "dayofyear").agg(**aggs, year=pl.col("year")).explode("year", *data_columns).sort(*other_index_columns, "year", "dayofyear")
+        if smooth_clim > 1:
+            clim = periodic_rolling_pl(clim, smooth_clim, data_columns, "dayofyear", other_columns=[*other_index_columns, "year"])
+        join_on = ["year", "dayofyear", *other_index_columns]
+    else:
+        clim = df.group_by(pl.col("dayofyear"), *other_index_columns).mean().drop("time")
+        if smooth_clim > 1:
+            clim = periodic_rolling_pl(clim, smooth_clim, data_columns, other_columns=other_index_columns)
+        join_on = ["dayofyear", *other_index_columns]
+    df = df.join(clim, on=join_on, suffix="_clim")
     if not standardize:
         df = df.select(
             *["time", *other_index_columns],
             **{col: pl.col(col) - pl.col(f"{col}_clim") for col in data_columns},
         )
         return df
+    # standardize assumes constant stds even with detrend=True, for now.
     std = df.group_by(pl.col("dayofyear"), *other_index_columns).agg(
         *[pl.col(col).std() for col in data_columns]
     )
     if smooth_clim > 1:
-        std = periodic_rolling_pl(std, smooth_clim, data_columns)
+        std = periodic_rolling_pl(std, smooth_clim, data_columns, other_columns=other_index_columns)
     df = df.join(std, on=["dayofyear", *other_index_columns], suffix="_std")
     df = df.select(
         *["time", *other_index_columns],
