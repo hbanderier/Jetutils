@@ -294,11 +294,12 @@ for year in trange(1969, 2021):
 
 path = Path(DATADIR, "ERA5/plev/high_wind/6H/results/9")
 ds = xr.open_dataset(path.joinpath("da.nc"))
+ds = standardize(ds)
 ds = extract(
     ds, minlon=-80, maxlon=40, minlat=15, maxlat=80
 )
 times = ds["time"].values
-ds = standardize(ds)
+
 find_jets_kwargs = dict(
     n_coarsen=3,
     base_s_thresh=0.55,
@@ -307,27 +308,33 @@ find_jets_kwargs = dict(
     hole_size=6,
     smooth_func=partial(gaussian_smooth_func, sigma_lon=2, sigma_lat=0.8),
 )
-jets, phat_jets, props, props_full = do_everything(ds, path, **find_jets_kwargs, track_large=False)
+# jets, phat_jets, props, props_full = do_everything(ds, path, **find_jets_kwargs, track_large=False)
 
 # stage 6: Interpolate new fields
 args = ["all", None, -100, 60, 0, 88]
 
 to_do = (
     ("t2m", "surf", "t2m", {}),
-    ("tp", "surf", "tp", {}),
+    # ("tp", "surf", "tp", {}),
     ("PV330", "thetalev", "PV330", {}),
     ("PV350", "thetalev", "PV350", {}),
     ("APVO", "thetalev", "APVO_new", {}),
     ("CPVO", "thetalev", "CPVO_new", {}),
-    ("SAPVS", "thetalev", "SAPVS_new", {}),
-    ("TAPVS", "thetalev", "TAPVS_new", {}),
-    ("SCPVS", "thetalev", "SCPVS_new", {}),
-    ("TCPVS", "thetalev", "TCPVS_new", {}),
+    # ("SAPVS", "thetalev", "SAPVS", {}),
+    # ("TAPVS", "thetalev", "TAPVS", {}),
+    # ("SCPVS", "thetalev", "SCPVS", {}),
+    # ("TCPVS", "thetalev", "TCPVS", {}),
     ("theta", "surf", ("alot2pvu", "theta"), {}),
     ("EKE250", "plev", ("eddy_stuff", "EKE"), {}),
 )
 
-bias_correction = pl.read_parquet(path.joinpath("bias_correct.parquet"))
+jets = pl.read_parquet(path.joinpath("jets.parquet"))
+bc_path = path.joinpath("bias_correct.parquet")
+if not bc_path.is_file():
+    bias_correction = create_bias_correction(jets, ds)
+    bias_correction.write_parquet(path.joinpath("bias_correct.parquet"))
+else:
+    bias_correction = pl.read_parquet(path.joinpath("bias_correct.parquet"))
 
 for huh in to_do:
     rename, levtype, name, kwargs = huh
@@ -337,10 +344,8 @@ for huh in to_do:
     da = open_da("ERA5", levtype, name, "6H", *args, **kwargs).rename(rename)
     if rename in ["APVO", "CPVO", "SAPVS", "TAPVS", "SCPVS", "TCPVS"]:
         da = da.any("lev")
-            
-    interpd = create_jet_relative_dataset(
-        phat_jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30
-    )
+    interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+    del da
     interpd.write_parquet(ofile)
 
 # ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
