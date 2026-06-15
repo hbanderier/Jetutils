@@ -587,7 +587,7 @@ class Clusterplot:
         if direction == 0 and linestyles is None:
             linestyles = ["dashed", "solid"]
 
-        if direction == 0:
+        if direction == 0 and not isinstance(colors, list):
             colors = doubleit(colors, len(levelsc), "black")
             linestyles = doubleit(linestyles, len(levelsc), "solid")
 
