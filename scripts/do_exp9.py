@@ -310,12 +310,19 @@ find_jets_kwargs = dict(
 )
 # jets, phat_jets, props, props_full = do_everything(ds, path, **find_jets_kwargs, track_large=False)
 
+ds = xr.open_dataset(f"{DATADIR}/ERA5/rain_new.grib").chunk("auto")
+res = ds["tp"].stack({"valid_time": ["time", "step"]}, create_index=False).set_xindex("valid_time").reset_coords(["time", "step", "surface", "number"], drop=True).rename({"valid_time": "time"})
+res = res.to_zarr("/storage/workspaces/giub_meteo_impacts/ci01/ERA5/surf/tp/6H/full.zarr", compute=False)
+compute(res, progress_flag=True)
+
+del ds, res
+
 # stage 6: Interpolate new fields
-args = ["all", None, -100, 60, 0, 88]
+args = ["all", None, -80, 40, 0, 88]
 
 to_do = (
     ("t2m", "surf", "t2m", {}),
-    # ("tp", "surf", "tp", {}),
+    ("tp", "surf", "tp", {}),
     ("PV330", "thetalev", "PV330", {}),
     ("PV350", "thetalev", "PV350", {}),
     ("APVO", "thetalev", "APVO_new", {}),
@@ -348,24 +355,24 @@ for huh in to_do:
     del da
     interpd.write_parquet(ofile)
 
-# ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
-# ds_eddies = ds_eddies.sel(lat=slice(None, 85))
-# to_do = {
-#     # "F1": ("F11", "F12"),
-#     # "F2": ("F12", "F22"),
-#     "hor": ("hor1", "hor2"),
-# }
-# for dest, sources in to_do.items():
-#     ofile = path.joinpath(f"{dest}_relative.parquet")
-#     if ofile.is_file():
-#         continue
-#     das = [ds_eddies[source] for source in sources]
-#     interpd = create_jet_relative_dataset(
-#         phat_jets,
-#         *das,
-#         bias_correction=bias_correction,
-#         align_2d=dest,
-#         dn=1e5,
-#         n_interp=30,
-#     )
-#     interpd.write_parquet(ofile)
+ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
+ds_eddies = ds_eddies.sel(lat=slice(None, 85))
+to_do = {
+    # "F1": ("F11", "F12"),
+    # "F2": ("F12", "F22"),
+    "hor": ("hor1", "hor2"),
+}
+for dest, sources in to_do.items():
+    ofile = path.joinpath(f"{dest}_relative.parquet")
+    if ofile.is_file():
+        continue
+    das = [ds_eddies[source] for source in sources]
+    interpd = create_jet_relative_dataset(
+        jets,
+        *das,
+        bias_correction=bias_correction,
+        align_2d=dest,
+        dn=1e5,
+        n_interp=30,
+    )
+    interpd.write_parquet(ofile)
