@@ -780,10 +780,12 @@ class Clusterplot:
             # da = np.sort(da, axis=0)
             for i in trange(mask.shape[1]):
                 significances.append(
-                    field_significance(to_test[i], da_, 200, q=0.1)[int(FDR)]
+                    field_significance(to_test[i], da_, 100, q=0.1)[int(FDR)]
                 )
         else:
             significances = da
+        if significances.ndim == 2:
+            significances = [significances]
 
         for ax, signif in zip(self.axes, significances):
             if invert:
@@ -1491,7 +1493,7 @@ def plot_relative_time(
     total_width = col_width * n_col * n_figs
     total_height = row_height * n_row
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
-    subfigs: Sequence[Figure] = bigfig.subfigures(1, n_figs)
+    subfigs = bigfig.subfigures(1, n_figs)
     if not isinstance(subfigs, Iterable):
         subfigs = [subfigs]
     for n_fig, (spell_of, fig) in enumerate(zip(spell_ofs, subfigs)):
@@ -1501,7 +1503,7 @@ def plot_relative_time(
         spells_from_jet = extend_spells(spells_from_jet, time_before=datetime.timedelta(days=4))
         props_masked = spells_from_jet.join(props, on="time").sort("jet", "spell", "relative_index")
         props_masked = props_masked.filter(
-            pl.col("spell").n_unique().over("relative_index") > 12
+            pl.col("spell").n_unique().over("relative_index") > 5
         )
         aggs = {col: func_mean(col) for col in data_vars}
         aggs = aggs | {"alive": pl.col("time").len()}
@@ -1605,10 +1607,8 @@ def plot_interp(
     fraction: float = 0.12,
     alpha: float = 0.05,
     transpose: bool = False,
-    bias_correction: bool = False,
     handle_pvals: Literal["hide", "hatch"] = "hide",
 ) -> Figure:
-    suffix = "_bc" if bias_correction else ""
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
     if transpose:
         n_row = n_col
@@ -1645,6 +1645,7 @@ def plot_interp(
         range(1000), letters, axes, variables.items()
     ):
         nlevels, cmap, (min_, max_) = props
+        
         varname, mode = varname_full.split(":")
         varname_no_number = varname.rstrip("0123456789")
         long_name = PRETTIER_VARNAME.get(varname, varname)
@@ -1652,17 +1653,17 @@ def plot_interp(
         is_polar = jet == "EDJ"
         levels = MaxNLocator(nlevels).tick_values(min_, max_)
         factor = FACTORS.get(varname, 1)
-        ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}.nc")
+        ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}.nc")
         try:
             to_plot = xr.open_dataarray(ofile)
         except FileNotFoundError:
             if varname == "PV":
                 varname = "PV350" if jet == "STJ" else "PV330"
                 varname_full = f"{varname}:{mode}"
-                ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}.nc")
+                ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}.nc")
                 to_plot = xr.open_dataarray(ofile)
         y = to_plot.n / 1e6
-        ofile_pvals = ipath.joinpath(f"{prefix}{jet}_{varname_full}{suffix}_pvals.nc")
+        ofile_pvals = ipath.joinpath(f"{prefix}{jet}_{varname_full}_pvals.nc")
         if ofile_pvals.is_file():
             if handle_pvals != "hide":
                 levels = np.delete(levels, np.where(np.abs(levels) < 1e-7)[0])

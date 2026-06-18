@@ -58,6 +58,32 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
     return ts_bootstrapped
 
 
+def bs_times_with_jet_ID(times, all_times, n_bootstraps, props, extras_to_keep: list[str] | None = None):
+    if extras_to_keep is None:
+        extras_to_keep = []
+    bs_times = create_bootstrapped_times(times, all_times, n_bootstraps)
+    if "is_polar" not in times.columns:
+        times = times.join(props["time", "jet ID", "is_polar"], on=["time", "jet ID"])
+    bs_times = bs_times.join(
+        times[
+            "spell",
+            "len",
+            "relative_time",
+            "relative_index",
+            "jet ID",
+            "is_polar",
+            *extras_to_keep
+        ],
+        on=["spell", "len", "relative_time", "relative_index"],
+    )
+    bs_times = bs_times.join(props["time", "jet ID", "is_polar"], on="time")
+    which_one = (pl.col("is_polar") - pl.col("is_polar_right")).abs().arg_min()
+    filter_ = bs_times.group_by("sample_index", "time", "jet ID").agg(pl.col("jet ID_right").get(which_one))
+    bs_times = filter_.join(bs_times, on=filter_.columns)
+    bs_times = bs_times.drop("is_polar", "jet ID").rename({"is_polar_right": "is_polar", "jet ID_right": "jet ID"}).sort("sample_index", "spell", "relative_time")
+    return bs_times
+
+
 def cdf(timeseries: Union[xr.DataArray, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """Computes the cumulative distribution function of a 1D DataArray
 
@@ -287,7 +313,7 @@ def field_significance(
     return nocorr, fdr_correction(p, q)
 
 
-def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 50, q: float = 0.025):
+def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 50, q: float = 0.025, two_sided: bool = True):
     times = create_bootstrapped_times(spells, all_times, n_bootstraps)
     result = []
     for spell in times["spell"].unique():    
@@ -296,7 +322,7 @@ def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_ti
     result = xr.concat(result, dim="spell").mean(["spell", "relative_index"])
     pvals = result.copy(data=rankdata(result, axis=0) - 1) 
     pvals = pvals.isel(sample_index=-1) / n_bootstraps
-    fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q, two_sided=True))
+    fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q, two_sided=two_sided))
     to_plot = result.isel(sample_index=-1)
     return to_plot, pvals, fdr_signif
 
