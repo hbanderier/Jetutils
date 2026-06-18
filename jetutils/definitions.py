@@ -287,7 +287,7 @@ if "DATADIR" not in globals():
         "PTTEND": 86400,
         "zeta": 1e5,
         "PV": 1e6,
-        "tp": 1000,
+        "tp": 24000,
         "AAVO": 100,
         "CAVO": 100,
         "APVO": 100,

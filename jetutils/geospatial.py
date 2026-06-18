@@ -1,7 +1,7 @@
 from jetutils.anyspell import extend_spells
 import datetime
 from scipy.stats import ttest_ind_from_stats
-from jetutils.stats import create_bootstrapped_times
+from jetutils.stats import create_bootstrapped_times, bs_times_with_jet_ID
 from pathlib import Path
 import warnings
 from itertools import product
@@ -664,7 +664,9 @@ def event_geometry(
     if index_columns is None:
         # lev is vertical level (e.g, 250 hPa, 330K, 2PVU)
         # level is contour level (e.g. 2PVU, 9.4AVU)
-        index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
+        index_columns = get_index_columns(
+            events, ["member", "time", "lev", "level", "index"]
+        )
     if mode == "envelope":
         geometry = st.linestring("points").st.envelope()
     elif mode == "convex_hull":
@@ -857,7 +859,9 @@ def detect_streamers(
     pl.DataFrame
         _description_
     """
-    index_columns = get_index_columns(contours, ["member", "time", "lev", "level", "contour"])
+    index_columns = get_index_columns(
+        contours, ["member", "time", "lev", "level", "contour"]
+    )
 
     ds = haversine(
         "lon",
@@ -1024,7 +1028,7 @@ def detect_streamers(
     streamers = streamers.with_columns(index=index)
     index_columns.append("index")
     return event_geometry(streamers, "polygon", index_columns=index_columns)
-    
+
 
 def sjoin_to_grid(
     events: pl.DataFrame,
@@ -1077,7 +1081,9 @@ def sjoin_to_grid(
         .with_columns(geometry=st.point(pl.concat_arr("lon", "lat")))
     )
 
-    index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
+    index_columns = get_index_columns(
+        events, ["member", "time", "lev", "level", "index"]
+    )
     events = events.drop(
         "points", "side"
     )  # .with_columns(pl.col("geometry").st.buffer(buffer))
@@ -1123,7 +1129,9 @@ def to_xarray_sjoin(
     """
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, da, varname, buffer)
-    index_columns = get_index_columns(events_on_grid, ["member", "time", "lev", "level"])
+    index_columns = get_index_columns(
+        events_on_grid, ["member", "time", "lev", "level"]
+    )
     index_columns.extend(["lon", "lat"])
     for i, index_column in enumerate(index_columns):
         if index_column in da.dims:
@@ -1204,7 +1212,9 @@ def event_props(
     pl.DataFrame
         Same as input but with a few more columns
     """
-    index_columns = get_index_columns(events, ["member", "time", "lev", "level", "index"])
+    index_columns = get_index_columns(
+        events, ["member", "time", "lev", "level", "index"]
+    )
     if events_on_grid is None:
         events_on_grid = sjoin_to_grid(events, das[0])
 
@@ -1245,7 +1255,9 @@ def event_props(
     return events, events_on_grid
 
 
-def calculate_streamer_angle(streamers: pl.DataFrame, vort_name: str = "PV") -> pl.DataFrame:
+def calculate_streamer_angle(
+    streamers: pl.DataFrame, vort_name: str = "PV"
+) -> pl.DataFrame:
     points = pl.col("points").explode()
     lon0 = points.list.get(0).arr.get(0)
     lat0 = points.list.get(0).arr.get(1)
@@ -1253,7 +1265,7 @@ def calculate_streamer_angle(streamers: pl.DataFrame, vort_name: str = "PV") -> 
     lat1 = points.list.get(-1).arr.get(1)
     lon_midpoint = (lon0 + lon1) / 2
     lat_midpoint = (lat0 + lat1) / 2
-    
+
     lons = points.list.eval(pl.element().arr.first())
     lats = points.list.eval(pl.element().arr.last())
     southernmost = lats.list.eval(pl.element().abs()).list.arg_min()
@@ -1262,11 +1274,19 @@ def calculate_streamer_angle(streamers: pl.DataFrame, vort_name: str = "PV") -> 
     northernmost = lats.list.eval(pl.element().abs()).list.arg_max()
     lon_northernmost = lons.list.get(northernmost)
     lat_northernmost = lats.list.get(northernmost)
-    
-    angle_up = pl.arctan2(lat_midpoint - lat_southernmost, lon_midpoint - lon_southernmost).degrees()
-    angle_down = pl.arctan2(lat_northernmost - lat_midpoint, lon_northernmost - lon_midpoint).degrees()
-    angle = pl.when(pl.col(vort_name).abs() > pl.col("level").abs()).then(angle_up).otherwise(angle_down)
-    
+
+    angle_up = pl.arctan2(
+        lat_midpoint - lat_southernmost, lon_midpoint - lon_southernmost
+    ).degrees()
+    angle_down = pl.arctan2(
+        lat_northernmost - lat_midpoint, lon_northernmost - lon_midpoint
+    ).degrees()
+    angle = (
+        pl.when(pl.col(vort_name).abs() > pl.col("level").abs())
+        .then(angle_up)
+        .otherwise(angle_down)
+    )
+
     return streamers.with_columns(axis_angle=angle)
 
 
@@ -2015,30 +2035,28 @@ def create_jet_relative_dataset(
 def compute_relative_clim(
     jets: pl.DataFrame | pl.LazyFrame, varname: str
 ) -> pl.DataFrame:
-    which_jet = "jet" if "jet" in jets.collect_schema().names() else "jet ID"
     return (
         jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
             "norm_index",
             "n",
-            which_jet,
+            "jet",
         )
         .agg(pl.col(f"{varname}_interp").mean())
-        .sort(which_jet, "dayofyear", "norm_index", "n")
+        .sort("jet", "dayofyear", "norm_index", "n")
     )
 
 
 def compute_relative_std(jets: pl.DataFrame | pl.LazyFrame, varname: str):
-    which_jet = "jet" if "jet" in jets.collect_schema().names() else "jet ID"
     return (
         jets.group_by(
             pl.col("time").dt.ordinal_day().alias("dayofyear"),
             "norm_index",
             "n",
-            which_jet,
+            "jet",
         )
         .agg(pl.col(f"{varname}_interp").std())
-        .sort(which_jet, "dayofyear", "norm_index", "n")
+        .sort("jet", "dayofyear", "norm_index", "n")
     )
 
 
@@ -2046,14 +2064,13 @@ def compute_relative_sm(
     clim: pl.DataFrame | pl.LazyFrame, varname: str, season_doy: pl.Series | None = None
 ):
     if season_doy is None:
-        season_doy = JJADOYS
-    which_jet = "jet" if "jet" in clim.collect_schema().names() else "jet ID"
+        season_doy = pl.Series("", JJADOYS.values)
     return clim.with_columns(
         **{
             f"{varname}_interp": pl.col(f"{varname}_interp")
             .filter(pl.col("dayofyear").is_in(season_doy.implode()))
             .mean()
-            .over(which_jet, "n", "norm_index")
+            .over("jet", "n", "norm_index")
         }
     )
 
@@ -2064,21 +2081,20 @@ def compute_relative_anom(
     clim: pl.DataFrame | pl.LazyFrame,
     clim_std: pl.DataFrame | None = None,
 ):
-    which_jet = "jet" if "jet" in clim.collect_schema().names() else "jet ID"
     varname_ = f"{varname}_interp"
     if clim_std is None:
         return (
             jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-            .join(clim, on=[which_jet, "dayofyear", "norm_index", "n"])
+            .join(clim, on=["jet", "dayofyear", "norm_index", "n"])
             .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
             .drop(f"{varname_}_right", "dayofyear")
         )
     return (
         jets.with_columns(dayofyear=pl.col("time").dt.ordinal_day())
-        .join(clim, on=[which_jet, "dayofyear", "norm_index", "n"])
+        .join(clim, on=["jet", "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) - pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right")
-        .join(clim_std, on=[which_jet, "dayofyear", "norm_index", "n"])
+        .join(clim_std, on=["jet", "dayofyear", "norm_index", "n"])
         .with_columns(pl.col(varname_) / pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right", "dayofyear")
     )
@@ -2087,86 +2103,136 @@ def compute_relative_anom(
 def create_relative_plot(
     varname: str,
     basepath: Path,
-    jet: "str",
+    jet: str,
     spells: pl.DataFrame,
     season: pl.Series,
     n_bootstraps: int = 40,
     factor: float = 1.0,
+    phat: bool = False,
 ):
+    winsize = 31
+    halfwinsize = int(winsize / 2)
     season_doy = season.dt.ordinal_day().unique()
-    varname, mode = varname.split(":")
+    
+    clims_path = basepath.joinpath("relative_clims")
+    clims_path.mkdir(exist_ok=True)
+    clim_path = clims_path.joinpath(f"{varname}_{season_doy[0]}-{season_doy[-1]}.parquet")
+
+    first_ = pl.col("time").min() - datetime.timedelta(days=halfwinsize)
+    last_ = pl.col("time").max() + datetime.timedelta(days=halfwinsize)
+    interval = season[1] - season[0]
+    season_ = (
+        season.to_frame()
+        .group_by(pl.col("time").dt.year().alias("year"))
+        .agg(time=pl.datetime_range(first_, last_, interval=interval, closed="both"))
+        .explode("time")["time"]
+    )
+
+    if ":" in varname:
+        varname, mode = varname.split(":")
+    else:
+        mode = ""
+    grad = mode == "grad"
     varname_no_number = varname.rstrip("0123456789")
     varname_ = f"{varname}_interp"
-    grad = mode[-4:] == "grad"
+    prefix = "phat_" if phat else ""
+    which_jet = "jet" if phat else "jet ID"
 
-    df = pl.scan_parquet(basepath.joinpath(f"{varname}_relative.parquet"))
+    df = pl.scan_parquet(basepath.joinpath(f"{prefix}{varname}_relative.parquet"))
+    df = season_.to_frame().lazy().join(df, on="time")
     if varname_ not in df.collect_schema().names():
         print(varname_)
         if f"{varname_no_number}_interp" in df.collect_schema().names():
             df = df.rename({f"{varname_no_number}_interp": varname_})
         else:
             df = df.rename({"vort_interp": varname_})
-    grad_expr = (
-        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
-        * 1e6
-    ).abs()
     if grad:
-        df = df.with_columns(**{varname_: grad_expr.over("norm_index", "time", "jet")})
-    clim = compute_relative_clim(df, varname)
-    if mode in ["clim", "clim_grad"]:
-        to_plot = compute_relative_sm(clim, varname, season_doy)
-        to_plot = to_plot.filter(pl.col("dayofyear") == 1, pl.col("jet") == jet)
-        to_plot = to_plot.drop("jet", "dayofyear")
-        pvals = None
-    elif mode in ["anom", "anom_grad"]:
-        winsize = 31
-        halfwinsize = int(
-            winsize / 2
-        )  # TODO: make data.periodic_rolling_pl work with lazyframes. UPDATE: looks really hard
-        clim = clim.rolling(
-            pl.col("dayofyear").cast(pl.UInt32()),
-            period=f"{winsize}i",
-            offset=f"-{halfwinsize + 1}i",
-            group_by=["jet", "norm_index", "n"],
-        ).agg(pl.col(varname_).mean())
-        to_plot = compute_relative_anom(df, varname, clim)
+        grad_expr = (
+            (
+                central_diff(pl.col(varname_).sort_by("n"))
+                / central_diff(pl.col("n").sort())
+            )
+            * 1e6
+        ).abs()
+        df = df.with_columns(
+            **{varname_: grad_expr.over("norm_index", "time", which_jet)}
+        )
+    if not phat:
+        props = pl.scan_parquet(basepath.joinpath("props.parquet"))
+        join_ = props.select(
+            "time",
+            "jet ID",
+            "int",
+            jet=pl.when(pl.col("is_polar") < 0.5)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("EDJ")),
+        )
+        df = df.join(join_, on=["time", "jet ID"])
+        
+    if clim_path.is_file():
+        clim = pl.read_parquet(clim_path)
+    elif not phat:
+        df_cat = (
+            df.group_by("time", "jet", "n", "norm_index")
+            .agg((pl.col(varname_) * pl.col("int")).sum() / pl.col("int").sum())
+            .sort("time", "jet", "n", "norm_index")
+        )
+        clim: pl.DataFrame = compute_relative_clim(df_cat, varname).collect()
+        clim.write_parquet(clim_path)
+    else:
+        clim = compute_relative_clim(df, varname).collect()
+        clim.write_parquet(clim_path)
+
+    clim_sm = compute_relative_sm(clim, varname, season_doy)
+    clim_sm = clim_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
+    clim_sm = clim_sm.drop("jet", "dayofyear")
+
+    # TODO: make data.periodic_rolling_pl work with lazyframes. UPDATE: looks really hard. Doesn't matter for summer but would be nice someday
+
+    clim = clim.rolling(
+        pl.col("dayofyear").cast(pl.UInt32()),
+        period=f"{winsize}i",
+        offset=f"-{halfwinsize + 1}i",
+        group_by=["jet", "norm_index", "n"],
+    ).agg(pl.col(varname_).mean())
+    to_plot = compute_relative_anom(df, varname, clim.lazy())
+    if phat:
         ts_bootstrapped = create_bootstrapped_times(spells, season, n_bootstraps).lazy()
         to_plot = (
             ts_bootstrapped.join(to_plot, on="time")
             .filter(pl.col("jet") == jet)
             .sort("sample_index", "spell", "inside_index", "norm_index", "n")
         )
-        to_plot = to_plot.group_by(
-            "sample_index", "norm_index", "n", maintain_order=True
-        ).agg(pl.col(varname_).mean())
-        pvals = (
-            to_plot.group_by("norm_index", "n", maintain_order=True)
-            .agg((pl.col(varname_).rank().last() - 1) / n_bootstraps)
-            .sort("norm_index", "n")
-        )
-        pvals = pvals.with_columns(
-            **{varname_: 2 * pl.min_horizontal(pl.col(varname_), 1 - pl.col(varname_))}
-        )
-        to_plot = (
-            to_plot.filter(pl.col("sample_index") == n_bootstraps)
-            .drop("sample_index")
-            .sort("norm_index", "n")
-        )
     else:
-        to_plot = spells.lazy().join(df.filter(pl.col("jet") == jet), on="time")
-        to_plot = (
-            to_plot.group_by("norm_index", "n")
-            .agg(pl.col(varname_).mean())
-            .sort("norm_index", "n")
+        ts_bootstrapped = bs_times_with_jet_ID(
+            spells, season, n_bootstraps, props.collect()
+        ).lazy()
+        to_plot = ts_bootstrapped.join(to_plot, on=["time", "jet ID"]).sort(
+            "sample_index", "spell", "inside_index", "norm_index", "n"
         )
-        pvals = None
+    to_plot = to_plot.group_by(
+        "sample_index", "norm_index", "n", maintain_order=True
+    ).agg(pl.col(varname_).mean())
+    pvals = (
+        to_plot.group_by("norm_index", "n", maintain_order=True)
+        .agg((pl.col(varname_).rank().last() - 1) / n_bootstraps)
+        .sort("norm_index", "n")
+    )
+    pvals = pvals.with_columns(
+        **{varname_: 2 * pl.min_horizontal(pl.col(varname_), 1 - pl.col(varname_))}
+    )
+    to_plot = (
+        to_plot.filter(pl.col("sample_index") == n_bootstraps)
+        .drop("sample_index")
+        .sort("norm_index", "n")
+    )
     to_plot = to_plot.with_columns(pl.col(varname_) * factor)
     to_plot = to_plot.collect()
-    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
-    if pvals is not None:
-        pvals = pvals.collect()
-        pvals = polars_to_xarray(pvals, ["norm_index", "n"]).T
-    return to_plot, pvals
+    to_plot = polars_to_xarray(to_plot, ["n", "norm_index"])
+    pvals = pvals.collect()
+    pvals = polars_to_xarray(pvals, ["n", "norm_index"])
+    clim_sm = polars_to_xarray(clim_sm, ["n", "norm_index"]) * factor
+    return to_plot, pvals, clim_sm
 
 
 def create_all_relative_plots(
@@ -2185,20 +2251,27 @@ def create_all_relative_plots(
             jet = name
             ipath = basepath
         for varname in tqdm(data_vars):
-            varname_, rest = varname.split(":")
+            if ":" in varname:
+                varname_, mode = varname.split(":")
+            else:
+                varname_, mode = varname, ""
+            grad = mode == "grad"
+            suffix1 = ":grad" if grad else ""
+            suffix2 = "_grad" if grad else ""
             if varname_ == "PV":
-                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
+                varname = f"PV330{suffix1}" if jet == "EDJ" else f"PV350{suffix1}"
             factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
-            ofile = Path(odir, f"{name}_{varname}.nc")
-            ofile_pvals = Path(odir, f"{name}_{varname}_pvals.nc")
+            ofile = Path(odir, f"{name}_{varname_}:anom{suffix2}.nc")
+            ofile_pvals = Path(odir, f"{name}_{varname_}:anom{suffix2}_pvals.nc")
+            ofile_clim_sm = Path(odir, f"{name}_{varname_}:clim{suffix2}.nc")
             if ofile.is_file():
                 continue
-            to_plot, pvals = create_relative_plot(
+            to_plot, pvals, clim_sm = create_relative_plot(
                 varname, ipath, jet, spells, season, n_bootstraps, factor
             )
             to_plot.to_netcdf(ofile)
-            if pvals is not None:
-                pvals.to_netcdf(ofile_pvals)
+            pvals.to_netcdf(ofile_pvals)
+            clim_sm.to_netcdf(ofile_clim_sm)
 
 
 def create_relative_diff_plot(
@@ -2324,12 +2397,13 @@ def create_all_relative_diff_plots(
 def prepare_last_step_1(
     basepath: Path,
     filters_for_variables: dict[str, list[str]],
-    props_catd: pl.DataFrame,
+    props: pl.DataFrame,
     reduce_dict: dict[str, Callable] | None = None,
 ) -> pl.DataFrame:
     if reduce_dict is None:
         reduce_dict = {key: pl.mean for key in filters_for_variables}
-    index_columns = get_index_columns(props_catd)
+    index_columns = get_index_columns(props)
+    which_jet = "jet" if "jet" in props.columns else "jet ID"
 
     cold = pl.col("n") >= 0
     warm = pl.col("n") <= 0
@@ -2360,7 +2434,8 @@ def prepare_last_step_1(
         if varname == "hor":
             df = df.drop("hor1_interp", "hor2_interp")
         df = df.with_columns(
-            pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None) * factor
+            pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
+            * factor
         )
         if mode is not None and mode == "grad":
             df = df.with_columns()
@@ -2372,7 +2447,7 @@ def prepare_last_step_1(
                 * 1e6
             ).abs()
             df = df.with_columns(
-                **{varname_: grad_expr.over("norm_index", "time", "jet")}
+                **{varname_: grad_expr.over("norm_index", "time", which_jet)}
             )
         reduce_func = reduce_dict.get(varname, pl.Expr.mean)
         aggs = {
@@ -2382,14 +2457,14 @@ def prepare_last_step_1(
             for filter_name in filter_list
         }
         this_df = df.group_by(index_columns, maintain_order=True).agg(**aggs).collect()
-        props_catd = props_catd.join(this_df, on=index_columns)
+        props = props.join(this_df, on=index_columns)
 
-    props_catd = props_catd.with_columns(
+    props = props.with_columns(
         cs.exclude(index_columns)
         .cast(pl.Float32())
         .replace([float("-inf"), float("inf"), float("nan")], None)
     )
-    return props_catd
+    return props
 
 
 def prepare_last_step_2(
@@ -2402,12 +2477,16 @@ def prepare_last_step_2(
     spells = extend_spells(spells, time_before=datetime.timedelta(days=4))
     times = create_bootstrapped_times(spells, season, n_bootstraps)
     index_columns = get_index_columns(props_with_extras)
-    
+
+    which_jet = "jet" if "jet" in props_with_extras.columns else "jet ID"
+
     props_with_extras = season.to_frame().join(props_with_extras, on="time")
     props_with_extras = compute_anomalies_pl(
-        props_with_extras, other_index_columns=["jet"], standardize=True
+        props_with_extras, other_index_columns=[which_jet], standardize=True
     )
-    props_with_extras = props_with_extras.pivot(on="jet", index="time", separator="-")
+    props_with_extras = props_with_extras.pivot(
+        on=which_jet, index="time", separator="-"
+    )
     data_vars = [col for col in props_with_extras.columns if col not in index_columns]
     masked = times.join(props_with_extras, on="time").sort(
         "sample_index", "spell", "relative_index"
@@ -2418,10 +2497,10 @@ def prepare_last_step_2(
     }
     aggs = {}
     for (name_tf, time_filter), varname in product(time_filters.items(), data_vars):
-        aggs[f"{varname}.{name_tf}"] = pl.col(varname).filter(time_filter).mean() * FACTORS_UNITS.get(varname, 1)
-    masked = masked.group_by(
-        "sample_index", "spell", maintain_order=True
-    ).agg(**aggs)
+        aggs[f"{varname}.{name_tf}"] = pl.col(varname).filter(
+            time_filter
+        ).mean() * FACTORS_UNITS.get(varname, 1)
+    masked = masked.group_by("sample_index", "spell", maintain_order=True).agg(**aggs)
     data_vars_ = [
         f"{varname}.{name_tf}" for name_tf, varname in product(time_filters, data_vars)
     ]
@@ -2432,30 +2511,28 @@ def prepare_last_step_2(
         agg_pval = 2 * pl.min_horizontal(agg_pval, 1 - agg_pval)
         aggs[f"{col}.pvals"] = agg_pval.cast(pl.Float32())
     masked = (
-        masked
-        .group_by("spell", maintain_order=True)
+        masked.group_by("spell", maintain_order=True)
         .agg(**aggs)
         .cast({"spell": pl.Int32()})
     )
-    mean_over_spells = masked.select(pl.lit(-1, pl.Int32()).alias("spell"), cs.exclude("spell").mean().cast(pl.Float32()))
+    mean_over_spells = masked.select(
+        pl.lit(-1, pl.Int32()).alias("spell"),
+        cs.exclude("spell").mean().cast(pl.Float32()),
+    )
     aggs = {}
     for col in mean_over_spells.columns:
         if col == "spell":
             aggs[col] = pl.lit(-2, pl.Int32)
         elif col[-5:] == "pvals":
-            aggs[col] = pl.lit(0., pl.Float32())
+            aggs[col] = pl.lit(0.0, pl.Float32())
         else:
             varname, _ = col.split(".")
             aggs[col] = pl.col(varname).mean().cast(pl.Float32())
     mean_over_season = props_with_extras.select(**aggs)
-    masked = pl.concat([
-        mean_over_season,
-        mean_over_spells,
-        masked
-    ])
+    masked = pl.concat([mean_over_season, mean_over_spells, masked])
     if grams_wr is None:
         return masked
-    
+
     grams_wr = grams_wr.cast({"time": pl.Datetime("ms")})
     winner_names = pl.DataFrame(
         {"winner": list(range(5)), "name": ["No", "GB", "AL", "AR", "SB"]}
@@ -2476,11 +2553,15 @@ def prepare_last_step_2(
         )
     )
     masked = masked.join(regime_stuff, on="spell", how="left")
-    
+
     early = season.dt.ordinal_day().unique().head(10)
     early = pl.col("time").dt.ordinal_day().is_in(early.implode())
     late = season.dt.ordinal_day().unique().tail(10)
     late = pl.col("time").dt.ordinal_day().is_in(late.implode())
-    is_early_or_late = spells.filter(pl.col("relative_index") >= 0).group_by(pl.col("spell").cast(pl.Int32())).agg(is_early_or_late=(early.mean() > 0.5) | (late.mean() > 0.5))
+    is_early_or_late = (
+        spells.filter(pl.col("relative_index") >= 0)
+        .group_by(pl.col("spell").cast(pl.Int32()))
+        .agg(is_early_or_late=(early.mean() > 0.5) | (late.mean() > 0.5))
+    )
     masked = masked.join(is_early_or_late, on="spell", how="left")
     return masked

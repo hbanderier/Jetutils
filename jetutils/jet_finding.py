@@ -1374,6 +1374,8 @@ def connected_from_cross(
         .agg()
         .with_row_index()
     )
+    slowness_weighted = slowness_expr() / pl.col("dt") # this dt is always 1 now
+    slowness_weighted = slowness_weighted.replace((float("nan"), float("inf")), None)
     cross = (
         cross.with_columns(
             dt=(
@@ -1381,13 +1383,15 @@ def connected_from_cross(
                 / (pl.col("time_right") - pl.col("time")).min()
             ).cast(pl.Int32())
         )
-        .with_columns(slowness=slowness_expr() / pl.col("dt"))
+        .with_columns(slowness=slowness_weighted) 
+        # .drop("s", "theta", "is_polar", "s_right", "theta_right", "is_polar_right")
         .group_by("time", "jet ID", maintain_order=True)
         .agg(
             pl.col("time_right").get(pl.col("slowness").arg_max()),
             pl.col("jet ID_right").get(pl.col("slowness").arg_max()),
             pl.col("dt").get(pl.col("slowness").arg_max()),
         )
+        # I don't need merges and splits. Otherwise comment groupby and uncomment .drop
         .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
     )
     cross = (
@@ -1430,7 +1434,6 @@ def connected_from_cross(
     G.add_nodes_from(summary.rows())
     G.add_edges_from(edges)
     conn_comp = rx.connected_components(G)
-    summary_comp = []
     index_df = (
         pl.from_dicts(
             [
@@ -1467,7 +1470,7 @@ def slowness_expr() -> Expr:
             .cast(pl.Float32())
             / 1000
         )
-        .replace([float("inf"), float("nan")], 0.)
+        .replace([float("inf"), float("nan")], None)
         .cast(pl.Float32())
     )
         
@@ -1528,7 +1531,7 @@ def spells_from_cross(
     ):
         spell =  spells.filter(filters[jet])
         if n is not None:
-            other_filter = spell.select(pl.col("spell").top_k_by("len", n))
+            other_filter = spell.select(pl.col("spell").top_k_by("slowness_sum", n))
             spell = other_filter.join(spell, on="spell")
         elif q is not None:
             filter_ = pl.col("slowness_sum") > pl.col("slowness_sum").quantile(q)
