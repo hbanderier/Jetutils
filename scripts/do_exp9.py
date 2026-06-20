@@ -310,13 +310,6 @@ find_jets_kwargs = dict(
 )
 # jets, phat_jets, props, props_full = do_everything(ds, path, **find_jets_kwargs, track_large=False)
 
-ds = xr.open_dataset(f"{DATADIR}/ERA5/rain_new.grib").chunk("auto")
-res = ds["tp"].stack({"valid_time": ["time", "step"]}, create_index=False).set_xindex("valid_time").reset_coords(["time", "step", "surface", "number"], drop=True).rename({"valid_time": "time"})
-res = res.to_zarr("/storage/workspaces/giub_meteo_impacts/ci01/ERA5/surf/tp/6H/full.zarr", compute=False)
-compute(res, progress_flag=True)
-
-del ds, res
-
 # stage 6: Interpolate new fields
 args = ["all", None, -80, 40, 0, 88]
 
