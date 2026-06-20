@@ -1488,6 +1488,7 @@ def spells_from_cross(
     season: Series | None = None,
     subtropical_cutoff: float = 0.4,
     polar_cutoff: float = 0.6,
+    STJ_lat_threshold: float = 0.
 ):
     _, summary_comp = connected_from_cross(
         jets,
@@ -1502,9 +1503,12 @@ def spells_from_cross(
             .is_in(pl.lit(season.implode().first(), pl.List(pl.Datetime("ms"))))
             .over("spell")
         )
+        jets = season.to_frame().join(jets, on="time")
+    mean_lats = jets.group_by("time", "jet ID").agg(mean_lat=weighted_mean_pl("lat", "s"))
     spells = (
         summary_comp.filter(pl.col("len") > 2)
         .with_columns(slowness=slowness_expr())
+        .join(mean_lats, on=["time", "jet ID"])
         .group_by("spell", maintain_order=True)
         .agg(
             pl.col("time"),
@@ -1513,6 +1517,7 @@ def spells_from_cross(
             pl.col("slowness"),
             pl.col("dis_polar"),
             pl.col("is_polar"),
+            pl.col("mean_lat"),
             len=pl.len(),
             mean_is_polar=pl.col("is_polar").mean(),
             slowness_sum=pl.col("slowness").sum(),
@@ -1529,7 +1534,9 @@ def spells_from_cross(
         [q_STJ, q_EDJ],
         [n_STJ, n_EDJ],
     ):
-        spell =  spells.filter(filters[jet])
+        spell = spells.filter(filters[jet])
+        if jet == "STJ":
+            spell = spell.filter(pl.col("mean_lat").list.mean() >= STJ_lat_threshold)
         if n is not None:
             other_filter = spell.select(pl.col("spell").top_k_by("slowness_sum", n))
             spell = other_filter.join(spell, on="spell")
@@ -1540,7 +1547,7 @@ def spells_from_cross(
             raise ValueError
         spell = (
             spell
-            .explode("time", "jet ID", "slowness", "is_polar", "lon_overlap", "dis_polar")
+            .explode("time", "jet ID", "slowness", "is_polar", "lon_overlap", "dis_polar", "mean_lat")
             .with_columns(
                 spell_of=pl.lit(jet),
                 spell_orig=pl.col("spell"),
@@ -1548,8 +1555,8 @@ def spells_from_cross(
                 relative_index=pl.col("time").rle_id().over("spell").cast(pl.Int32()),
                 relative_time=pl.col("time") - pl.col("time").first().over("spell")
             )
-            .drop("is_polar")
-            
+            .drop("is_polar", "mean_lat")
+            .sort("spell", "time")
         )
         spells_list[jet] = spell
     return spells_list

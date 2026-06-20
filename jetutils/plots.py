@@ -1,4 +1,5 @@
 # coding: utf-8
+from polars.exceptions import ColumnNotFoundError
 from matplotlib.axes import Axes
 from itertools import product
 from functools import partial
@@ -14,7 +15,7 @@ import polars as pl
 import polars_ds as pds
 from contourpy import contour_generator
 from tqdm import tqdm, trange
-from string import ascii_lowercase
+from string import ascii_lowercase, ascii_uppercase
 from pathlib import Path
 
 import matplotlib as mpl
@@ -64,7 +65,8 @@ from .geospatial import (
     compute_relative_sm,
     compute_relative_std,
 )
-from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues
+from jetutils.jet_finding import average_jet_categories
+from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues, bs_times_with_jet_ID
 from .data import periodic_rolling_pl
 from .anyspell import mask_from_spells_pl, extend_spells
 import jetutils
@@ -323,7 +325,7 @@ def create_levels(
     direction: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
-        if levels is None: 
+        if levels is None:
             return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
         else:
             return levels, levels, "neither", 1
@@ -1181,77 +1183,6 @@ def plot_seasonal(
 
 
 @clear
-def props_histogram(
-    props_as_ds: xr.Dataset,
-    data_vars: list,
-    season: str | None = None,
-    nrows: int = 3,
-    ncols: int = 4,
-    suffix: str = "",
-    *,
-    save: bool = False,
-    clear: bool = True,
-):
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(ncols * 3.5, nrows * 2.4), constrained_layout=True
-    )
-    axes = axes.flatten()
-    if season is not None:
-        month_list = SEASONS[season]
-        season_mask = np.isin(props_as_ds.time.dt.month.values, month_list)
-        props_as_ds_ = props_as_ds.sel(time=season_mask)
-    else:
-        props_as_ds_ = props_as_ds
-
-    for i, (varname, ax) in enumerate(zip(data_vars, axes)):
-        if varname == "mean_lev":
-            ax.invert_xaxis()
-        try:
-            ax.set_title(f"{PRETTIER_VARNAME[varname]} [{UNITS[varname]}]")
-        except KeyError:
-            ax.set_title(varname)
-        maxx = {}
-        for j, jet in enumerate(["subtropical", "polar"]):
-            try:
-                this_da = props_as_ds_[varname].sel(jet=jet)
-                x = np.linspace(this_da.min(), this_da.max(), 1000)
-                y = gaussian_kde(
-                    this_da.interpolate_na("time", fill_value="extrapolate").values
-                )(x) * len(this_da)
-                ax.plot(x, y, color=COLORS[2 - j], linewidth=2)
-                ax.fill_between(x, 0, y, color=COLORS[2 - j], linewidth=1, alpha=0.3)
-                maxx_ = x[np.argmax(y)]
-                maxx[jet] = round(maxx_, -int(floor(log10(abs(maxx_)))) + 2)
-            except KeyError:
-                this_da = props_as_ds_[varname]
-                x = np.linspace(this_da.min(), this_da.max(), 1000)
-                y = gaussian_kde(
-                    this_da.interpolate_na("time", fill_value="extrapolate").values
-                )(x) * len(this_da)
-                ax.plot(x, y, color="black", linewidth=2)
-                ax.fill_between(x, 0, y, color="black", linewidth=1, alpha=0.3)
-                break
-        if len(maxx) > 0:
-            current_ticks = ax.get_xticks()
-            xticks = ax.set_xticks(np.concatenate([current_ticks, list(maxx.values())]))
-            xticks[-1]._apply_params(
-                color=COLORS[1], labelcolor=COLORS[1], length=12, width=3, pad=14
-            )
-            pad = (
-                14
-                if varname in ["mean_lat", "mean_lev", "spe_star", "waviness1"]
-                else 25
-            )
-            xticks[-2]._apply_params(
-                color=COLORS[2], labelcolor=COLORS[2], length=12, width=3, pad=pad
-            )
-            ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
-    if save:
-        fig.savefig(f"{FIGURES}/jet_props_hist/{season}{suffix}.pdf")
-    return fig
-
-
-@clear
 def plot_dayofyear_trends(
     props_as_df: pl.DataFrame,
     data_vars: list,
@@ -1428,6 +1359,169 @@ def plot_dayofyear_trends(
     return fig
 
 
+@clear
+def props_vs_quantiles(
+    props_as_df: pl.DataFrame,
+    summary_comp: pl.DataFrame,
+    data_vars: list,
+    season: pl.Series,
+    n_bootstraps: int = 100,
+    n_catd: int = 20,
+    win_size: int = 15,
+    n_col: int = 4,
+    n_row: int | None = None,
+    col_width: float = 2.0,
+    row_height: float = 1.7,
+    folder: str | None = None,
+    suffix: str = "",
+    numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
+) -> Figure:
+    qs = np.linspace(0, 2.0, n_catd + 1).tolist()
+    dq = qs[1] - qs[0]
+    labels = [f"{float((q + dq / 2)):.3f}" for q in qs]
+
+    by = pl.col("slowness_sum")
+    filter_ = by.cut(qs[1:], labels=labels).cast(pl.String()).cast(pl.Float32())
+
+    relative_time = (pl.col("time") - pl.col("time").first()).over("spell")
+    relative_index = (relative_time / datetime.timedelta(hours=6)).cast(pl.Float64())
+    
+    summary_comp = summary_comp.filter(
+        pl.col("time")
+        .is_in(pl.lit(season.implode().first(), pl.List(pl.Datetime("ms"))))
+        .over("spell")
+    )
+
+    summary_comp = summary_comp.with_columns(
+        catd=filter_,
+        spell=pl.col("spell").cast(pl.UInt32()),
+        relative_time=relative_time,
+        relative_index=relative_index,
+        len=pl.len().over("spell"),
+    )
+
+    bs_times = bs_times_with_jet_ID(
+        summary_comp,
+        season,
+        n_bootstraps,
+        props_as_df,
+        ("catd", "jet", "slowness_sum"),
+    )
+    huh = bs_times.join(props_as_df, on=["time", "jet ID"])
+    huh = (
+        huh.group_by("sample_index", "jet", "catd")
+        .agg(
+            pl.col("spell").n_unique().log10(),
+            *[pl.col(col).mean() for col in data_vars],
+        )
+        .sort("sample_index", "jet", "catd")
+    )
+    # if "spell" not in data_vars:
+    #     data_vars.append("spell")
+    catd_index = huh["catd"].unique().sort().to_frame().with_row_index("catd_index")
+    half_period = int(win_size / 2)
+    huh = (
+        huh.join(catd_index, on="catd")
+        .rolling(
+            pl.col("catd_index"),
+            period=f"{win_size}i",
+            offset=f"-{half_period}i",
+            group_by=("sample_index", "jet"),
+        )
+        .agg(pl.col("catd").mean(), *[pl.col(col).mean() for col in data_vars])
+        .drop("catd")
+        .join(catd_index, on=["catd_index"])
+    )
+    # huh = squarify(huh, ["sample_index", "jet", "catd"])
+    to_plot = huh.filter(pl.col("sample_index") == n_bootstraps).sort("jet", "catd")
+    pvals = (
+        huh.group_by("jet", "catd")
+        .agg(
+            [
+                (pl.col(col).sort_by("sample_index").rank().last() - 1) / n_bootstraps
+                for col in data_vars
+            ]
+        )
+        .sort("jet", "catd")
+    )
+    pvals = pvals.with_columns(
+        **{
+            var: 2 * pl.min_horizontal(pl.col(var), 1 - pl.col(var))
+            for var in data_vars
+        }
+    )
+    
+    if n_row is None:
+        n_row = int(ceil(len(data_vars) / n_col))
+    total_width = col_width * n_col
+    total_height = row_height * n_row
+
+    fig, axes = plt.subplots(
+        n_row, n_col, sharex="all", constrained_layout=True, figsize=(total_width, total_height)
+    )
+
+    for jet in ["STJ", "EDJ"]:
+        hoho_ = to_plot.filter(pl.col("jet") == jet)
+        pvals_ = pvals.filter(pl.col("jet") == jet)
+        x = hoho_["catd"].to_numpy()
+        color = COLORS[1] if jet == "EDJ" else COLORS[2]
+        means = (
+            summary_comp
+            .join(props_as_df, on=["time", "jet ID"])
+            .filter(pl.col("jet") == jet)
+            .select(
+                [pl.mean(col) for col in data_vars if col in props_as_df.columns]
+            )
+        )
+
+        for i, letter, var, ax in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars, axes.ravel()):
+            if "-" in var:
+                var_, where = var.split("-")
+                where = f", {where}"
+            else:
+                var_ = var
+                where = ""
+            factor = FACTORS.get(var_, 1)
+            if factor == 1:
+                factor_str = ""
+            elif factor < 0:
+                factor_str = r"$- 10^{" + f"{int(np.log10(np.abs(factor)))}" + r"} $"
+            else:
+                factor_str = r"$10^{" + f"{int(np.log10(np.abs(factor)))}" + r"} $"
+            unit = UNITS.get(var_, '~')
+            if unit != "~" and factor_str != "":
+                factor_str = factor_str + r"$\cdot$"
+            if numbering and jet:
+                ax.set_title(
+                    f"{letter}) {PRETTIER_VARNAME.get(var_, var_)}{where} [{factor_str}{unit}]"
+                )
+            else:
+                ax.set_title(
+                    f"{PRETTIER_VARNAME.get(var_, var_)}{where} [{factor_str}{unit}]"
+                )
+            try:
+                bottom = means[var].item() / factor
+            except ColumnNotFoundError:
+                bottom = 0
+            y = hoho_[var].to_numpy() / factor
+            p = pvals_[var].to_numpy() / factor
+            f = p < 0.05
+            
+            ax.bar(x, y - bottom, bottom=bottom, facecolor="none", edgecolor=color, linewidth=1, width=0.1, alpha=0.9)
+            ax.bar(np.where(f, x, np.nan), np.where(f, y, np.nan) - bottom, bottom=bottom, facecolor=color, edgecolor="white", linewidth=1, width=0.1, alpha=0.9)
+            ax.axhline(bottom, color=COLORS[3], ls="dashed", lw=1)
+            if i >= (n_row - 1) * n_col:
+                ax.set_xlabel("Persistence")
+    if save:
+        if folder is None:
+            folder = "jet_props_misc"
+        plt.savefig(f"{FIGURES}/{folder}/props_vs_catd{suffix}_{win_size=}.pdf")
+    return fig
+
+
 def func_mean(col):
     if ":" in col and col.split(":")[-1] == "var":
         return pl.col(col.split(":")[0]).var()
@@ -1484,6 +1578,7 @@ def plot_relative_time(
     n_row: int | None = None,
     col_width: float = 2.0,
     row_height: float = 1.7,
+    min_alive: int = 10,
     show_alive: bool = False,
     plume: bool = False,
 ) -> Figure:
@@ -1500,10 +1595,14 @@ def plot_relative_time(
         letters = (n_fig % n_figs) * n_row * n_col
         letters = ascii_lowercase[letters:]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
-        spells_from_jet = extend_spells(spells_from_jet, time_before=datetime.timedelta(days=4))
-        props_masked = spells_from_jet.join(props, on="time").sort("jet", "spell", "relative_index")
+        spells_from_jet = extend_spells(
+            spells_from_jet, time_before=datetime.timedelta(days=4)
+        )
+        props_masked = spells_from_jet.join(props, on="time").sort(
+            "jet", "spell", "relative_index"
+        )
         props_masked = props_masked.filter(
-            pl.col("spell").n_unique().over("relative_index") > 5
+            pl.col("spell").n_unique().over("relative_index") > min_alive
         )
         aggs = {col: func_mean(col) for col in data_vars}
         aggs = aggs | {"alive": pl.col("time").len()}
@@ -1546,7 +1645,7 @@ def plot_relative_time(
                         this_one = this_one.filter(pl.col("jet") == jet)
                         x_ = this_one["relative_index"].to_numpy() / 4
                         y = this_one[data_var] / factor
-                        ax.plot(x_, y, color=COLORS[2 - j], lw=.5, alpha=0.5)
+                        ax.plot(x_, y, color=COLORS[2 - j], lw=0.5, alpha=0.5)
                 else:
                     ax.fill_between(
                         x,
@@ -1562,7 +1661,9 @@ def plot_relative_time(
                 )
                 if j == 0:
                     factor_str = (
-                        "" if factor == 1 else rf"${int(np.sign(factor))} \times 10^{int(np.log10(np.abs(factor)))} \times $"
+                        ""
+                        if factor == 1
+                        else rf"${int(np.sign(factor))} \times 10^{int(np.log10(np.abs(factor)))} \times $"
                     )
                     ax.set_title(
                         rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
@@ -1570,7 +1671,7 @@ def plot_relative_time(
                 ax.yaxis.set_major_locator(MaxNLocator(4, integer=True))
         for i, ax in enumerate(axes):
             ax.axvline(0, zorder=1, color="black", lw=2)
-            if i > 11:
+            if i >= (n_row - 1) * n_col:
                 ax.set_xlabel("Relative time around onset [days]", color="black")
             if show_alive:
                 xlim = ax.get_xlim()
@@ -1645,7 +1746,7 @@ def plot_interp(
         range(1000), letters, axes, variables.items()
     ):
         nlevels, cmap, (min_, max_) = props
-        
+
         varname, mode = varname_full.split(":")
         varname_no_number = varname.rstrip("0123456789")
         long_name = PRETTIER_VARNAME.get(varname, varname)
