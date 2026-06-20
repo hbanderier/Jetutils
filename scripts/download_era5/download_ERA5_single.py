@@ -13,28 +13,32 @@ suffix = f"_{suffix}" if suffix != "" else ""
 
 
 def retrieve(client: Client, request: dict, year: int, month: int | None = None):
-    year = str(year).zfill(4)
+    yearstr = str(year).zfill(4)
     if month is not None:
         month = str(month).zfill(2)
-        ofile = basepath.joinpath(f"{year}{month}{suffix}.nc")
-        ofile2 = basepath.joinpath(f"../6H/{year}{month}{suffix}.nc")
+        ofile = basepath.joinpath(f"{yearstr}{month}{suffix}.nc")
+        ofile2 = basepath.joinpath(f"../6H/{yearstr}{month}{suffix}.nc")
     else:
         month = [str(i).zfill(2) for i in range(1, 13)]
-        ofile = basepath.joinpath(f"{year}{suffix}.nc")
-        ofile2 = basepath.joinpath(f"../6H/{year}{suffix}.nc")
+        ofile = basepath.joinpath(f"{yearstr}{suffix}.nc")
+        ofile2 = basepath.joinpath(f"../6H/{yearstr}{suffix}.nc")
     if ofile.is_file() or ofile2.is_file():
         return
-    request.update({"year": year, "month": month})
+    print(ofile, ofile2)
+    request.update({"year": yearstr, "month": month})
     client.retrieve("reanalysis-era5-single-levels", request, ofile)
-    
+
     da = xr.open_dataset(ofile).chunk("auto")
+    print("da.dims:", da.dims)
     if "step" in da.dims:
-        da = da.stack({"valid_time": ("time", "step")}, create_index=False).reset_coords(["time", "step", "number", "surface"], drop=True)
-        da = standardize(da).transpose("time", "lat", "lon")
-        da = da.sel(time=da.time.dt.year == year)
-        da = da.resample(time="6h").sum()
-        da.to_netcdf(ofile2)
-    
+        da = da.stack(
+            {"valid_time": ("time", "step")}, create_index=False
+        ).reset_coords(["time", "step", "number", "surface"], drop=True)
+    da = standardize(da).transpose("time", "lat", "lon")
+    da = da.sel(time=da.time.dt.year == year)
+    da = da.resample(time="6h").sum()
+    da.to_netcdf(ofile2)
+
     # ds: xr.Dataset = standardize(xr.open_dataset(ofile, engine="cfgrib")).transpose("time", "lat", "lon")
     # ds = ds.resample(time="6h").sum()
     # ogroup = basepath.joinpath("full.zarr")
@@ -46,7 +50,7 @@ def retrieve(client: Client, request: dict, year: int, month: int | None = None)
     # ogroup = basepath.joinpath("full.zarr")
     # ds.to_zarr(ogroup, **kwargs)
     os.remove(ofile)
-    return f"Retrieved {year}, {month}"
+    return f"Retrieved {yearstr}, {month}"
 
 
 def main():
@@ -102,14 +106,30 @@ def main():
             "31",
         ],
         "time": [
-            "00:00", "01:00", "02:00",
-            "03:00", "04:00", "05:00",
-            "06:00", "07:00", "08:00",
-            "09:00", "10:00", "11:00",
-            "12:00", "13:00", "14:00",
-            "15:00", "16:00", "17:00",
-            "18:00", "19:00", "20:00",
-            "21:00", "22:00", "23:00"
+            "00:00",
+            "01:00",
+            "02:00",
+            "03:00",
+            "04:00",
+            "05:00",
+            "06:00",
+            "07:00",
+            "08:00",
+            "09:00",
+            "10:00",
+            "11:00",
+            "12:00",
+            "13:00",
+            "14:00",
+            "15:00",
+            "16:00",
+            "17:00",
+            "18:00",
+            "19:00",
+            "20:00",
+            "21:00",
+            "22:00",
+            "23:00",
         ],
         "data_format": "netcdf",
         "download_format": "unarchived",

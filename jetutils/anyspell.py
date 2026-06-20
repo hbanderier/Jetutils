@@ -600,20 +600,27 @@ def spatial_pairwise_jaccard(
 def regionalize(da: xr.DataArray, clusters: xr.DataArray, sample_dims: list[str] | None = None):
     if sample_dims is None:
         sample_dims = [coord for coord in da.coords if coord not in ["lon", "lat"]]
-    df = xarray_to_polars(da)
     name = clusters.name
+    othername = da.name
     
     clusters = (
         xarray_to_polars(clusters)
         .drop_nulls(name)
+        .drop_nans(name)
         .rename({name: "region"})
         .cast({"region": pl.UInt16})
+        .with_row_index()
     )
+    da = da.sel(
+        lon=xr.DataArray(clusters["lon"], dims="index"), 
+        lat=xr.DataArray(clusters["lat"], dims="index")
+    )
+    da = xarray_to_polars(da)
 
     targets = (
-        df.join(clusters, on=["lon", "lat"])
+        da.join(clusters, on=["index"])
         .group_by([*sample_dims, "region"], maintain_order=True)
-        .agg(pl.col(da.name).mean())
+        .agg(pl.col(othername).mean())
     )
     if "time" in targets.columns:        
         targets = targets.cast({"time": pl.Datetime("ms")})
