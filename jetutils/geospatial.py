@@ -1,4 +1,4 @@
-from jetutils.anyspell import extend_spells
+from jetutils.anyspell import extend_spells, extend_spells_jet_ID
 import datetime
 from scipy.stats import ttest_ind_from_stats
 from jetutils.stats import create_bootstrapped_times, bs_times_with_jet_ID
@@ -32,7 +32,11 @@ from .definitions import (
     polars_to_xarray,
     FACTORS_UNITS,
 )
-from .data import standardize_polars_dtypes, compute_anomalies_pl
+from .data import (
+    standardize_polars_dtypes,
+    compute_anomalies_pl,
+    average_jet_categories,
+)
 
 
 def euclidean_geographic(
@@ -2113,10 +2117,12 @@ def create_relative_plot(
     winsize = 31
     halfwinsize = int(winsize / 2)
     season_doy = season.dt.ordinal_day().unique()
-    
+
     clims_path = basepath.joinpath("relative_clims")
     clims_path.mkdir(exist_ok=True)
-    clim_path = clims_path.joinpath(f"{varname}_{season_doy[0]}-{season_doy[-1]}.parquet")
+    clim_path = clims_path.joinpath(
+        f"{varname}_{season_doy[0]}-{season_doy[-1]}.parquet"
+    )
 
     first_ = pl.col("time").min() - datetime.timedelta(days=halfwinsize)
     last_ = pl.col("time").max() + datetime.timedelta(days=halfwinsize)
@@ -2168,7 +2174,7 @@ def create_relative_plot(
             .otherwise(pl.lit("EDJ")),
         )
         df = df.join(join_, on=["time", "jet ID"])
-        
+
     if clim_path.is_file():
         clim = pl.read_parquet(clim_path)
     elif not phat:
@@ -2474,36 +2480,64 @@ def prepare_last_step_2(
     grams_wr: pl.DataFrame | None = None,
     n_bootstraps: int = 400,
 ):
-    spells = extend_spells(spells, time_before=datetime.timedelta(days=4))
-    times = create_bootstrapped_times(spells, season, n_bootstraps)
+    thejet = spells["spell_of"].mode().item()
     index_columns = get_index_columns(props_with_extras)
-
-    which_jet = "jet" if "jet" in props_with_extras.columns else "jet ID"
-
+    which_jet = "jet ID" if "jet ID" in props_with_extras.columns else "jet"
     props_with_extras = season.to_frame().join(props_with_extras, on="time")
-    props_with_extras = compute_anomalies_pl(
-        props_with_extras, other_index_columns=[which_jet], standardize=True
-    )
-    props_with_extras = props_with_extras.pivot(
-        on=which_jet, index="time", separator="-"
-    )
-    data_vars = [col for col in props_with_extras.columns if col not in index_columns]
-    masked = times.join(props_with_extras, on="time").sort(
+    # props_with_extras = compute_anomalies_pl(
+    #     props_with_extras, other_index_columns=[which_jet], standardize=True
+    # )
+
+    if which_jet == "jet ID":
+        spells = extend_spells_jet_ID(
+            spells, props_with_extras, time_before=datetime.timedelta(days=4)
+        )
+        times = bs_times_with_jet_ID(spells, season, n_bootstraps, props_with_extras)
+        props_with_extras = props_with_extras.with_columns(
+            jet=pl.when(pl.col("is_polar") < 0.5)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("EDJ"))
+        )
+    else:
+        spells = extend_spells(spells, time_before=datetime.timedelta(days=4))
+        times = create_bootstrapped_times(spells, season, n_bootstraps)
+        times = times.with_columns(jet=pl.lit(thejet))
+    data_vars = [
+        col
+        for col in props_with_extras.columns
+        if col not in index_columns and props_with_extras[col].dtype.is_numeric()
+    ]
+    masked = times.join(props_with_extras, on=["time", which_jet]).sort(
         "sample_index", "spell", "relative_index"
     )
+    if which_jet == "jet ID":
+        props_with_extras_ = average_jet_categories(props_with_extras)
+    else:
+        props_with_extras_ = props_with_extras
+    other_jet = "STJ" if thejet == "EDJ" else "EDJ"
+    masked_other = times.join(
+        props_with_extras_.filter(pl.col("jet") == other_jet), on=["time"]
+    ).sort("sample_index", "spell", "relative_index")
+    masked = masked.join(
+        masked_other, on=["sample_index", "spell", "relative_index"], suffix="-other"
+    )
+
     time_filters = {
         "before": pl.col("relative_time") < pl.duration(days=0),
         "during": pl.col("relative_time") >= pl.duration(days=0),
     }
     aggs = {}
-    for (name_tf, time_filter), varname in product(time_filters.items(), data_vars):
-        aggs[f"{varname}.{name_tf}"] = pl.col(varname).filter(
+    data_vars_ = []
+    for (name_tf, time_filter), varname, suffix in product(
+        time_filters.items(), data_vars, ["", "-other"]
+    ):
+        name = f"{varname}.{name_tf}{suffix}"
+        aggs[name] = pl.col(f"{varname}{suffix}").filter(
             time_filter
         ).mean() * FACTORS_UNITS.get(varname, 1)
+        data_vars_.append(name)
     masked = masked.group_by("sample_index", "spell", maintain_order=True).agg(**aggs)
-    data_vars_ = [
-        f"{varname}.{name_tf}" for name_tf, varname in product(time_filters, data_vars)
-    ]
+    means = masked.clone()
     aggs = {}
     for col in data_vars_:
         aggs[col] = pl.col(col).last()
@@ -2515,21 +2549,30 @@ def prepare_last_step_2(
         .agg(**aggs)
         .cast({"spell": pl.Int32()})
     )
+    masked = standardize_polars_dtypes(masked)
     mean_over_spells = masked.select(
         pl.lit(-1, pl.Int32()).alias("spell"),
         cs.exclude("spell").mean().cast(pl.Float32()),
     )
     aggs = {}
-    for col in mean_over_spells.columns:
+    for col in masked.columns:
         if col == "spell":
             aggs[col] = pl.lit(-2, pl.Int32)
         elif col[-5:] == "pvals":
             aggs[col] = pl.lit(0.0, pl.Float32())
         else:
-            varname, _ = col.split(".")
-            aggs[col] = pl.col(varname).mean().cast(pl.Float32())
-    mean_over_season = props_with_extras.select(**aggs)
-    masked = pl.concat([mean_over_season, mean_over_spells, masked])
+            aggs[col] = pl.col(col).mean().cast(pl.Float32())
+    mean_over_season = means.select(**aggs)
+    aggs = {}
+    for col in masked.columns:
+        if col == "spell":
+            aggs[col] = pl.lit(-3, pl.Int32)
+        elif col[-5:] == "pvals":
+            aggs[col] = pl.lit(0.0, pl.Float32())
+        else:
+            aggs[col] = pl.col(col).std().cast(pl.Float32())
+    std_over_season = means.select(**aggs)
+    masked = pl.concat([std_over_season, mean_over_season, mean_over_spells, masked])
     if grams_wr is None:
         return masked
 

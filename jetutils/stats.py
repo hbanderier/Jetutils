@@ -14,11 +14,17 @@ from .definitions import N_WORKERS, SEASONS, infer_direction, polars_to_xarray
 import polars_ds as pds
 
 
-def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 1) -> pl.DataFrame:
+def create_bootstrapped_times(
+    times: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 1
+) -> pl.DataFrame:
     rng = np.random.default_rng()
     orig_times = times.clone()
     boostrap_len = orig_times["time"].n_unique()
-    spell_cols = ["spell", "relative_index", "relative_time", "len"] if "spell" in times.columns else []
+    spell_cols = (
+        ["spell", "relative_index", "relative_time", "len"]
+        if "spell" in times.columns
+        else []
+    )
     times = (
         times[["time", *spell_cols]]
         .with_row_index("inside_index")
@@ -26,10 +32,14 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
     )
     if "spell" in orig_times.columns:  # then per-spell bootstrapping
         min_rel_index = times["relative_index"].min()
-        unique_spells, lens = times.group_by("spell").agg(len=pl.col("time").len()).sort("spell")
+        unique_spells, lens = (
+            times.group_by("spell").agg(len=pl.col("time").len()).sort("spell")
+        )
         ts_bootstrapped = []
         for spell, len_ in zip(unique_spells, lens):
-            bootstraps = rng.choice(all_times.shape[0] - len_, size=(n_bootstraps, 1)) # should be -len per year....
+            bootstraps = rng.choice(
+                all_times.shape[0] - len_, size=(n_bootstraps, 1)
+            )  # should be -len per year....
             bootstraps = bootstraps + np.arange(len_)[None, :]
             this_ts = all_times[bootstraps.flatten()].to_frame()
             this_ts = this_ts.with_columns(
@@ -38,7 +48,10 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
                 inside_index=pl.row_index() % len_,
                 relative_index=pl.row_index().cast(pl.Int32()) % len_ + min_rel_index,
                 spell=pl.lit(spell).cast(pl.UInt32()),
-            ).join(times[["spell", "relative_index", "relative_time"]], on=["spell", "relative_index"])
+            ).join(
+                times[["spell", "relative_index", "relative_time"]],
+                on=["spell", "relative_index"],
+            )
             ts_bootstrapped.append(this_ts)
         ts_bootstrapped = pl.concat(ts_bootstrapped)
     else:
@@ -58,7 +71,9 @@ def create_bootstrapped_times(times: pl.DataFrame, all_times: pl.Series, n_boots
     return ts_bootstrapped
 
 
-def bs_times_with_jet_ID(times, all_times, n_bootstraps, props, extras_to_keep: list[str] | None = None):
+def bs_times_with_jet_ID(
+    times, all_times, n_bootstraps, props, extras_to_keep: list[str] | None = None
+):
     if extras_to_keep is None:
         extras_to_keep = []
     bs_times = create_bootstrapped_times(times, all_times, n_bootstraps)
@@ -72,15 +87,22 @@ def bs_times_with_jet_ID(times, all_times, n_bootstraps, props, extras_to_keep: 
             "relative_index",
             "jet ID",
             "is_polar",
-            *extras_to_keep
+            *extras_to_keep,
         ],
-        on=["spell", "len", "relative_time", "relative_index"],
+        on=["spell", "relative_time", "relative_index"],
     )
     bs_times = bs_times.join(props["time", "jet ID", "is_polar"], on="time")
     which_one = (pl.col("is_polar") - pl.col("is_polar_right")).abs().arg_min()
-    filter_ = bs_times.group_by("sample_index", "time", "jet ID").agg(pl.col("jet ID_right").get(which_one))
+    filter_ = bs_times.group_by("sample_index", "time", "jet ID").agg(
+        pl.col("jet ID_right").get(which_one)
+    )
     bs_times = filter_.join(bs_times, on=filter_.columns)
-    bs_times = bs_times.drop("is_polar", "jet ID").rename({"is_polar_right": "is_polar", "jet ID_right": "jet ID"}).sort("sample_index", "spell", "relative_time")
+    bs_times = (
+        bs_times.drop("is_polar", "jet ID")
+        .rename({"is_polar_right": "is_polar", "jet ID_right": "jet ID"})
+        .sort("sample_index", "spell", "relative_time")
+        .drop("len_right")
+    )
     return bs_times
 
 
@@ -119,7 +141,12 @@ def trends_and_pvalues(
         season = "all_year"
 
     def agg_func(col):
-        col = pl.col(col).cast(pl.Float32()).replace((float("-inf"), float("inf"), float("nan")), None).cast(pl.Float32())
+        col = (
+            pl.col(col)
+            .cast(pl.Float32())
+            .replace((float("-inf"), float("inf"), float("nan")), None)
+            .cast(pl.Float32())
+        )
         return col.std() if std else col.mean()
 
     aggs = [agg_func(col) for col in data_vars]
@@ -155,10 +182,12 @@ def trends_and_pvalues(
     slopes = ts_bootstrapped.group_by(["sample_index", "jet"], maintain_order=True).agg(
         **{
             data_var: pds.lin_reg_report(
-                    pl.int_range(0, pl.col("year").len()).alias("year"), 
-                    target=pl.col(data_var), 
-                    add_bias=True
-                ).struct.field("beta").first()
+                pl.int_range(0, pl.col("year").len()).alias("year"),
+                target=pl.col(data_var),
+                add_bias=True,
+            )
+            .struct.field("beta")
+            .first()
             for data_var in data_vars
         }
     )
@@ -166,10 +195,10 @@ def trends_and_pvalues(
     constants = props_as_df.group_by("jet", maintain_order=True).agg(
         **{
             data_var: pds.lin_reg_report(
-                pl.col("year"), 
-                target=pl.col(data_var), 
-                add_bias=True
-            ).struct.field("beta").last()
+                pl.col("year"), target=pl.col(data_var), add_bias=True
+            )
+            .struct.field("beta")
+            .last()
             for data_var in data_vars
         }
     )
@@ -179,7 +208,8 @@ def trends_and_pvalues(
             data_var: pl.col(data_var)
             .head(n_bootstraps)
             .sort()
-            .search_sorted(pl.col(data_var).get(-1)).first()
+            .search_sorted(pl.col(data_var).get(-1))
+            .first()
             / n_bootstraps
             for data_var in data_vars
         }
@@ -206,9 +236,7 @@ def autocorrelation(path: Path, time_steps: int = 50) -> Path:
     return opath  # a great swedish metal bEnd
 
 
-def compute_autocorrs(
-    X: np.ndarray, lag_max: int
-) -> np.ndarray:
+def compute_autocorrs(X: np.ndarray, lag_max: int) -> np.ndarray:
     autocorrs = []
     i_max = X.shape[1]
     for i in range(lag_max):
@@ -250,9 +278,7 @@ def Hurst_exponent(path: Path, subdivs: int = 11) -> Path:
 
 def searchsortednd(
     a: np.ndarray, x: np.ndarray, **kwargs
-) -> (
-    np.ndarray
-):  # https://stackoverflow.com/questions/40588403/vectorized-searchsorted-numpy + reshapes
+) -> np.ndarray:  # https://stackoverflow.com/questions/40588403/vectorized-searchsorted-numpy + reshapes
     orig_shapex, nx = x.shape[1:], x.shape[0]
     _, na = a.shape[1:], a.shape[0]
     m = np.prod(orig_shapex)
@@ -313,21 +339,37 @@ def field_significance(
     return nocorr, fdr_correction(p, q)
 
 
-def field_significance_for_spells(da: xr.DataArray, spells: pl.DataFrame, all_times: pl.Series, n_bootstraps: int = 50, q: float = 0.025, two_sided: bool = True):
+def field_significance_for_spells(
+    da: xr.DataArray,
+    spells: pl.DataFrame,
+    all_times: pl.Series,
+    n_bootstraps: int = 50,
+    q: float = 0.025,
+    two_sided: bool = True,
+):
     times = create_bootstrapped_times(spells, all_times, n_bootstraps)
     result = []
-    for spell in times["spell"].unique():    
-        huh_ = da.sel(time=polars_to_xarray(times.filter(pl.col("spell") == spell)["sample_index", "time", "relative_index"], ["sample_index", "relative_index"]))
+    for spell in times["spell"].unique():
+        huh_ = da.sel(
+            time=polars_to_xarray(
+                times.filter(pl.col("spell") == spell)[
+                    "sample_index", "time", "relative_index"
+                ],
+                ["sample_index", "relative_index"],
+            )
+        )
         result.append(huh_)
     result = xr.concat(result, dim="spell").mean(["spell", "relative_index"])
-    pvals = result.copy(data=rankdata(result, axis=0) - 1) 
+    pvals = result.copy(data=rankdata(result, axis=0) - 1)
     pvals = pvals.isel(sample_index=-1) / n_bootstraps
     fdr_signif = pvals.copy(data=fdr_correction(pvals.values, q, two_sided=two_sided))
     to_plot = result.isel(sample_index=-1)
     return to_plot, pvals, fdr_signif
 
 
-def one_ks_cumsum(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int | None = None):
+def one_ks_cumsum(
+    b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int | None = None
+):
     if n_sam is None:
         n_sam = len(a)
     x = np.concatenate([a, b], axis=0)
@@ -340,7 +382,9 @@ def one_ks_cumsum(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int | No
     return nocorr, fdr_correction(p, q)
 
 
-def one_ks_searchsorted(b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int = None):
+def one_ks_searchsorted(
+    b: np.ndarray, a: np.ndarray, q: float = 0.02, n_sam: int = None
+):
     if n_sam is None:
         n_sam = len(a)
     x = np.concatenate([a, b], axis=0)
@@ -397,12 +441,12 @@ def common_OR(i: int, spell_of: str) -> Tuple[pl.Expr]:
     noyes = (~spell_c & jet_c).sum()
     nono = (~spell_c & ~jet_c).sum()
     return yesyes, nono, noyes, yesno
-    
-    
+
+
 def odds_ratio(i: int, spell_of: str) -> pl.Expr:
     yesyes, nono, noyes, yesno = common_OR(i, spell_of)
     OR_ = yesyes * nono / yesno / noyes
-    return OR_.fill_nan(0.)
+    return OR_.fill_nan(0.0)
 
 
 def is_signif_OR(i: int, spell_of: str) -> pl.Expr:

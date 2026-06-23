@@ -1375,6 +1375,7 @@ def props_vs_quantiles(
     folder: str | None = None,
     suffix: str = "",
     numbering: bool = False,
+    one_ax_each: bool = False,
     *,
     save: bool = False,
     clear: bool = True,
@@ -1460,10 +1461,10 @@ def props_vs_quantiles(
     total_height = row_height * n_row
 
     fig, axes = plt.subplots(
-        n_row, n_col, sharex="all", constrained_layout=True, figsize=(total_width, total_height)
+        n_row * (1 + int(one_ax_each)), n_col, sharex="all", constrained_layout=True, figsize=(total_width, total_height)
     )
 
-    for jet in ["STJ", "EDJ"]:
+    for j, jet in enumerate(["STJ", "EDJ"]):
         hoho_ = to_plot.filter(pl.col("jet") == jet)
         pvals_ = pvals.filter(pl.col("jet") == jet)
         x = hoho_["catd"].to_numpy()
@@ -1477,7 +1478,10 @@ def props_vs_quantiles(
             )
         )
 
-        for i, letter, var, ax in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars, axes.ravel()):
+        for i, letter, var in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars):
+            row_index = i % n_col
+            col_index = (i // n_col) * 2 + j if one_ax_each else i // n_col
+            ax = axes[col_index, row_index]
             if "-" in var:
                 var_, where = var.split("-")
                 where = f", {where}"
@@ -1494,11 +1498,11 @@ def props_vs_quantiles(
             unit = UNITS.get(var_, '~')
             if unit != "~" and factor_str != "":
                 factor_str = factor_str + r"$\cdot$"
-            if numbering and jet:
+            if numbering and jet and j == 0:
                 ax.set_title(
                     f"{letter}) {PRETTIER_VARNAME.get(var_, var_)}{where} [{factor_str}{unit}]"
                 )
-            else:
+            elif j == 0:
                 ax.set_title(
                     f"{PRETTIER_VARNAME.get(var_, var_)}{where} [{factor_str}{unit}]"
                 )
@@ -1513,7 +1517,7 @@ def props_vs_quantiles(
             ax.bar(x, y - bottom, bottom=bottom, facecolor="none", edgecolor=color, linewidth=1, width=0.1, alpha=0.9)
             ax.bar(np.where(f, x, np.nan), np.where(f, y, np.nan) - bottom, bottom=bottom, facecolor=color, edgecolor="white", linewidth=1, width=0.1, alpha=0.9)
             ax.axhline(bottom, color=COLORS[3], ls="dashed", lw=1)
-            if i >= (n_row - 1) * n_col:
+            if i >= (n_row - 1) * n_col and j == 1:
                 ax.set_xlabel("Persistence")
     if save:
         if folder is None:
@@ -1692,7 +1696,7 @@ def plot_relative_time(
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
         fig.suptitle(
-            f"{props_masked['spell'].n_unique()} persistent episodes of the {spell_of[:3]}"
+            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of[:3]}"
         )
     return bigfig
 
@@ -1798,7 +1802,7 @@ def plot_interp(
                     to_plot.norm_index,
                     y,
                     pvals.where(filter_),
-                    hatch="\\" * 3,
+                    hatch="\\\\",
                     facecolor="none",
                     edgecolor="black",
                     hatch_linewidth=2.0,

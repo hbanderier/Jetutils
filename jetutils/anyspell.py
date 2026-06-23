@@ -360,7 +360,7 @@ def extend_spells(
     times = spells["time"].unique().sort()
     dt = times[1] - times[0]
     if index_columns is None:
-        index_columns = get_index_columns(spells, ["member", "region", "spell", "jet", "spell_of", "jet ID"])
+        index_columns = get_index_columns(spells, ["member", "region", "spell", "spell_of"])
     exprs = {
         "len": pl.col("len").first(),
         "time": pl.datetime_range(
@@ -391,9 +391,53 @@ def extend_spells(
             how="left"
         )
         .with_columns(
-            *[fill_null_mode(col, "spell") for col in other_columns],
+            # *[fill_null_mode(col, "spell") for col in other_columns],
             relative_index=(pl.col("relative_time") / dt).cast(pl.Int32)
         )
+    )
+    return spells
+
+
+def extend_spells_jet_ID(
+    spells: pl.DataFrame,
+    props: pl.DataFrame,
+    time_before: datetime.timedelta = datetime.timedelta(0),
+    time_after: datetime.timedelta = datetime.timedelta(0),
+    index_columns: Sequence[str] | None = None,
+):
+    """
+    Could be much more sophisticated by exploring cross backwards and forwards in time into the extensions of the lifecycle but huuh
+
+    Parameters
+    ----------
+    spells : pl.DataFrame
+        _description_
+    cross : pl.DataFrame
+        _description_
+    time_before : datetime.timedelta, optional
+        _description_, by default datetime.timedelta(0)
+    time_after : datetime.timedelta, optional
+        _description_, by default datetime.timedelta(0)
+    index_columns : Sequence[str] | None, optional
+        _description_, by default None
+    """
+    spells = extend_spells(spells, time_before=time_before, time_after=time_after, index_columns=index_columns)
+    gb = ["spell", "spell_of", "relative_time"]
+    spellsc = spells.columns
+    aggs1 = [pl.col(c).first() for c in spellsc if c not in gb]
+    this_one = (pl.col("is_polar") - pl.col("mean_is_polar")).abs().arg_min()
+    those_cols = ["jet ID"]
+    aggs2 = [pl.col(f"{col}_props").get(this_one) for col in those_cols]
+    aggs3 = [pl.col(col).fill_null(pl.col(f"{col}_props")).alias(col) for col in those_cols]
+    spells = (
+        spells
+        .with_columns([fill_null_mode(col, "spell") for col in ["mean_is_polar", "slowness_sum"]])
+        .join(props, on="time", suffix="_props")
+        .group_by(gb)
+        .agg(*aggs1, *aggs2)
+        .with_columns(*aggs3)
+        .drop([f"{col}_props" for col in those_cols])
+        .sort(gb)
     )
     return spells
 

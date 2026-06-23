@@ -37,13 +37,13 @@ def to_netcdf(da: xr.Dataset | xr.DataArray, path: Path | str, **kwargs):
     da : xr.Dataset | xr.DataArray
         Object to save
     path : Path | str
-        Path 
+        Path
 
     Raises
     ------
     e
         If `cf_xarray` is needed to transform a MultiIndex and it is not found
-    """ 
+    """
     try:
         da.to_netcdf(path, **kwargs)
     except (NotImplementedError, ValueError) as e:
@@ -69,7 +69,7 @@ def open_dataset(path: Path | str, **kwargs) -> xr.Dataset:
     Returns
     -------
     xr.Dataset
-    """    
+    """
     ds = xr.open_dataset(path, **kwargs)
     try:
         import cf_xarray
@@ -83,7 +83,7 @@ def open_dataset(path: Path | str, **kwargs) -> xr.Dataset:
 
 def open_dataarray(path: Path | str, **kwargs) -> xr.DataArray:
     """
-    If possible, turn the output of `open_dataset()` into a DataArray 
+    If possible, turn the output of `open_dataset()` into a DataArray
 
     Parameters
     ----------
@@ -98,7 +98,7 @@ def open_dataarray(path: Path | str, **kwargs) -> xr.DataArray:
     ------
     ValueError
         If more than one variable is in the output of `open_dataset()`.
-    """    
+    """
     ds = open_dataset(path, **kwargs)
     if len(ds.data_vars) != 1:
         raise ValueError("More than one data var in ds!")
@@ -123,7 +123,7 @@ def _open_many_da_wrapper(
     -------
     xr.DataArray | xr.Dataset
         Dataarray if possible, dataset if several data variables are found.
-    """    
+    """
     if isinstance(filename, list) and len(filename) == 1:
         filename = filename[0]
     if isinstance(filename, list):
@@ -132,7 +132,7 @@ def _open_many_da_wrapper(
             stem = Path(fn).stem
             try:
                 int(stem)
-            except ValueError:  
+            except ValueError:
                 # exceptions are raised by clim.nc, which we do not want anyways
                 continue
             da_ = open_dataset(fn, chunks="auto")
@@ -177,7 +177,7 @@ def get_land_mask() -> xr.DataArray:
     -------
     land_mask : xr.DataArray
         Land mask for the whole globe, a 2d dataarray at 0.5 degreees resolution, gridded like the standardized data: `lon` going from -180 to +179.5 and `lat` from -90 to +90.
-    """    
+    """
     mask = open_dataarray(f"{DATADIR}/ERA5/grid_info/land_sea.nc")
     mask = (
         mask.squeeze()
@@ -205,7 +205,7 @@ def determine_file_structure(path: Path) -> str:
     ------
     RuntimeError
         If no files are present that match the patterns looked for
-    """    
+    """
     if path.joinpath("full.nc").is_file() or path.joinpath("full.zarr").is_dir():
         return "one_file"
     if any([path.joinpath(f"{year}.nc").is_file() for year in YEARS]):
@@ -229,7 +229,7 @@ def determine_sample_dims(da: xr.DataArray) -> dict:
     -------
     dict
         Dictionary whose keys are dimension names and values are the corresponding indices.
-    """ 
+    """
     included = ["member", "time", "megatime"]
     return {key: da[key].to_index() for key in da.dims if key in included}
 
@@ -247,7 +247,7 @@ def determine_feature_dims(da: xr.DataArray) -> dict:
     -------
     dict
         Dictionary whose keys are dimension names and values are the corresponding indices.
-    """    
+    """
     excluded = ["member", "time", "cluster", "megatime"]
     return {key: da[key].to_index() for key in da.dims if key not in excluded}
 
@@ -264,7 +264,7 @@ def data_path(
 ) -> Path | tuple[Path, Path, Path]:
     """
     Constructs a path from various, mostly optional, path elements. Note that the name of the path elements refer to the data structure used by the author, but only their order matter, since this function essentially does::
-    
+
         return Path(DATADIR, dataset, level_type, varname, resolution, clim_type + unpack_smooth_map(clim_smoothing), smoothing)
 
     Parameters
@@ -297,7 +297,7 @@ def data_path(
         If `clim_smoothing` is passed but not `clim_type`
     FileNotFoundError
         If the looked for folder does not exist
-    """    
+    """
     if clim_type is None and for_compute_anomaly:
         clim_type = "none"
     elif clim_type is None:
@@ -348,7 +348,7 @@ def standardize(da, unify_dtypes: bool = True, do_chunk: bool = False):
     -------
     Same as input
         Standardized Xarray object
-    """    
+    """
     standard_dict = {
         "valid_time": "time",
         "time_counter": "time",
@@ -429,8 +429,12 @@ def standardize(da, unify_dtypes: bool = True, do_chunk: bool = False):
             chunks = None
             if "preferred_chunks" in da[var].encoding and da[var].chunks is None:
                 chunks = da[var].encoding["preferred_chunks"]
-                chunks = {standard_dict.get(key, key): val for key, val in chunks.items()}
-                chunks = {key: val for key, val in chunks.items() if key in da[var].dims}
+                chunks = {
+                    standard_dict.get(key, key): val for key, val in chunks.items()
+                }
+                chunks = {
+                    key: val for key, val in chunks.items() if key in da[var].dims
+                }
                 chunking = True
             if chunking and do_chunk:
                 chunks = chunks if chunks is not None else "auto"
@@ -488,7 +492,7 @@ def extract_period(
     -------
     same as input
         subset of `da`
-    """    
+    """
     if period == "all":
         return da
     if isinstance(period, tuple):
@@ -523,7 +527,7 @@ def extract_season(
     ------
     ValueError
         If a string different from "DJF", "MAM", "JJA" or "SON" is passed as the `season`.
-    """    
+    """
     if isinstance(season, list):
         da = da.isel(time=np.isin(da.time.dt.month, season))
     elif isinstance(season, str):
@@ -572,7 +576,7 @@ def extract_region(
     -------
     da: same as input
         subset `da`
-    """    
+    """
     if minlon is None or maxlon is None or minlon < maxlon:
         return da.sel(lon=slice(minlon, maxlon), lat=slice(minlat, maxlat))
     da1 = da.sel(lon=slice(minlon, None), lat=slice(minlat, maxlat))
@@ -583,13 +587,13 @@ def extract_region(
 
 def unpack_levels(levels: int | str | tuple | list) -> tuple[list, list]:
     """
-    Unpacks a level specifications that can be an int, a str, a tuple, specifying a range to average, a list, or a list of tuples specifying several ranges to average separately. 
+    Unpacks a level specifications that can be an int, a str, a tuple, specifying a range to average, a list, or a list of tuples specifying several ranges to average separately.
     Outputs a modified and sorted `levels` and another list `level_names` that names the levels created by averaging.
 
     Parameters
     ----------
     levels : int | str | tuple | list
-        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included.
         A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
 
             f"{level[0]}-{len(level)}-{level[-1]}"
@@ -598,10 +602,10 @@ def unpack_levels(levels: int | str | tuple | list) -> tuple[list, list]:
     -------
     levels: list
         sorted, standardized input
-        
+
     level_names: list
         giving names to level-means created by the tuples
-    """    
+    """
     if isinstance(levels, int | str | tuple | float | np.int64 | np.int32):
         levels = [levels]
     to_sort = []
@@ -621,7 +625,9 @@ def unpack_levels(levels: int | str | tuple | list) -> tuple[list, list]:
     return levels, level_names
 
 
-def extract_levels(da: xr.DataArray | xr.Dataset, levels: int | str | list | tuple | Literal["all"]):
+def extract_levels(
+    da: xr.DataArray | xr.Dataset, levels: int | str | list | tuple | Literal["all"]
+):
     """
     Extract levels from a Xarray object
 
@@ -630,7 +636,7 @@ def extract_levels(da: xr.DataArray | xr.Dataset, levels: int | str | list | tup
     da : DataArray or Dataset
         Xarray object from which to extract. It must have a `"lev"` dimension.
     levels : int | str | list | tuple | Literal[all]
-        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included.
         A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
 
             f"{level[0]}-{len(level)}-{level[-1]}"
@@ -653,7 +659,7 @@ def extract_levels(da: xr.DataArray | xr.Dataset, levels: int | str | list | tup
     if not any([isinstance(level, tuple) for level in levels]):
         try:
             da = da.isel(lev=levels)
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             da = da.sel(lev=levels)
         if len(levels) == 1 or da.lev.values.size <= 1:
             return da.squeeze().reset_coords("lev", drop=True)
@@ -705,7 +711,7 @@ def extract(
     maxlat : int or float, optional
         top side of the box, by default None
     levels : int | str | tuple | list | Literal["all"], optional
-        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included.
         A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
 
             f"{level[0]}-{len(level)}-{level[-1]}"
@@ -716,7 +722,7 @@ def extract(
     -------
     da: same as input
         Subset `da`
-    """    
+    """
     da = standardize(da)
 
     da = extract_period(da, period)
@@ -727,7 +733,7 @@ def extract(
     if "member" in da.dims and members != "all":
         try:
             da = da.isel(member=members)
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             da = da.sel(member=members)
 
     da = extract_region(da, minlon, maxlon, minlat, maxlat)
@@ -751,12 +757,12 @@ def determine_period(path: Path):
     -------
     list
         list of years spanned by the data in the folder.
-    """    
+    """
     yearlist = []
     for f in path.glob("*.nc"):
         try:
             yearlist.append(int(f.stem[:4]))
-        except ValueError:  
+        except ValueError:
             # exceptions are raised by clim.nc, which we do not want anyways
             continue
     return np.unique(yearlist).tolist()
@@ -804,7 +810,7 @@ def open_da(
     maxlat : int or float, optional
         top side of the box, by default None
     levels : int | str | tuple | list | Literal["all"], optional
-        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included. 
+        Level or levels given in various forms. A 2-tuple creates a mean from the levels between the first and second element of the tuple, included.
         A list of tuples or a list of lists is allowed, to create several such means. The name of this newly created level is created using (where `level` is a tuple or a list)::
 
             f"{level[0]}-{len(level)}-{level[-1]}"
@@ -819,7 +825,7 @@ def open_da(
     -------
     da: xr.DataArray or xr.Dataset
         The Xarray object fitting all the specifications. A DataArray if possible (one data variable), a Dataset otherwise.
-    """    
+    """
     if isinstance(varname, tuple):
         varname_in_path, varname_in_file = varname
     else:
@@ -833,7 +839,7 @@ def open_da(
         clim_smoothing,
         smoothing,
         False,
-    ) 
+    )
     file_structure = determine_file_structure(path)
 
     if isinstance(period, tuple):
@@ -907,15 +913,15 @@ def unpack_smooth_map(smooth_map: dict) -> str:
     -------
     str
         Short deterministic unambiguous string summarizing the smoothing map
-        
+
     Examples
     --------
     >>> unpack_smooth_map({"dayofyear": ("win", 10)})
     "doywin10"
-    
+
     >>> unpack_smooth_map({"time": ("win", 10), "lon": ("fft", 10)})
     "timewin10_lonfft10"
-    """    
+    """
     strlist = []
     for dim, value in smooth_map.items():
         if dim == "detrended":
@@ -948,10 +954,12 @@ def pad_wrap(da: xr.DataArray | xr.Dataset, dim: str) -> bool:
     -------
     bool
         Whether or not to wrap-pad
-    """   
+    """
     resolution = (da[dim][1] - da[dim][0]).item()
     if dim in ["lon", "longitude"]:
-        return (360 >= da[dim][-1].item() >= 360 - resolution) and (da[dim][0].item() == 0.0)
+        return (360 >= da[dim][-1].item() >= 360 - resolution) and (
+            da[dim][0].item() == 0.0
+        )
     return dim in ["dayofyear", "hourofyear", "month", "week"]
 
 
@@ -959,7 +967,7 @@ def _window_smoothing(
     da: xr.DataArray | xr.Dataset, dim: str, winsize: int, center: bool = True
 ) -> xr.DataArray | xr.Dataset:
     """
-    Inner worker function for window smoothing. Either simply calls the xarray method or implements the complicated logic for "hourofyear" smoothing. 
+    Inner worker function for window smoothing. Either simply calls the xarray method or implements the complicated logic for "hourofyear" smoothing.
 
     Parameters
     ----------
@@ -986,7 +994,7 @@ def _window_smoothing(
         dim = "time"
     for group in groups.groups.values():
         to_concat.append(
-            da.isel(**{dim: group}) 
+            da.isel(**{dim: group})
             .rolling({dim: winsize // 4}, center=center, min_periods=1)
             .mean()
         )
@@ -1028,7 +1036,9 @@ def window_smoothing(
     return newda
 
 
-def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.DataArray | xr.Dataset:
+def fft_smoothing(
+    da: xr.DataArray | xr.Dataset, dim: str, winsize: int
+) -> xr.DataArray | xr.Dataset:
     """
     Probably broken for now. FFT means Fast Fourier Transform, which is the central function we use to perforn this smoothing, whose more correct name would be a low-pass filter. Transforms the data along `dim` in the frequency domain, zeroes out the elements corresponding to the `winsize` highest frequencies, and transforms this back into real space.
 
@@ -1045,7 +1055,7 @@ def fft_smoothing(da: xr.DataArray | xr.Dataset, dim: str, winsize: int) -> xr.D
     -------
     da: same as input
         Input object smoothed along `dim`.
-    """    
+    """
     import xrft
 
     name = da.name
@@ -1093,7 +1103,8 @@ def smooth(
     -------
     da: same as input
         Smoothed input
-    """    
+    """
+
     def detrend(da):
         p = da.polyfit(dim="time", deg=1)
         fit = xr.polyval(da["time"], p.polyfit_coefficients)
@@ -1118,7 +1129,7 @@ def coarsen_da(
     da: xr.Dataset | xr.DataArray, n_coarsen: int, reduce_func: Callable = np.amax
 ) -> xr.Dataset | xr.DataArray:
     """
-    Thin wrapper around `da.coarsen()` that possibly pad wraps over lon. 
+    Thin wrapper around `da.coarsen()` that possibly pad wraps over lon.
     """
     undo_pad = False
     if pad_wrap(da, "lon"):
@@ -1126,10 +1137,14 @@ def coarsen_da(
         undo_pad = True
     coord_func = "first" if undo_pad or n_coarsen % 2 != 1 else "mean"
     boundary = "pad" if undo_pad else "trim"
-    da = da.coarsen({"lon": n_coarsen, "lat": n_coarsen}, boundary=boundary, coord_func=coord_func).reduce(reduce_func)
+    da = da.coarsen(
+        {"lon": n_coarsen, "lat": n_coarsen}, boundary=boundary, coord_func=coord_func
+    ).reduce(reduce_func)
     if not undo_pad:
         return da
-    return da.isel(lon=slice(None, -1)).assign_coords(lon=da.lon[:-1] + (180 - da.lon[0].item()))
+    return da.isel(lon=slice(None, -1)).assign_coords(
+        lon=da.lon[:-1] + (180 - da.lon[0].item())
+    )
     # da = da.isel(lon=slice(n_coarsen, -n_coarsen))
 
 
@@ -1340,34 +1355,27 @@ def compute_all_smoothed_anomalies(
             anom = smooth(anom, smoothing)
             anom = compute(anom.astype(np.float32))
         to_netcdf(anom, dest)
-        
-        
+
+
 def compute_all_dailymeans(
     dataset: str,
     level_type: str | None = None,
     varname: str | None = None,
-    reduction_function: Callable = np.mean
+    reduction_function: Callable = np.mean,
 ):
     args = [arg for arg in [DATADIR, dataset, level_type, varname] if arg is not None]
     path = Path(*args)
     path_from = path.joinpath("6H")
     path_to = path.joinpath(f"daily{reduction_function.__name__}")
     path_to.mkdir(exist_ok=True)
-    sources = [
-        source
-        for source in path_from.iterdir()
-        if source.suffix == ".nc"
-    ]
-    dests = [
-        path_to.joinpath(fn.name) 
-        for fn in sources
-    ]
+    sources = [source for source in path_from.iterdir() if source.suffix == ".nc"]
+    dests = [path_to.joinpath(fn.name) for fn in sources]
     for source, dest in zip(sources, tqdm(dests)):
         if dest.is_file():
             continue
         da = standardize(open_dataset(source)).chunk("auto")
-        da = da.resample(time="1d").reduce(reduction_function)  
-        da = compute(da, progress=True)  
+        da = da.resample(time="1d").reduce(reduction_function)
+        da = compute(da, progress=True)
         to_netcdf(da, dest)
 
 
@@ -1389,7 +1397,10 @@ def compute_extreme_climatology(da: xr.DataArray, opath: Path):
 
 
 def compute_anomalies_ds(
-    ds: xr.Dataset, clim_type: str, standardized: bool = False, return_clim: bool = False
+    ds: xr.Dataset,
+    clim_type: str,
+    standardized: bool = False,
+    return_clim: bool = False,
 ) -> xr.Dataset:
     """
     Compute anomalies for a dataset by iterating over variables. Will load all data into memory so the ds needs to fit.
@@ -1430,7 +1441,11 @@ def compute_anomalies_ds(
 
 
 def periodic_rolling_pl(
-    df: pl.DataFrame, winsize: int, data_vars: list, dim: str = "dayofyear", other_columns: list | None = None
+    df: pl.DataFrame,
+    winsize: int,
+    data_vars: list,
+    dim: str = "dayofyear",
+    other_columns: list | None = None,
 ):
     """
     Window smoothing for a polars DataFrame, for a dimension that is periodic like `"dayofyear"`.
@@ -1444,7 +1459,7 @@ def periodic_rolling_pl(
     data_vars : list
         List of data variables, i.e. not indices.
     dim : str, optional
-        Dim along which to window smooth, by default "dayofyear". Other index columns with be grouped by. 
+        Dim along which to window smooth, by default "dayofyear". Other index columns with be grouped by.
 
     Returns
     -------
@@ -1454,7 +1469,10 @@ def periodic_rolling_pl(
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
     if other_columns is None:
-        other_columns = get_index_columns(df, ("member", "jet", "is_polar", "norm_index", "n", "dummy", "start", "level")) # needs a better solution!
+        other_columns = get_index_columns(
+            df,
+            ("member", "jet", "is_polar", "norm_index", "n", "dummy", "start", "level"),
+        )  # needs a better solution!
     descending = [False, *[col == "jet" for col in other_columns]]
     len_ = [df.select(col).n_unique() for col in other_columns]
     len_ = int(np.prod(len_))
@@ -1485,12 +1503,129 @@ def periodic_rolling_pl(
     return df
 
 
+def average_jet_categories(
+    props_as_df: pl.DataFrame,
+    polar_cutoff: float | None = None,
+    allow_hybrid: bool = False,
+):
+    """
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
+
+    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
+
+    Parameters
+    ----------
+    props_as_df : DataFrame
+        Uncategorized jet properties, that contain at least the `jet ID` column.
+    polar_cutoff : float | None, optional
+        Cutoff, by default None
+    allow_hybrid : bool, optional
+        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
+
+    Returns
+    -------
+    props_as_df
+        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
+    """
+    if allow_hybrid and polar_cutoff is None:
+        polar_cutoff = 0.15
+    elif polar_cutoff is None:
+        polar_cutoff = 0.5
+    if allow_hybrid:
+        props_as_df = props_as_df.with_columns(
+            pl.when(pl.col("is_polar") > 1 - polar_cutoff)
+            .then(pl.lit("EDJ"))
+            .when(pl.col("is_polar") < polar_cutoff)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("Hybrid"))
+            .alias("jet")
+        )
+    else:
+        props_as_df = props_as_df.with_columns(
+            pl.when(pl.col("is_polar") >= polar_cutoff)
+            .then(pl.lit("EDJ"))
+            .otherwise(pl.lit("STJ"))
+            .alias("jet")
+        )
+    index_columns = get_index_columns(
+        props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
+    )
+    other_columns = [
+        col for col in props_as_df.columns if col not in [*index_columns, "jet"]
+    ]
+    agg = {
+        col: (pl.col(col) * pl.col("int")).sum() / pl.col("int").sum()
+        for col in other_columns
+    }
+    agg["int"] = pl.col("int").mean()
+    agg["is_polar"] = pl.col("is_polar").mean()
+    agg["s_star"] = pl.col("s_star").max()
+    agg["lon_ext"] = pl.col("lon_ext").max()
+    agg["lat_ext"] = pl.col("lat_ext").max()
+    agg["njets"] = pl.len().cast(pl.UInt8())
+
+    gb_columns = get_index_columns(
+        props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
+    )
+    props_as_df_cat = (
+        props_as_df.group_by(gb_columns, maintain_order=True)
+        .agg(**agg)
+        .sort(gb_columns)
+    )
+
+    if "member" in index_columns:
+        dummy_indexer = (
+            props_as_df_cat["member"]
+            .unique(maintain_order=True)
+            .to_frame()
+            .join(
+                props_as_df_cat["time"].unique(maintain_order=True).to_frame(),
+                how="cross",
+            )
+            .join(
+                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
+                how="cross",
+            )
+        )
+    elif "cluster" in index_columns:
+        dummy_indexer = (
+            props_as_df_cat["cluster"]
+            .unique(maintain_order=True)
+            .to_frame()
+            .join(
+                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
+                how="cross",
+            )
+        )
+    else:
+        dummy_indexer = (
+            props_as_df_cat["time"]
+            .unique(maintain_order=True)
+            .to_frame()
+            .join(
+                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
+                how="cross",
+            )
+        )
+    new_index_columns = get_index_columns(
+        props_as_df_cat, ("member", "time", "cluster", "jet", "spell", "relative_index")
+    )
+
+    sort_descending = [False] * len(new_index_columns)
+    sort_descending[-1] = True
+    props_as_df_cat = dummy_indexer.join(
+        props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
+    ).sort(new_index_columns, descending=sort_descending)
+    props_as_df_cat = props_as_df_cat.with_columns(pl.col("njets").fill_null(0))
+    return props_as_df_cat
+
+
 def compute_anomalies_pl(
     df: pl.DataFrame,
-    other_index_columns: tuple | str = ("jet",),
+    other_index_columns: list | str = "jet",
     smooth_clim: int = 0,
     standardize: bool = False,
-    detrend: bool = False
+    detrend: bool = False,
 ) -> pl.DataFrame:
     """
     Anomalizes a polars DataFrame. All columns except `"time"` and the columns in `other_index_columns` will be amomalized.
@@ -1511,42 +1646,96 @@ def compute_anomalies_pl(
     df: pl.DataFrame
         Anomalized `df` with the same column names and size.
     """
+
     if isinstance(other_index_columns, str):
-        other_index_columns = (other_index_columns,)
+        other_index_columns = [other_index_columns]
     data_columns = [
         col for col in df.columns if col not in ["time", *other_index_columns]
     ]
-    aggs = {"dayofyear": pl.col("time").dt.ordinal_day().cast(pl.Int32)}
+    rename_kwargs = {
+        hoh: hoh.replace(":", "-").replace("-", "_") for hoh in data_columns
+    }
+    rename_kwargs_back = {
+        hoh.replace(":", "-").replace("-", "_"): hoh for hoh in data_columns
+    }
+
+    aggs_index = {"dayofyear": pl.col("time").dt.ordinal_day().cast(pl.Int32)}
     if detrend:
-        aggs = aggs | {"year": pl.col("time").dt.year()}
-    df = df.with_columns(**aggs)
+        aggs_index = aggs_index | {"year": pl.col("time").dt.year()}
+    df = df.with_columns(**aggs_index)
+    if "jet ID" in other_index_columns:
+        df = df.with_columns(
+            jet=pl.when(pl.col("is_polar") > 0.5)
+            .then(pl.lit("STJ"))
+            .otherwise(pl.lit("EDJ"))
+        )
+        df_catd = average_jet_categories(df)
+        df_catd = df_catd.with_columns(**aggs_index)
+        other_index_columns = [
+            col for col in other_index_columns if col != "jet ID"
+        ] + ["jet"]
+        keep_extra = ["jet ID"]
+    else:
+        df_catd = df
+        keep_extra = []
     if detrend:
-        aggs = {data_column: pds.lin_reg("year", target=data_column, add_bias=True, return_pred=True).struct.field("pred") for data_column in data_columns}
-        clim = df.group_by("region", "year", "dayofyear").agg([pl.col(data_var).mean() for data_var in data_columns]).group_by("region", "dayofyear").agg(**aggs, year=pl.col("year")).explode("year", *data_columns).sort(*other_index_columns, "year", "dayofyear")
+        aggs = {
+            data_column: pds.lin_reg(
+                "year", target=data_column, add_bias=True, return_pred=True
+            ).struct.field("pred")
+            for data_column in rename_kwargs_back
+        }
+        clim = (
+            df_catd.group_by(*other_index_columns, "year", "dayofyear")
+            .agg([pl.col(data_var).mean() for data_var in data_columns])
+            .rename(rename_kwargs)
+            .group_by(*other_index_columns, "dayofyear")
+            .agg(**aggs, year=pl.col("year"))
+            .rename(rename_kwargs_back)
+            .explode("year", *data_columns)
+            .sort(*other_index_columns, "year", "dayofyear")
+        )
         if smooth_clim > 1:
-            clim = periodic_rolling_pl(clim, smooth_clim, data_columns, "dayofyear", other_columns=[*other_index_columns, "year"])
+            clim = periodic_rolling_pl(
+                clim,
+                smooth_clim,
+                data_columns,
+                "dayofyear",
+                other_columns=[*other_index_columns, "year"],
+            )
+        clim = clim.cast({"dayofyear": pl.Int32()})
         join_on = ["year", "dayofyear", *other_index_columns]
     else:
-        clim = df.group_by(pl.col("dayofyear"), *other_index_columns).mean().drop("time")
+        clim = (
+            df_catd.group_by(pl.col("dayofyear"), *other_index_columns)
+            .mean()
+            .drop("time")
+        )
         if smooth_clim > 1:
-            clim = periodic_rolling_pl(clim, smooth_clim, data_columns, other_columns=other_index_columns)
+            clim = periodic_rolling_pl(
+                clim, smooth_clim, data_columns, other_columns=other_index_columns
+            )
+        clim = clim.cast({"dayofyear": pl.Int32()})
         join_on = ["dayofyear", *other_index_columns]
     df = df.join(clim, on=join_on, suffix="_clim")
     if not standardize:
         df = df.select(
-            *["time", *other_index_columns],
+            *["time", *other_index_columns, *keep_extra],
             **{col: pl.col(col) - pl.col(f"{col}_clim") for col in data_columns},
         )
         return df
     # standardize assumes constant stds even with detrend=True, for now.
-    std = df.group_by(pl.col("dayofyear"), *other_index_columns).agg(
+    std = df_catd.group_by(pl.col("dayofyear"), *other_index_columns).agg(
         *[pl.col(col).std() for col in data_columns]
     )
     if smooth_clim > 1:
-        std = periodic_rolling_pl(std, smooth_clim, data_columns, other_columns=other_index_columns)
+        std = periodic_rolling_pl(
+            std, smooth_clim, data_columns, other_columns=other_index_columns
+        )
+    std = std.cast({"dayofyear": pl.Int32()})
     df = df.join(std, on=["dayofyear", *other_index_columns], suffix="_std")
     df = df.select(
-        *["time", *other_index_columns],
+        *["time", *other_index_columns, *keep_extra],
         **{
             col: (pl.col(col) - pl.col(f"{col}_clim")) / pl.col(f"{col}_std")
             for col in data_columns
@@ -1709,6 +1898,7 @@ class DataHandler(object):
     path: Path
         Path to a subfolder containing at least the metadata as a .pkl file, and where the various Experiment classes that contain a `DataHandler` will store their results.
     """
+
     def __init__(
         self,
         path: Path | str,
@@ -1716,7 +1906,7 @@ class DataHandler(object):
     ) -> None:
         """
         Initializes a DataHandler from an already created subfolder at `path`.
-        
+
         Raises
         ------
         ValueError
@@ -1821,7 +2011,7 @@ class DataHandler(object):
             clim_smoothing,
             smoothing,
             False,
-        ).joinpath("results") # pyrefly: ignore
+        ).joinpath("results")  # pyrefly: ignore
         path.mkdir(exist_ok=True)
         if level_type == "surf":
             levels = None
@@ -1875,7 +2065,9 @@ class DataHandler(object):
             da = compute(da, progress_flag=True)
             if reduce_da:
                 if isinstance(da, xr.DataArray):
-                    da = flatten_by(xr.Dataset({varname_in_file: da}), varname_in_file)[varname_in_file]
+                    da = flatten_by(xr.Dataset({varname_in_file: da}), varname_in_file)[
+                        varname_in_file
+                    ]
                 else:
                     da = flatten_by(da, "s")
             to_netcdf(da, da_path, format="NETCDF4")
