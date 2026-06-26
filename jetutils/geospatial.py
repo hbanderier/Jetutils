@@ -2150,8 +2150,6 @@ def create_relative_plot(
         print(varname_)
         if f"{varname_no_number}_interp" in df.collect_schema().names():
             df = df.rename({f"{varname_no_number}_interp": varname_})
-        else:
-            df = df.rename({"vort_interp": varname_})
     if grad:
         grad_expr = (
             (
@@ -2266,7 +2264,7 @@ def create_all_relative_plots(
             suffix2 = "_grad" if grad else ""
             if varname_ == "PV":
                 varname = f"PV330{suffix1}" if jet == "EDJ" else f"PV350{suffix1}"
-            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
+            factor = FACTORS_UNITS.get(varname_.replace("any", "").rstrip("0123456789"), 1)
             ofile = Path(odir, f"{name}_{varname_}:anom{suffix2}.nc")
             ofile_pvals = Path(odir, f"{name}_{varname_}:anom{suffix2}_pvals.nc")
             ofile_clim_sm = Path(odir, f"{name}_{varname_}:clim{suffix2}.nc")

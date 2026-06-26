@@ -1708,7 +1708,7 @@ def plot_interp(
     jet: str,
     square_len: float = 3,
     n_col: int = 4,
-    pad: float = 0.02,
+    pad: float = 0.0,
     fraction: float = 0.12,
     alpha: float = 0.05,
     transpose: bool = False,
@@ -1756,7 +1756,10 @@ def plot_interp(
         long_name = PRETTIER_VARNAME.get(varname, varname)
         grad = mode[-4:] == "grad"
         is_polar = jet == "EDJ"
-        levels = MaxNLocator(nlevels).tick_values(min_, max_)
+        if isinstance(nlevels, int):
+            levels = MaxNLocator(nlevels).tick_values(min_, max_)
+        else:
+            levels = nlevels
         factor = FACTORS.get(varname, 1)
         ofile = ipath.joinpath(f"{prefix}{jet}_{varname_full}.nc")
         try:
@@ -1827,7 +1830,7 @@ def plot_interp(
             factor_str = r"$10^{" + factor_str + r"} \times $"
         unit = UNITS.get(varname_no_number, UNITS.get(varname, "$~$"))
         unit = factor_str + unit
-        unit = unit + r"$/10^{6}\mathrm{m}$" if grad else unit
+        unit = unit + r"$/1000\,\mathrm{km}$" if grad else unit
         unit = "pp" if unit == r"$\%$" and mode == "anom" else unit
         mode_pretty = mode.split("_")
         mode_pretty = f"{mode_pretty[0]} of {mode_pretty[1]}" if "_" in mode else mode
@@ -1838,7 +1841,7 @@ def plot_interp(
         if i % n_row == (n_row - 1) and transpose:
             ax.set_xlabel("Along jet coord.")
         if i % n_col == 0 and not transpose:
-            ax.set_ylabel(r"Normal distance $[10^{6} \mathrm{m}]$")
+            ax.set_ylabel(r"Normal distance $[1000\,\mathrm{km}]$")
         if i < n_row and transpose:
-            ax.set_ylabel(r"Normal distance $[10^{6} \mathrm{m}]$")
+            ax.set_ylabel(r"Normal distance $[1000\,\mathrm{km}]$")
     return fig
