@@ -143,30 +143,28 @@ if "DATADIR" not in globals():
         #
         "t2m": "2m temp.",
         "tp": "6H-prec.",
-        "PV330": "PV@330K",
-        "PV350": "PV@350K",
-        "EKE250": "EKE@250 hPa",
-        "EMF250": "EMF@250 hPa",
-        "EMFconv250": "EMF conv. @250 hPa",
-        "u": "Zonal wind speed",
-        "v": "Meridional wind speed",
+        "PV": "PV",
+        "EMFconv": "EMF conv.",
+        "u": "$u$",
+        "v": "$u$",
         "s": "$U$",
-        "s250": r"$U$@$250\,\mathrm{hPa}$",
-        "s300": r"$U$@$250\,\mathrm{hPa}$",
         "vort": r"$\zeta",
         "zeta": r"$\zeta$",
-        "zeta300": r"$\zeta$@$300\,\mathrm{hPa}$",
-        "theta2PVU": r"$\theta$@2PVU",
         "theta": r"$\theta$@$2\,\mathrm{PVU}$",
+        "theta2PVU": r"$\theta$@2PVU",
         "theta300": r"$\theta$@$300\,\mathrm{hPa}$",
-        "z500": r"$z$ at $500\,\mathrm{hPa}$",
+        "z": "$z$",
         "t_low": r"Air Temp. at $1000\,\mathrm{hPa}$",
-        "DTCOND500": r"Latent T. tend. at $500\,\mathrm{hPa}$",
-        "PTTEND500": r"T. tend. from physics at $500\,\mathrm{hPa}$",
-        "DTCOND300": r"Latent T. tend. at $300\,\mathrm{hPa}$",
-        "PTTEND300": r"T. tend. from physics at $300\,\mathrm{hPa}$",
+        "DTCOND": r"Latent T. tend.",
+        "PTTEND": r"T. tend. from physics$",
         "AAVO": "AWB",
         "CAVO": "CWB",
+        "APVO": "AWB",
+        "CPVO": "CWB",
+        "SAPVS": "Strato. AWB",
+        "SCPVS": "Strato. CWB",
+        "TAPVS": "Tropo. AWB",
+        "TCPVS": "Tropo. CWB",
         "F1": "$F_1$",
         "F2": "$F_2$",
         "F3": "$F_3$",
@@ -174,7 +172,7 @@ if "DATADIR" not in globals():
         "vert": "Vert. eddy forcing",
         "vert_extra": "Vert. eddy forcing, extra",
     }
-
+    
     UNITS = {
         "mean_lon": r"$~^{\circ} \mathrm{E}$",
         "mean_lat": r"$~^{\circ} \mathrm{N}$",
@@ -205,17 +203,16 @@ if "DATADIR" not in globals():
         "pers_catd": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
         #
         "theta": r"$\mathrm{K}$",
-        "PV330": r"$\mathrm{PVU}$",
-        "PV350": r"$\mathrm{PVU}$",
+        "PV": r"$\mathrm{PVU}$",
         "zeta": r"$\mathrm{AVU}$",
         "vort": r"$\mathrm{AVU}$",
         "t2m": r"$\mathrm{K}$",
         "t_up": r"$\mathrm{K}$",
         "t_low": r"$\mathrm{K}$",
         "tp": r"$\mathrm{mm}$",
-        "EKE250": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
-        "EMF250": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
-        "EMFconv250": r"$\mathrm{m}\mathrm{s}^{-2}$",
+        "EKE": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
+        "EMF": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
+        "EMFconv": r"$\mathrm{m}\mathrm{s}^{-2}$",
         "F": r"$\mathrm{m}^2\mathrm{s}^{-2}$",
         "hor": r"$\mathrm{m}\mathrm{s}^{-2}$",
         "vert": r"$\mathrm{m}\mathrm{s}^{-2}$",
@@ -223,13 +220,29 @@ if "DATADIR" not in globals():
         "u": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "v": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "s": r"$\mathrm{m}\mathrm{s}^{-1}$",
-        "s250": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "z": r"$\mathrm{m}$",
         "DTCOND": r"$\mathrm{K}\mathrm{d}^{-1}$",
         "PTTEND": r"$\mathrm{K}\mathrm{d}^{-1}$",
+        "APVO": r"\%",
+        "CPVO": r"\%",
         "AAVO": r"\%",
         "CAVO": r"\%",
     }
+    for var, plev in product(["u", "v", "s", "EKE", "EMF", "EMFconv", "zeta", "vort", "z", "PTTEND", "DTCOND", "AAVO", "CAVO"], [200, 250, 300, 500]):
+        key = f"{var}{plev}"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$"
+        UNITS[key] = UNITS.get(var, "")
+        
+    for var, thetalev in product(["PV", "APVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"], [320, 330, 340, 350]):
+        key = f"{var}{thetalev}"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$"
+        UNITS[key] = UNITS.get(var, "")
+    
+    for var in ["PV", "APVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
+        key = f"{var}any"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@320 to " + r"$350\,\mathrm{K}$"
+        UNITS[key] = UNITS.get(var, "")
+
 
     DEFAULT_VALUES = {
         "mean_lon": 0,
