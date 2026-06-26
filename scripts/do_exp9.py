@@ -335,18 +335,31 @@ if not bc_path.is_file():
     bias_correction.write_parquet(path.joinpath("bias_correct.parquet"))
 else:
     bias_correction = pl.read_parquet(path.joinpath("bias_correct.parquet"))
-
-for huh in to_do:
-    rename, levtype, name, kwargs = huh
+    
+    
+def _do_one(path, rename, levtype, name, args, kwargs):
     ofile = path.joinpath(f"{rename}_relative.parquet")
     if ofile.is_file():
-        continue
+        return
     da = open_da("ERA5", levtype, name, "6H", *args, **kwargs).rename(rename)
-    if rename in ["APVO", "CPVO", "SAPVS", "TAPVS", "SCPVS", "TCPVS"]:
+    if kwargs["levels"] == "all":
         da = da.any("lev")
     interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
     del da
     interpd.write_parquet(ofile)
+
+for huh in to_do:
+    rename, levtype, name, kwargs = huh
+    if rename in ["APVO", "CPVO"]:
+        for lev in [320, 330, 340, 350, "all"]:
+            kwargs_ = kwargs | {"levels": lev}
+            if lev == "all":
+                rename_ = f"{rename}any"                
+            else:
+                rename_ = f"{rename}{lev:.0f}"
+            _do_one(path, rename_, levtype, name, args, kwargs_)
+    else:
+        _do_one(path, rename, levtype, name, args, kwargs)
 
 ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
 ds_eddies = ds_eddies.sel(lat=slice(None, 85))
