@@ -16,6 +16,8 @@ from jetutils.definitions import (
     OMEGA,
     C_P_AIR,
     KAPPA,
+    RADIUS,
+    degcos,
     degsin,
     compute,
     get_index_columns,
@@ -311,13 +313,11 @@ find_jets_kwargs = dict(
 # jets, phat_jets, props, props_full = do_everything(ds, path, **find_jets_kwargs, track_large=False)
 
 # stage 6: Interpolate new fields
-args = ["all", None, -80, 40, 0, 88]
+args = ["all", None, -80, 40, 0, 85]
 
 to_do = (
     ("t2m", "surf", "t2m", {}),
     ("tp", "surf", "tp", {}),
-    ("PV330", "thetalev", "PV330", {}),
-    ("PV350", "thetalev", "PV350", {}),
     ("APVO", "thetalev", "APVO_new", {}),
     ("CPVO", "thetalev", "CPVO_new", {}),
     # ("SAPVS", "thetalev", "SAPVS", {}),
@@ -382,3 +382,56 @@ for dest, sources in to_do.items():
         n_interp=30,
     )
     interpd.write_parquet(ofile)
+    
+    
+n_days = 10
+for lev, var in product([320, 330, 340, 350], ["PV", "EMFconv", "EKE"]):
+    key = f"{var}{lev}"
+    ifile = path.joinpath(f"{key}_relative.parquet")
+    ofile = path.joinpath(f"{key}_{n_days}days_relative.parquet")
+    os.rename(ifile, ofile)
+
+for n_days in [10, 20, 30]:
+    ozarr = Path(DATADIR, "ERA5/thetalev/PV_and_wind/6H/results", f"eddy_stuff_{n_days}days.zarr")
+    if not ozarr.is_dir():
+        half_len = n_days * 2
+        ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/full.zarr")[["u", "v"]].chunk({"time": 3000, "lat": 72, "lon": 161, "lev": 1}).drop_encoding()
+        l_win = lanczos(2 * half_len + 1)[:, None, None, None]
+        dims = ds.dims
+        for var in ["u", "v"]:
+            ds[f"{var}bar"] = (
+                dims,
+                (
+                    convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
+                ).astype(np.float32),
+            )
+            ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
+            ds[f"{var}p"] = ds[f"{var}p"].where(ds[var] != ds[var].attrs["missing_value"])
+            del ds[f"{var}bar"]
+            del ds[var]
+            
+        ds["EKE"] = (ds["up"] ** 2 + ds["vp"] ** 2) * 0.5
+        ds["EKE"] = ds["EKE"].astype(np.float32)
+        ds["F1"] = ds["up"] ** 2 - ds["EKE"]
+        ds["EMF"] = ds["up"] * ds["vp"]
+        ds["EMFconv"] = -ds.map_blocks(compute_2d_div, ["F1", "EMF"], template=ds["F1"]) * RADIUS * degcos(ds.lat)
+        del ds["F1"]
+        del ds["up"]
+        del ds["vp"]
+
+        res = ds.to_zarr(ozarr, compute=False)
+        compute(res, progress_flag=True)
+        
+    ds = xr.open_zarr(ozarr)
+    ds = extract(ds, *args)    
+
+    # for lev, var in product([320, 330, 340, 350], ["PV", "EMFconv", "EKE"]):
+    for lev, var in product([320, 330, 340, 350], ["EMFconv", "EKE"]):
+        key = f"{var}{lev}"
+        ofile = path.joinpath(f"{key}_{n_days}days_relative.parquet")
+        if ofile.is_file():
+            continue
+        da = ds[var].sel(lev=lev).rename(key)
+        interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+        del da
+        interpd.write_parquet(ofile)

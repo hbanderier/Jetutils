@@ -24,16 +24,16 @@ def retrieve(client: Client, request: dict, year: int, month: int | None = None)
         return
     request.update({"year": year, "month": month})
     client.retrieve("reanalysis-era5-pressure-levels", request, ofile)
-    ds = standardize(xr.open_dataset(ofile))
-    ogroup = basepath.joinpath("full.zarr")
-    if ogroup.is_dir():
-        kwargs = {"mode": "a", "append_dim": "time"}
-    else:
-        kwargs = {"mode": "w"}
+    # ds = standardize(xr.open_dataset(ofile))
+    # ogroup = basepath.joinpath("full.zarr")
+    # if ogroup.is_dir():
+    #     kwargs = {"mode": "a", "append_dim": "time"}
+    # else:
+    #     kwargs = {"mode": "w"}
 
-    ogroup = basepath.joinpath("full.zarr")
-    ds.to_zarr(ogroup, **kwargs)
-    os.remove(ofile)
+    # ogroup = basepath.joinpath("full.zarr")
+    # ds.to_zarr(ogroup, **kwargs)
+    # os.remove(ofile)
     return f"Retrieved {year}, {month}"
 
 
@@ -95,7 +95,7 @@ def main():
             "31",
         ],
         "time": ["00:00", "06:00", "12:00", "18:00"],
-        "pressure_level": ["175", "200", "225", "250", "300", "350"],
+        "pressure_level": ["175", "200", "225", "250", "300", "350", "850"],
         "data_format": "netcdf",
         "download_format": "unarchived",
         "area": [80, -80, 15, 40],
