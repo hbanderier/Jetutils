@@ -2147,9 +2147,11 @@ def create_relative_plot(
     df = pl.scan_parquet(basepath.joinpath(f"{prefix}{varname}_relative.parquet"))
     df = season_.to_frame().lazy().join(df, on="time")
     if varname_ not in df.collect_schema().names():
-        print(varname_)
         if f"{varname_no_number}_interp" in df.collect_schema().names():
             df = df.rename({f"{varname_no_number}_interp": varname_})
+            print(varname_no_number, "->", varname_)
+    expr = pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
+    df = df.with_columns(expr)
     if grad:
         grad_expr = (
             (
@@ -2433,10 +2435,16 @@ def prepare_last_step_1(
             oname = varname
             mode = None
         varname_ = f"{varname}_interp"
-        factor = FACTORS_UNITS.get(varname.rstrip("0123456789"), 1)
+        varname_no_number = varname.rstrip("0123456789")
+        varname_no_number_ = f"{varname_no_number}_interp"
+        factor = FACTORS_UNITS.get(varname_no_number, 1)
         df = pl.scan_parquet(basepath.joinpath(f"{varname}_relative.parquet"))
         if varname == "hor":
             df = df.drop("hor1_interp", "hor2_interp")
+        if varname_ not in df.collect_schema().names():
+            if varname_no_number_ in df.collect_schema().names():
+                df = df.rename({varname_no_number_: varname_})
+                print(varname_no_number, "->", varname_)
         df = df.with_columns(
             pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
             * factor

@@ -237,6 +237,11 @@ if "DATADIR" not in globals():
         key = f"{var}{thetalev}"
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$"
         UNITS[key] = UNITS.get(var, "")
+        
+    for var, thetalev, days in product(["EKE", "EMFconv"], [320, 330, 340, 350], [10, 20, 30]):
+        key = f"{var}{thetalev}_{days}days"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$" + f", {days}d"
+        UNITS[key] = UNITS.get(var, "")
     
     for var in ["PV", "APVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
         key = f"{var}any"
@@ -299,7 +304,7 @@ if "DATADIR" not in globals():
         "DTCOND": 86400,
         "PTTEND": 86400,
         "zeta": 1e5,
-        "PV": 1e6,
+        # "PV": 1e6,
         "tp": 24000,
         "AAVO": 100,
         "CAVO": 100,

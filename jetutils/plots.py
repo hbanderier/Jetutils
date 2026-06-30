@@ -13,6 +13,7 @@ import xarray as xr
 from xarray import DataArray
 import polars as pl
 import polars_ds as pds
+import polars.selectors as cs
 from contourpy import contour_generator
 from tqdm import tqdm, trange
 from string import ascii_lowercase, ascii_uppercase
@@ -1523,6 +1524,165 @@ def props_vs_quantiles(
         if folder is None:
             folder = "jet_props_misc"
         plt.savefig(f"{FIGURES}/{folder}/props_vs_catd{suffix}_{win_size=}.pdf")
+    return fig
+
+
+@clear
+def props_vs_quantiles_bw(
+    props_as_df: pl.DataFrame,
+    summary_comp: pl.DataFrame,
+    data_vars: list,
+    season: pl.Series,
+    n_bootstraps: int = 100,
+    n_catd: int = 20,
+    n_col: int = 4,
+    n_row: int | None = None,
+    col_width: float = 2.0,
+    row_height: float = 1.7,
+    folder: str | None = None,
+    suffix: str = "",
+    numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
+) -> Figure:
+    
+    qs = np.linspace(0, 1.0, n_catd + 1).tolist()
+    dq = qs[1] - qs[0]
+    labels = [f"{float((q + dq / 2)):.3f}" for q in qs]
+
+    def quantile_func_(col):
+        by = pl.col(col)
+        filter_ = by.qcut(qs[1:-1], labels=labels[:-1], allow_duplicates=True).cast(pl.String()).cast(pl.Float32())
+        return filter_
+
+    catd_index = pl.Series("catd", labels[:-1]).cast(pl.Float32()).to_frame().with_row_index("catd_index")
+    relative_time = (pl.col("time") - pl.col("time").first()).over("spell")
+    relative_index = (relative_time / datetime.timedelta(hours=6)).cast(pl.Float64())
+
+    summary_comp = summary_comp.filter(
+        pl.col("time")
+        .is_in(pl.lit(season.implode().first(), pl.List(pl.Datetime("ms"))))
+        .over("spell")
+    )
+
+    summary_comp = summary_comp.with_columns(
+        spell=pl.col("spell").cast(pl.UInt32()),
+        relative_time=relative_time,
+        relative_index=relative_index,
+        len=pl.len().over("spell"),
+    )
+    mean_pers = (
+        summary_comp
+        .group_by("spell")
+        .agg(pl.col("slowness_sum").first())
+        .select(pl.col("slowness_sum").mean())
+        .item()
+    )
+
+    bs_times = bs_times_with_jet_ID(
+        summary_comp,
+        season,
+        n_bootstraps,
+        props_as_df,
+        ("jet", "slowness_sum"),
+    )
+    huh = bs_times.join(props_as_df, on=["time", "jet ID"])
+    huh = huh.with_columns(
+        cs.contains("APVO", "CPVO", "SAPVS", "TAPVS", "TCPVS", "SCPVS", "AAVO", "CAVO").mean().over("spell", "sample_index")
+    )        
+    keep = ["sample_index", "jet ID", "jet", "spell", "slowness_sum", "relative_index"]
+    aggs = {
+        data_var: quantile_func_(data_var)
+        for data_var in data_vars
+    }
+    huh = huh.select(
+        *keep,
+        **aggs
+    )
+
+    indexer = pl.DataFrame({"dummy": 1})
+    for series in [huh["sample_index"], huh["jet"], catd_index["catd_index"]]:
+        indexer = indexer.join(series.unique().to_frame(), how="cross")
+    indexer = indexer.drop("dummy")
+    indexer_cols = indexer.columns
+
+    for var in data_vars:
+        this_one = (
+            huh
+            .group_by("sample_index", "jet", var)
+            .agg(
+                pl.col("slowness_sum").mean()
+            )
+            .join(catd_index, left_on=var, right_on="catd")
+            .drop(var)
+            .rename({"slowness_sum": var})
+        )
+        indexer = indexer.join(this_one, on=indexer_cols, how="left")
+    indexer = indexer.join(catd_index, on="catd_index").drop("catd_index")
+    to_plot = indexer.filter(pl.col("sample_index") == n_bootstraps).sort("jet", "catd")
+    pvals = (
+        indexer.group_by("jet", "catd")
+        .agg(
+            [
+                (pl.col(col).sort_by("sample_index").rank().last() - 1) / n_bootstraps
+                for col in data_vars
+            ]
+        )
+        .sort("jet", "catd")
+    )
+    pvals = pvals.with_columns(
+        **{
+            var: 2 * pl.min_horizontal(pl.col(var), 1 - pl.col(var))
+            for var in data_vars
+        }
+    )
+    
+    if n_row is None:
+        n_row = int(ceil(len(data_vars) / n_col))
+    total_width = col_width * n_col
+    total_height = row_height * n_row
+
+    fig, axes = plt.subplots(
+        n_row * 2, n_col, sharex="all", sharey="row", constrained_layout=True, figsize=(total_width, total_height)
+    )
+
+    for j, jet in enumerate(["STJ", "EDJ"]):
+        hoho_ = to_plot.filter(pl.col("jet") == jet)
+        pvals_ = pvals.filter(pl.col("jet") == jet)
+        x = hoho_["catd"].to_numpy()
+        color = COLORS[1] if jet == "EDJ" else COLORS[2]
+
+        for i, letter, var in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars):
+            row_index = i % n_col
+            col_index = (i // n_col) * 2 + j
+            ax = axes[col_index, row_index]
+            if "-" in var:
+                var_, where = var.split("-")
+                where = f", {where}"
+            else:
+                var_ = var
+                where = ""
+            if numbering and jet and j == 0:
+                ax.set_title(
+                    f"{letter}) {PRETTIER_VARNAME.get(var_, var_)}{where}"
+                )
+            elif j == 0:
+                ax.set_title(
+                    f"{PRETTIER_VARNAME.get(var_, var_)}{where}"
+                )
+            y = hoho_[var].to_numpy()
+            p = pvals_[var].to_numpy()
+            f = p < 0.05
+            
+            ax.bar(x, y - mean_pers, bottom=mean_pers, facecolor="none", edgecolor=color, linewidth=1, width=dq, alpha=0.9)
+            ax.bar(np.where(f, x, np.nan), np.where(f, y - mean_pers, np.nan), bottom=mean_pers, facecolor=color, edgecolor="white", linewidth=1, width=dq, alpha=0.9)
+            ax.axhline(mean_pers, color=COLORS[3], ls="dashed", lw=1)
+    fig.supylabel("Persistence [s/m]")
+    if save:
+        if folder is None:
+            folder = "jet_props_misc"
+        plt.savefig(f"{FIGURES}/{folder}/props_vs_catd_bw{suffix}.pdf")
     return fig
 
 
