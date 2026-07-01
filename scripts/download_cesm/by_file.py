@@ -82,8 +82,8 @@ minlat = 15
 maxlat = 80
 
 years = {
-    "historical": np.arange(1960, 2011),
-    "ssp370": np.arange(2015, 2100),
+    "historical": np.arange(1970, 2010),
+    "ssp370": np.arange(2060, 2100),
 }
 
 periods_to_do = ["historical", "ssp370"]

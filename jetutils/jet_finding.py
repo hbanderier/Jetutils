@@ -1085,7 +1085,7 @@ def track_jets_(
     return standardize_polars_dtypes(cross)
 
 
-def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool = False) -> DataFrame:
+def track_jets(jets: DataFrame, yearly: bool = False, monthly: bool = False) -> DataFrame:
     """
     Iterates over maybe years and maybe members and performs explicit jet tracking. Only use yearly and monthly if severely memory bound, it makes everything much slower
 
@@ -1100,19 +1100,19 @@ def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool =
         _description_
     """
     cross = []
-    do_member = "member" in all_jets_one_df.columns
+    do_member = "member" in jets.columns
     if do_member:
-        members = all_jets_one_df["member"].unique()
+        members = jets["member"].unique()
     else:
         members = [None]
         
     if yearly:
-        years = all_jets_one_df["time"].dt.year().unique()
+        years = jets["time"].dt.year().unique()
     else:
         years = [None]
         
     if monthly:
-        months = all_jets_one_df["time"].dt.year().unique()
+        months = jets["time"].dt.year().unique()
     else:
         months = [None]
     iterator = list(product(members, years, months))
@@ -1121,7 +1121,7 @@ def track_jets(all_jets_one_df: DataFrame, yearly: bool = False, monthly: bool =
     for member, year, month in tqdm(iterator, total=total):
         cross.append(
             track_jets_(
-                all_jets_one_df,
+                jets,
                 member,
                 year,
                 month,
@@ -1148,15 +1148,13 @@ def connected_from_cross(
     )
     gb = ["time", "jet ID"]
     mem = []
-    mem_k = []
     if "member" in jets.columns:
         gb_ = ["member"]
         gb_.extend(gb)
         gb = gb_
         mem = ["member"]
-        mem_k = ["member_k"]
     summary = (
-        jets.group_by("time", "jet ID", maintain_order=True)
+        jets.group_by(gb, maintain_order=True)
         .agg()
         .with_row_index()
     )
@@ -1171,14 +1169,14 @@ def connected_from_cross(
         )
         .with_columns(slowness=slowness_weighted) 
         # .drop("s", "theta", "is_polar", "s_right", "theta_right", "is_polar_right")
-        .group_by("time", "jet ID", maintain_order=True)
+        .group_by(gb, maintain_order=True)
         .agg(
             pl.col("time_right").get(pl.col("slowness").arg_max()),
             pl.col("jet ID_right").get(pl.col("slowness").arg_max()),
             pl.col("dt").get(pl.col("slowness").arg_max()),
         )
         # I don't need merges and splits. Otherwise comment groupby and uncomment .drop
-        .join(cross, on=["time", "jet ID", "time_right", "jet ID_right"])
+        .join(cross, on=[*mem, "time", "jet ID", "time_right", "jet ID_right"])
     )
     cross = (
         cross.join(
@@ -1196,7 +1194,6 @@ def connected_from_cross(
             right_on=[*mem, "time", "jet ID"],
             suffix="_k",
         )
-        .drop(*mem_k)
         .rename({"index": "b"})
     )
     deltas = ["s", "theta"]
@@ -1235,10 +1232,10 @@ def connected_from_cross(
         .join(
             cross.drop("time_right", "jet ID_right"),
             how="left",
-            on=["time", "jet ID"],
+            on=gb,
         )
         .sort("spell", "time")
-        .drop("index", "b")
+        .drop("index", "b", "a")
     )
     return cross, summary_comp
 
