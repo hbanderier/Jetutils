@@ -2583,10 +2583,6 @@ def prepare_last_step_2(
         return masked
 
     grams_wr = grams_wr.cast({"time": pl.Datetime("ms")})
-    winner_names = pl.DataFrame(
-        {"winner": list(range(5)), "name": ["No", "GB", "AL", "AR", "SB"]}
-    )
-    grams_wr = grams_wr.join(winner_names, on="winner")
     regime_stuff = (
         spells.join(grams_wr, on="time")
         .group_by("spell")

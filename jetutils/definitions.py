@@ -107,6 +107,7 @@ if "DATADIR" not in globals():
     PRETTIER_VARNAME = {
         "mean_lon": "Avg. longitude",
         "mean_lat": "Avg. latitude",
+        "lat_over_europe": "Avg. lat. over Europe",
         "mean_lev": "Avg. p. level",
         "mean_s": "Avg. speed",
         "mean_P": "Avg. p. level",
@@ -161,6 +162,7 @@ if "DATADIR" not in globals():
         "CAVO": "CWB",
         "APVO": "AWB",
         "CPVO": "CWB",
+        "DPVO": "DWB",
         "SAPVS": "Strato. AWB",
         "SCPVS": "Strato. CWB",
         "TAPVS": "Tropo. AWB",
@@ -171,6 +173,7 @@ if "DATADIR" not in globals():
         "hor": "EMF conv.",
         "vert": "Vert. eddy forcing",
         "vert_extra": "Vert. eddy forcing, extra",
+        "regime": "Weather regime",
     }
     
     UNITS = {
@@ -180,6 +183,7 @@ if "DATADIR" not in globals():
         "mean_s": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
         "lon_star": r"$~^{\circ} \mathrm{E}$",
         "lat_star": r"$~^{\circ} \mathrm{N}$",
+        "lat_over_europe": r"$~^{\circ} \mathrm{N}$",
         "s_star": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
         "lon_ext": r"$~^{\circ} \mathrm{E}$",
         "lat_ext": r"$~^{\circ} \mathrm{N}$",
@@ -225,6 +229,7 @@ if "DATADIR" not in globals():
         "PTTEND": r"$\mathrm{K}\mathrm{d}^{-1}$",
         "APVO": r"\%",
         "CPVO": r"\%",
+        "DPVO": r"\%",
         "AAVO": r"\%",
         "CAVO": r"\%",
     }
@@ -233,7 +238,7 @@ if "DATADIR" not in globals():
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$"
         UNITS[key] = UNITS.get(var, "")
         
-    for var, thetalev in product(["PV", "APVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"], [320, 330, 340, 350]):
+    for var, thetalev in product(["PV", "APVO", "CPVO", "DPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"], [320, 330, 340, 350]):
         key = f"{var}{thetalev}"
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$"
         UNITS[key] = UNITS.get(var, "")
@@ -243,7 +248,7 @@ if "DATADIR" not in globals():
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$" + f", {days}d"
         UNITS[key] = UNITS.get(var, "")
     
-    for var in ["PV", "APVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
+    for var in ["PV", "APVO", "DPVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
         key = f"{var}any"
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@320 to " + r"$350\,\mathrm{K}$"
         UNITS[key] = UNITS.get(var, "")
@@ -310,6 +315,7 @@ if "DATADIR" not in globals():
         "CAVO": 100,
         "APVO": 100,
         "CPVO": 100,
+        "DPVO": 100,
         "SAPVS": 100,
         "SCPVS": 100,
         "TAPVS": 100,
