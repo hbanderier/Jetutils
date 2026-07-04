@@ -145,13 +145,13 @@ for run in ["ctrl", "dobl"]:
             ds[g] = ds[g] * RADIUS * degcos(ds.lat)
             
         # derivatives, what actually affects the "jet"
-        ds["vert1"] = ds["F13"].differentiate("lev") * RADIUS * degcos(ds.lat)
-        ds["vert2"] = ds["F23"].differentiate("lev") * RADIUS * degcos(ds.lat)
-        ds["vert_extra1"] = ds["F13_extra"].differentiate("lev") * RADIUS * degcos(ds.lat)
-        ds["vert_extra2"] = ds["F23_extra"].differentiate("lev") * RADIUS * degcos(ds.lat)
+        ds["vert1"] = ds["F13"].differentiate("lev")
+        ds["vert2"] = ds["F23"].differentiate("lev")
+        ds["vert_extra1"] = ds["F13_extra"].differentiate("lev")
+        ds["vert_extra2"] = ds["F23_extra"].differentiate("lev")
         ds = ds.sel(lev=30000)
-        ds["hor1"] = ds.map_blocks(compute_2d_div, ["F11", "F12"], template=ds["F12"]) * RADIUS * degcos(ds.lat)
-        ds["hor2"] = ds.map_blocks(compute_2d_div, ["F12", "F22"], template=ds["F12"]) * RADIUS * degcos(ds.lat)
+        ds["hor1"] = ds.map_blocks(compute_2d_div, ["F11", "F12"], template=ds["F12"])
+        ds["hor2"] = ds.map_blocks(compute_2d_div, ["F12", "F22"], template=ds["F12"])
         
         ds = compute(ds, progress_flag=False)
         if ozarr.is_dir():
@@ -397,7 +397,7 @@ for run in ["ctrl", "dobl"]:
             da_ = open_da("Henrik_data", run, name, "6H", *args, **kwargs).rename(rename)
         else:
             ds = xr.open_dataset(
-                f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results/Eddy_NH_10days.zarr"
+                f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results/Eddy_NH_10days.zarr", consolidated=False
             ).sel(lev=30000)
             ds = extract(ds, *args)
             da_ = 0.5 * np.sqrt(ds["up"] ** 2 + ds["vp"] ** 2)
@@ -413,6 +413,7 @@ for run in ["ctrl", "dobl"]:
 for run in ["ctrl", "dobl"]:
     jets = both_jets[run]   
     bc = both_paths[run].joinpath("bias_correct.parquet") 
+    bc = pl.read_parquet(bc)
     to_do = {
         "F1": ("F11", "F12"),
         "F2": ("F12", "F22"),
@@ -422,10 +423,10 @@ for run in ["ctrl", "dobl"]:
         "vert": ("vert1", "vert2"),
         "vert_extra": ("vert_extra1", "vert_extra2"),
     }
-    ds = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/EPF/6H/full.zarr")
+    ds = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/EPF/6H/full.zarr", consolidated=False)
     ds = ds.sel(lat=slice(None, 85))
     for dest, sources in to_do.items():
-        opath = both_paths[run].joinpath(f"{dest}_relative.parquet")
+        ofile = both_paths[run].joinpath(f"{dest}_relative.parquet")
         if ofile.is_file():
             continue
         das = [ds[source] for source in sources]
