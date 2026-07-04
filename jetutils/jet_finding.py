@@ -1261,6 +1261,7 @@ def slowness_expr() -> Expr:
 def spells_from_cross(
     jets: DataFrame,
     cross: DataFrame,
+    summary_comp: pl.DataFrame | None = None,
     dist_thresh: float = 2e5,
     overlap_thresh: float = 0.5,
     dis_polar_thresh: float | None = 1.0,
@@ -1273,13 +1274,14 @@ def spells_from_cross(
     polar_cutoff: float = 0.6,
     STJ_lat_threshold: float = 0.
 ):
-    _, summary_comp = connected_from_cross(
-        jets,
-        cross,
-        dist_thresh=dist_thresh,
-        overlap_thresh=overlap_thresh,
-        dis_polar_thresh=dis_polar_thresh,
-    )
+    if summary_comp is None:
+        _, summary_comp = connected_from_cross(
+            jets,
+            cross,
+            dist_thresh=dist_thresh,
+            overlap_thresh=overlap_thresh,
+            dis_polar_thresh=dis_polar_thresh,
+        )
     if season is not None:
         summary_comp = summary_comp.filter(
             pl.col("time")
@@ -1287,13 +1289,27 @@ def spells_from_cross(
             .over("spell")
         )
         jets = season.to_frame().join(jets, on="time")
-    mean_lats = jets.group_by("time", "jet ID").agg(mean_lat=weighted_mean_pl("lat", "s"))
+        
+    gb = ["time", "jet ID"]
+    mem = []
+    mem_exp = []
+    has_memb = False
+    if "member" in jets.columns:
+        gb_ = ["member"]
+        gb_.extend(gb)
+        gb = gb_
+        mem = ["member"]
+        mem_exp = [pl.col("member").first()]
+        has_memb = True
+        
+    mean_lats = jets.group_by(gb).agg(mean_lat=weighted_mean_pl("lat", "s"))
     spells = (
         summary_comp.filter(pl.col("len") > 2)
         .with_columns(slowness=slowness_expr())
-        .join(mean_lats, on=["time", "jet ID"])
+        .join(mean_lats, on=gb)
         .group_by("spell", maintain_order=True)
         .agg(
+            *mem_exp,
             pl.col("time"),
             pl.col("jet ID"),
             pl.col("lon_overlap"),
@@ -1306,7 +1322,7 @@ def spells_from_cross(
             slowness_sum=pl.col("slowness").sum(),
         )
     )
-    
+            
     spells_list = {}
     filters = {
         "STJ": pl.col("mean_is_polar") < subtropical_cutoff,
@@ -1320,23 +1336,37 @@ def spells_from_cross(
         spell = spells.filter(filters[jet])
         if jet == "STJ":
             spell = spell.filter(pl.col("mean_lat").list.mean() >= STJ_lat_threshold)
-        if n is not None:
+        if n is not None and not has_memb:
             other_filter = spell.select(pl.col("spell").top_k_by("slowness_sum", n))
             spell = other_filter.join(spell, on="spell")
-        elif q is not None:
+        elif n is not None and has_memb:
+            other_filter = spell.group_by("member").agg(pl.col("spell").top_k_by("slowness_sum", n)).explode("spell")
+            spell = other_filter.join(spell, on=["member", "spell"])
+        elif q is not None and not has_memb:
             filter_ = pl.col("slowness_sum") > pl.col("slowness_sum").quantile(q)
+            spell = spell.filter(filter_)
+        elif q is not None and has_memb:
+            filter_ = pl.col("slowness_sum") > pl.col("slowness_sum").quantile(q).over("memb")
             spell = spell.filter(filter_)
         else:
             raise ValueError
+        if has_memb:
+            spell_expr = pl.col("spell").rle_id().over("member")
+            rel_ind_exr = pl.col("time").rle_id().over("member", "spell").cast(pl.Int32())
+            rel_time_expr = pl.col("time") - pl.col("time").first().over("member", "spell")
+        else:
+            spell_expr = pl.col("spell").rle_id()
+            rel_ind_exr = pl.col("time").rle_id().over("spell").cast(pl.Int32())
+            rel_time_expr = pl.col("time") - pl.col("time").first().over("spell")
         spell = (
             spell
             .explode("time", "jet ID", "slowness", "is_polar", "lon_overlap", "dis_polar", "mean_lat")
-            .sort("spell", "time")
+            .sort(*mem, "spell", "time")
             .with_columns(
                 spell_of=pl.lit(jet),
-                spell=pl.col("spell").rle_id(),
-                relative_index=pl.col("time").rle_id().over("spell").cast(pl.Int32()),
-                relative_time=pl.col("time") - pl.col("time").first().over("spell")
+                spell=spell_expr,
+                relative_index=rel_ind_exr,
+                relative_time=rel_time_expr
             )
             .drop("is_polar", "mean_lat")
         )

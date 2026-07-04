@@ -2102,17 +2102,15 @@ def compute_relative_anom(
         .with_columns(pl.col(varname_) / pl.col(f"{varname_}_right"))
         .drop(f"{varname_}_right", "dayofyear")
     )
-
-
-def create_relative_plot(
+    
+    
+def common_relative_plot(
     varname: str,
     basepath: Path,
     jet: str,
-    spells: pl.DataFrame,
     season: pl.Series,
-    n_bootstraps: int = 40,
-    factor: float = 1.0,
     phat: bool = False,
+    and_std: bool = False,
 ):
     winsize = 31
     halfwinsize = int(winsize / 2)
@@ -2193,14 +2191,50 @@ def create_relative_plot(
     clim_sm = clim_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
     clim_sm = clim_sm.drop("jet", "dayofyear")
 
-    # TODO: make data.periodic_rolling_pl work with lazyframes. UPDATE: looks really hard. Doesn't matter for summer but would be nice someday
-
     clim = clim.rolling(
         pl.col("dayofyear").cast(pl.UInt32()),
         period=f"{winsize}i",
         offset=f"-{halfwinsize + 1}i",
         group_by=["jet", "norm_index", "n"],
     ).agg(pl.col(varname_).mean())
+    if not and_std:
+        return varname_, df, clim, clim_sm, props 
+    
+    clim_std_path = clims_path.joinpath(
+        f"{varname}_std_{season_doy[0]}-{season_doy[-1]}.parquet"
+    )
+    
+    if clim_std_path.is_file():
+        clim_std = pl.read_parquet(clim_std_path)
+    elif not phat:
+        df_cat = (
+            df.group_by("time", "jet", "n", "norm_index")
+            .agg((pl.col(varname_) * pl.col("int")).sum() / pl.col("int").sum())
+            .sort("time", "jet", "n", "norm_index")
+        )
+        clim_std: pl.DataFrame = compute_relative_std(df_cat, varname).collect()
+        clim_std.write_parquet(clim_std_path)
+    else:
+        clim_std = compute_relative_std(df, varname).collect()
+        clim_std.write_parquet(clim_std_path)
+
+    clim_std_sm = compute_relative_sm(clim_std, varname, season_doy)
+    clim_std_sm = clim_std_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
+    clim_std_sm = clim_std_sm.drop("jet", "dayofyear")
+    return varname_, df, clim, clim_sm, clim_std_sm, props 
+
+
+def create_relative_plot(
+    varname: str,
+    basepath: Path,
+    jet: str,
+    spells: pl.DataFrame,
+    season: pl.Series,
+    n_bootstraps: int = 40,
+    factor: float = 1.0,
+    phat: bool = False,
+):
+    varname_, df, clim, clim_sm, props = common_relative_plot(varname, basepath, jet, season, phat)
     to_plot = compute_relative_anom(df, varname, clim.lazy())
     if phat:
         ts_bootstrapped = create_bootstrapped_times(spells, season, n_bootstraps).lazy()
@@ -2287,90 +2321,75 @@ def create_relative_diff_plot(
     spells_list: dict[str, pl.DataFrame],
     season: pl.Series,
     factor: float,
+    phat: bool = False,
 ):
     season_doy = season.dt.ordinal_day().unique()
-    varname, mode = varname.split(":")
-    varname_no_number = varname.rstrip("0123456789")
-    varname_ = f"{varname}_interp"
-    grad = mode[-4:] == "grad"
-
-    grad_expr = (
-        (central_diff(pl.col(varname_).sort_by("n")) / central_diff(pl.col("n").sort()))
-        * 1e6
-    ).abs()
-
-    dfs = {
-        run: pl.scan_parquet(basepath.joinpath(f"{run}/{varname}_relative.parquet"))
-        for run in spells_list.keys()
-    }
-
-    for run, df in dfs.items():
-        if varname_ not in df.collect_schema().names():
-            if f"{varname_no_number}_interp" in df.collect_schema().names():
-                df = df.rename({f"{varname_no_number}_interp": varname_})
-            else:
-                df = df.rename({"vort_interp": varname_})
-
-        if grad:
-            df = df.with_columns(
-                **{varname_: grad_expr.over("norm_index", "time", "jet")}
+    clims_sm = []
+    clims_std_sm = []
+    anom_diff = []
+    for run, spells in spells_list.items():
+        varname_, df, clim, clim_sm, clim_std_sm, props = common_relative_plot(varname, basepath.joinpath(run), jet, season, phat, and_std=True)
+        clims_sm.append(clim_sm)
+        clims_std_sm.append(clim_std_sm)
+        if phat:
+            during_ = (
+                spells
+                .lazy()
+                .join(df, on="time")
+                .filter(pl.col("jet") == jet)
             )
-    to_plot = []
-    if mode in ["clim", "clim_grad"]:
-        filter_ = (pl.col("dayofyear") == 1, pl.col("jet") == jet)
-        but_also = []
-        for df in dfs.values():
-            clim = compute_relative_clim(df, varname)
-            clim = compute_relative_sm(clim, varname, season_doy)
-            clim = clim.filter(*filter_)
-            clim = clim.drop("jet", "dayofyear")
-            to_plot.append(clim.collect())
+        else:
+            during_ = (
+                spells
+                .lazy()
+                .join(df, on=["time", "jet ID"])
+            )
+        aggs = {
+            varname_: pl.col(varname_).mean(),
+            f"{varname_}_std": pl.col(varname_).std(),
+            "ddof": pl.col(varname_).len(),
+        }
+        during_ = during_.group_by("norm_index", "n").agg(**aggs).sort("norm_index", "n")
+        anom_diff.append(during_.collect())
+            
+    ddof_clim = len(season_doy) * df.select(pl.col("time").dt.year().n_unique()).collect()["time"].item()
 
-            clim_std = compute_relative_std(df, varname)
-            clim_std = compute_relative_sm(clim_std, varname, season_doy)
-            clim_std = clim_std.filter(*filter_)
-            clim_std = clim_std.drop("jet", "dayofyear")
-            but_also.append(clim_std.collect())
-        ddof_clim = len(season_doy) * to_plot[0]["time"].dt.year().n_unique()
-        pvals = ttest_ind_from_stats(
-            to_plot[0][varname_],
-            but_also[0][varname_],
-            ddof_clim,
-            to_plot[1][varname_],
-            but_also[1][varname_],
-            ddof_clim,
-            equal_var=False,
-        ).pvalue
-    else:
-        for spell, df in zip([spells_list.values()], dfs.values()):
-            df = spell.lazy().join(df, on="time").filter(pl.col("jet") == jet)
-            aggs = {
-                varname_: pl.col(varname_).mean(),
-                f"{varname_}_std": pl.col(varname_).std(),
-                "ddof": pl.col(varname_).len(),
-            }
-            df = df.group_by("norm_index", "n").agg(**aggs).sort("norm_index", "n")
-            df = df.collect()
-            to_plot.append(df)
-        pvals = ttest_ind_from_stats(
-            to_plot[0][varname_].to_numpy(),
-            to_plot[0][f"{varname_}_std"].to_numpy(),
-            to_plot[0]["ddof"].to_numpy(),
-            to_plot[1][varname_].to_numpy(),
-            to_plot[1][f"{varname_}_std"].to_numpy(),
-            to_plot[1]["ddof"].to_numpy(),
-            equal_var=False,
-        ).pvalue
-        to_plot[0] = to_plot[0].drop(f"{varname_}_std", "ddof")
-        to_plot[1] = to_plot[1].drop(f"{varname_}_std", "ddof")
-    to_plot = to_plot[0].join(to_plot[1], on=["norm_index", "n"])
-    to_plot = to_plot.with_columns(
+    pvals_clim = ttest_ind_from_stats(
+        clims_sm[0][varname_],
+        clims_std_sm[0][varname_],
+        ddof_clim,
+        clims_sm[1][varname_],
+        clims_std_sm[1][varname_],
+        ddof_clim,
+        equal_var=False,
+    ).pvalue
+    clim_diff = clims_sm[0].join(clims_sm[1], on=["norm_index", "n"])
+    clim_diff = clim_diff.with_columns(
         **{varname_: pl.col(varname_) - pl.col(f"{varname_}_right")}
     ).drop(f"{varname_}_right")
-    to_plot = to_plot.with_columns(pl.col(varname_) * factor)
-    to_plot = polars_to_xarray(to_plot, ["norm_index", "n"]).T
-    pvals = to_plot.copy(data=pvals.reshape(to_plot.T.shape).T)
-    return to_plot, pvals
+    clim_diff = clim_diff.with_columns(pl.col(varname_) * factor)
+    clim_diff = polars_to_xarray(clim_diff, ["norm_index", "n"]).T
+    pvals_clim = clim_diff.copy(data=pvals_clim.reshape(clim_diff.T.shape).T)
+    
+    pvals = ttest_ind_from_stats(
+        anom_diff[0][varname_].to_numpy(),
+        anom_diff[0][f"{varname_}_std"].to_numpy(),
+        anom_diff[0]["ddof"].to_numpy(),
+        anom_diff[1][varname_].to_numpy(),
+        anom_diff[1][f"{varname_}_std"].to_numpy(),
+        anom_diff[1]["ddof"].to_numpy(),
+        equal_var=False,
+    ).pvalue
+    anom_diff[0] = anom_diff[0].drop(f"{varname_}_std", "ddof")
+    anom_diff[1] = anom_diff[1].drop(f"{varname_}_std", "ddof")
+    anom_diff = anom_diff[0].join(anom_diff[1], on=["norm_index", "n"])
+    anom_diff = anom_diff.with_columns(
+        **{varname_: pl.col(varname_) - pl.col(f"{varname_}_right")}
+    ).drop(f"{varname_}_right")
+    anom_diff = anom_diff.with_columns(pl.col(varname_) * factor)
+    anom_diff = polars_to_xarray(anom_diff, ["norm_index", "n"]).T
+    pvals = anom_diff.copy(data=pvals.reshape(anom_diff.T.shape).T)
+    return clim_diff, pvals_clim, anom_diff, pvals
 
 
 def create_all_relative_diff_plots(
@@ -2384,20 +2403,29 @@ def create_all_relative_diff_plots(
     for jet in ["STJ", "EDJ"]:
         sub_spells_list = {run: spells_list[f"{run}_{jet}"] for run in runs}
         for varname in tqdm(data_vars):
-            varname_, rest = varname.split(":")
+            if ":" in varname:
+                varname_, mode = varname.split(":")
+            else:
+                varname_, mode = varname, ""
+            grad = mode == "grad"
+            suffix1 = ":grad" if grad else ""
+            suffix2 = "_grad" if grad else ""
             if varname_ == "PV":
-                varname = f"PV330:{rest}" if jet == "EDJ" else f"PV350:{rest}"
-            factor = FACTORS_UNITS.get(varname_.rstrip("035"), 1)
-            ofile = Path(odir, f"diff_{jet}_{varname}.nc")
-            ofile_pvals = Path(odir, f"diff_{jet}_{varname}_pvals.nc")
+                varname = f"PV330{suffix1}" if jet == "EDJ" else f"PV350{suffix1}"
+            factor = FACTORS_UNITS.get(varname_.replace("any", "").rstrip("0123456789"), 1)
+            ofile_clim_diff = Path(odir, f"{jet}_{varname_}:clim{suffix2}.nc")
+            ofile_clim_diff_pvals = Path(odir, f"{jet}_{varname_}:clim{suffix2}_pvals.nc")
+            ofile = Path(odir, f"{jet}_{varname_}:anom{suffix2}.nc")
+            ofile_pvals = Path(odir, f"{jet}_{varname_}:anom{suffix2}_pvals.nc")
             if ofile.is_file():
                 continue
-            to_plot, pvals = create_relative_diff_plot(
+            clim_diff, pvals_clim, anom_diff, pvals = create_relative_diff_plot(
                 varname, basepath, jet, sub_spells_list, season, factor
             )
-            to_plot.to_netcdf(ofile)
-            if pvals is not None:
-                pvals.to_netcdf(ofile_pvals)
+            clim_diff.to_netcdf(ofile_clim_diff)
+            pvals_clim.to_netcdf(ofile_clim_diff_pvals)
+            anom_diff.to_netcdf(ofile)
+            pvals.to_netcdf(ofile_pvals)
 
 
 def prepare_last_step_1(

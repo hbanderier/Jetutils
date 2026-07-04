@@ -298,11 +298,6 @@ if "DATADIR" not in globals():
         "slowness_catd": 1e-2,
         "pers": 1,
         "pers_catd": 1,
-        #
-        "F3": 1e-1, 
-        "hor": -1e2, 
-        "vert": -1e2, 
-        "vert_extra": -1e2,
     }
     
     FACTORS_UNITS = {
