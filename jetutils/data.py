@@ -2173,7 +2173,7 @@ class DataHandler(object):
         path = find_spot(basepath, metadata)
         da_path = path.joinpath("da.zarr")
         if da_path.exists():
-            da = open_dataarray(da_path, engin="zarr")
+            da = open_dataarray(da_path, engin="zarr", consolidated=False)
             return cls(path.parent, da)
 
         catalog = intake.open_esm_datastore(url)

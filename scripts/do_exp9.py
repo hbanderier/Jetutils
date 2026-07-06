@@ -7,6 +7,7 @@ import dask.array as darr
 import numpy as np
 import polars as pl
 import xarray as xr
+from zarr.codecs.numcodecs import Blosc
 from jetutils.data import open_da, smooth, extract, standardize, standardize_polars_dtypes
 from jetutils.definitions import (
     DATADIR,
@@ -21,7 +22,7 @@ from jetutils.definitions import (
     degsin,
     compute,
     get_index_columns,
-    polars_to_xarray,
+    polars_to_xarray, R_SPECIFIC_AIR,
 )
 from jetutils.derived_quantities import (
     compute_absolute_vorticity,
@@ -51,60 +52,123 @@ from jetutils.jet_finding import (
     to_one_large,
 )
 from scipy.signal.windows import lanczos
+from scipy.constants import g
 from tqdm import tqdm, trange
 
 os.environ["RUST_BACKTRACE"] = "full"
-
-# block 0: uv to zarr 
-
-# import warnings
-# uv_sample = []
-# basepath = Path(DATADIR, "ERA5/plev/uv/6H")
-# if not basepath.joinpath("full.zarr").is_dir():
-#     for i, f in enumerate(tqdm(list(basepath.glob("*.nc")))):
-#         uv_sample = standardize(xr.open_dataset(f))
-#         uv_sample["theta"] = uv_sample["t"] * (1000 / uv_sample["lev"]) ** KAPPA
-#         uv_sample = uv_sample.drop_vars("t")
-#         for var in ["u", "v", "theta"]:
-#             uv_sample[f"f{var}dp"] = uv_sample[var].differentiate("lev")
-#         uv_sample = uv_sample.sel(lev=250)
-#         kwargs = {"mode": "w"} if i == 0 else {"mode": "a", "append_dim": "time"}
-#         with warnings.catch_warnings():
-#             warnings.simplefilter("ignore")
-#             uv_sample.to_zarr(basepath.joinpath("full250.zarr"), **kwargs)
+Basepath = Path(DATADIR, "ERA5/plev/uv/6H")
 
 # # block 1: compute eddy stuff
-# opath = Path(
-#     f"{DATADIR}/ERA5/plev/uv/6H/results",
-#     "Eddy_uv_natl_10days.zarr",
-# )
-# if not opath.is_dir() and False:
-#     half_len = 20
-    # ds = standardize(
-    #     xr.open_mfdataset(
-    #         f"{DATADIR}/ERA5/plev/uv/6H/*.nc",
-    #         combine="nested",
-    #         concat_dim="time",
-    #     )[["u", "v", "omega", "theta"]]
-    #     .sel(lat=slice(0, 90), lev=250)
-    #     .chunk("auto")
-    # )
-    # l_win = lanczos(2 * half_len + 1)[:, None, None, None]
-    # dims = ds.dims
-    # for var in ds.data_vars:
-    #     ds[f"{var}bar"] = (
-    #         dims,
-    #         (
-    #             convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
-    #         ).astype(np.float32),
-    #     )
-    #     ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
-    #     del ds[f"{var}bar"]
-    #     del ds[var]
-    # ds = ds.chunk({"time": 1390, "lat": 72, "lon": 161})
-    # res = ds.to_zarr(opath, compute=False)
-    # compute(res, progress=True)
+izarr = Basepath.joinpath("full.zarr")
+ozarr = Basepath.joinpath("results/eddy_stuff_10days.zarr")
+if not ozarr.is_dir():
+    n_days = 10
+    half_len = n_days * 2
+    ds = xr.open_dataset(izarr, consolidated=False).chunk({"time": 1000, "lev": 1, "lat": -1, "lon": -1})
+    ds["theta"] = ds["t"] * (1000 / ds["lev"]) ** KAPPA
 
+    l_win = lanczos(2 * half_len + 1)[:, None, None, None]
+    dims = ds.dims
+    for var in ["u", "v", "theta", "omega"]:
+        ds[f"{var}bar"] = (
+            dims,
+            (
+                convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
+            ).astype(np.float32),
+        )
+        ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
+        del ds[f"{var}bar"]
+        del ds[var]
+    encoding = {}
+    compressor = Blosc(cname="zstd", clevel=3, shuffle=2)
+    for data_var in ds.data_vars:
+        encoding[data_var] = {"compressors": compressor}
+
+    res = ds.to_zarr(ozarr, compute=False, consolidated=False, encoding=encoding)
+    compute(res, progress_flag=True)
+    
+    
+izarr1 = Basepath.joinpath("full.zarr")
+izarr2 = Basepath.joinpath("results/eddy_stuff_10days.zarr")
+ozarr = Basepath.joinpath("results/eddy_forcing_10days.zarr")
+if not ozarr.is_dir():
+    ds = xr.open_dataset(izarr2, consolidated=False).chunk({"time": 100, "lev": -1, "lat": -1, "lon": -1})
+    theta = xr.open_dataset(izarr1, consolidated=False).chunk({"time": 100, "lev": -1, "lat": -1, "lon": -1})["t"]
+    theta = theta * (1000 / theta["lev"]) ** KAPPA
+    ds["dthetadp"] = theta.differentiate("lev")
+    ds["EKE"] = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2)).astype(np.float32)
+    gamma = (-KAPPA / ds.lev * (1000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
+    EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-3) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
+    S = (ds["EKE"] - 0.5 * EAPE).astype(np.float32)
+    f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
+
+    ## Base 2 * 3
+    ds["F11"] = S - ds["up"] ** 2
+    ds["F12"] = - ds["up"] * ds["vp"]
+    ds["F13"] = ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
+    ds["F22"] = S - ds["vp"] ** 2
+    ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
+
+    ## Additional from original EP:
+    ds["F13_extra"] = - ds["up"] * ds["omegap"]
+    ds["F23_extra"] = - ds["vp"] * ds["omegap"]
+
+    for v in ds.data_vars:
+        if v[0] == "F":
+            ds[v] = ds[v] * RADIUS * degcos(ds.lat)
+
+    ds = ds.unify_chunks()
+        
+    ds["hor1"] = ds.map_blocks(compute_2d_div, ["F11", "F12"], template=ds["F11"])
+    ds["hor2"] = ds.map_blocks(compute_2d_div, ["F12", "F22"], template=ds["F11"])
+
+    ds["vert1"] = (ds["F13"] + ds["F13_extra"]).differentiate("lev")
+    ds["vert2"] = (ds["F23"] + ds["F23_extra"]).differentiate("lev")
+
+    ds = ds.drop_vars(["up", "vp", "thetap", "omegap", "dthetadp", *[v for v in ds.data_vars if v[0] == "F"]])
+    ds = ds.sel(lev=[850, 250, 225, 200])
+
+    encoding = {}
+    compressor = Blosc(cname="zstd", clevel=3, shuffle=2)
+    for data_var in ds.data_vars:
+        encoding[data_var] = {"compressors": compressor}
+
+    res = ds.to_zarr(ozarr, compute=False, consolidated=False, encoding=encoding)
+    compute(res, progress_flag=True)
+    
+izarr = Basepath.joinpath("full.zarr")
+ozarr = Basepath.joinpath("results/eady_growth.zarr")
+if not ozarr.is_dir():
+    n_days = 10
+    half_len = n_days * 2
+    ds = xr.open_dataset(izarr, consolidated=False).chunk({"time": 200, "lev": -1, "lat": -1, "lon": -1})
+    theta = ds["t"] * (1000 / ds["lev"]) ** KAPPA
+    rho = (ds["lev"] * 100 / ds["t"] / R_SPECIFIC_AIR)
+    # hadas 2025
+    dthetadp = (theta.sel(lev=300) - theta.sel(lev=850)) / (30000 - 85000)
+    N350 = np.sqrt(- rho.sel(lev=350) * g * g / theta.sel(lev=350) * dthetadp)
+    f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
+    s = np.sqrt(ds["u"] ** 2 + ds["v"] ** 2)
+
+    dudp = (ds["u"].sel(lev=300) - ds["u"].sel(lev=850)) / (30000 - 85000)
+    dvdp = (ds["v"].sel(lev=300) - ds["v"].sel(lev=850)) / (30000 - 85000)
+    dsdp = (s.sel(lev=300) - s.sel(lev=850)) / (30000 - 85000)
+
+    eady1 = 0.3098 * g * (np.abs(f) * np.abs(dudp) / N350).transpose("time", "lat", "lon")
+    eady2 = 0.3098 * g * (np.abs(f) * np.abs(dvdp) / N350).transpose("time", "lat", "lon")
+    eady3 = 0.3098 * g * (np.abs(f) * np.abs(dsdp) / N350).transpose("time", "lat", "lon")
+
+    ds_eady = xr.Dataset({"eady_u": eady1, "eady_v": eady2, "eady_s": eady3})
+
+    encoding = {}
+    compressor = Blosc(cname="zstd", clevel=3, shuffle=2)
+    for data_var in ds_eady.data_vars:
+        encoding[data_var] = {"compressors": compressor}
+
+    res = ds_eady.to_zarr(ozarr, compute=False, consolidated=False, encoding=encoding)
+    compute(res, progress_flag=True)
+else:
+    print(ozarr)
 
 # block 3: EP Flux
 # ipath = Path(
@@ -178,7 +242,7 @@ os.environ["RUST_BACKTRACE"] = "full"
 # opath = Path(DATADIR, "Henrik_data", run)
 # opath_rwb = Path(DATADIR, f"Henrik_data/{run}/rwb_index")
 # opath_rwb.mkdir(exist_ok=True)
-for year in trange(1969, 2021):
+for year in trange(1959, 2025):
     if True:
         continue
     ofile = opath_rwb.joinpath(f"overturnings_{year}.parquet")
@@ -320,12 +384,11 @@ to_do = (
     ("tp", "surf", "tp", {}),
     ("APVO", "thetalev", "APVO_new", {}),
     ("CPVO", "thetalev", "CPVO_new", {}),
-    # ("SAPVS", "thetalev", "SAPVS", {}),
-    # ("TAPVS", "thetalev", "TAPVS", {}),
-    # ("SCPVS", "thetalev", "SCPVS", {}),
-    # ("TCPVS", "thetalev", "TCPVS", {}),
     ("theta", "surf", ("alot2pvu", "theta"), {}),
-    ("EKE250", "plev", ("eddy_stuff", "EKE"), {}),
+    ("t850", "plev", ("uv", "t"), {"levels": 850}),
+    ("t250", "plev", ("uv", "t"), {"levels": 250}),
+    ("t225", "plev", ("uv", "t"), {"levels": 225}),
+    ("t200", "plev", ("uv", "t"), {"levels": 200}),
 )
 
 jets = pl.read_parquet(path.joinpath("jets.parquet"))
@@ -360,78 +423,58 @@ for huh in to_do:
             _do_one(path, rename_, levtype, name, args, kwargs_)
     else:
         _do_one(path, rename, levtype, name, args, kwargs)
-
-ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/eddy_stuff/6H/full.zarr")
-ds_eddies = ds_eddies.sel(lat=slice(None, 85))
-to_do = {
-    # "F1": ("F11", "F12"),
-    # "F2": ("F12", "F22"),
-    "hor": ("hor1", "hor2"),
-}
-for dest, sources in to_do.items():
-    ofile = path.joinpath(f"{dest}_relative.parquet")
+    
+    
+ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/full.zarr", consolidated=False)
+for lev, var in product([320, 330, 340, 350], ["PV"]):
+    key = f"{var}{lev}"
+    ofile = path.joinpath(f"{key}_relative.parquet")
     if ofile.is_file():
         continue
-    das = [ds_eddies[source] for source in sources]
-    interpd = create_jet_relative_dataset(
-        jets,
-        *das,
-        bias_correction=bias_correction,
-        align_2d=dest,
-        dn=1e5,
-        n_interp=30,
-    )
+    da = ds[var].sel(lev=lev).rename(key)
+    interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+    del da
+    interpd.write_parquet(ofile)
+    
+
+ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eddy_forcing_10days.zarr", consolidated=False)
+ds_eddies = xr.merge([ds_eddies, xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eady_growth.zarr", consolidated=False)])
+ds_eddies = ds_eddies.unify_chunks()
+ds_eddies = ds_eddies.sel(lat=slice(None, 85))
+
+
+for lev, var in product([850, 250, 225, 200], ["EKE", "eady_s"]):
+    key = f"{var}{lev}"
+    ofile = path.joinpath(f"{key}_relative.parquet")
+    if ofile.is_file():
+        continue
+    da = ds_eddies[var].sel(lev=lev).rename(key)
+    interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+    del da
     interpd.write_parquet(ofile)
     
     
-n_days = 10
-for lev, var in product([320, 330, 340, 350], ["PV", "EMFconv", "EKE"]):
-    key = f"{var}{lev}"
-    ifile = path.joinpath(f"{key}_relative.parquet")
-    ofile = path.joinpath(f"{key}_{n_days}days_relative.parquet")
-    os.rename(ifile, ofile)
-
-for n_days in [10, 20, 30]:
-    ozarr = Path(DATADIR, "ERA5/thetalev/PV_and_wind/6H/results", f"eddy_stuff_{n_days}days.zarr")
-    if not ozarr.is_dir():
-        half_len = n_days * 2
-        ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/full.zarr")[["u", "v"]].chunk({"time": 3000, "lat": 72, "lon": 161, "lev": 1}).drop_encoding()
-        l_win = lanczos(2 * half_len + 1)[:, None, None, None]
-        dims = ds.dims
-        for var in ["u", "v"]:
-            ds[f"{var}bar"] = (
-                dims,
-                (
-                    convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()
-                ).astype(np.float32),
-            )
-            ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
-            ds[f"{var}p"] = ds[f"{var}p"].where(ds[var] != ds[var].attrs["missing_value"])
-            del ds[f"{var}bar"]
-            del ds[var]
-            
-        ds["EKE"] = (ds["up"] ** 2 + ds["vp"] ** 2) * 0.5
-        ds["EKE"] = ds["EKE"].astype(np.float32)
-        ds["F1"] = ds["up"] ** 2 - ds["EKE"]
-        ds["EMF"] = ds["up"] * ds["vp"]
-        ds["EMFconv"] = -ds.map_blocks(compute_2d_div, ["F1", "EMF"], template=ds["F1"]) * RADIUS * degcos(ds.lat)
-        del ds["F1"]
-        del ds["up"]
-        del ds["vp"]
-
-        res = ds.to_zarr(ozarr, compute=False)
-        compute(res, progress_flag=True)
-        
-    ds = xr.open_zarr(ozarr)
-    ds = extract(ds, *args)    
-
-    # for lev, var in product([320, 330, 340, 350], ["PV", "EMFconv", "EKE"]):
-    for lev, var in product([320, 330, 340, 350], ["EMFconv", "EKE"]):
-        key = f"{var}{lev}"
-        ofile = path.joinpath(f"{key}_{n_days}days_relative.parquet")
+to_do = {
+    "hor": ("hor1", "hor2"),
+    "vert": ("vert1", "vert2"),
+    "eady": ("eady_u", "eady_v"),
+}
+for lev in [850, 250, 225, 200]:
+    for dest, sources in to_do.items():
+        ofile = path.joinpath(f"{dest}{lev}_relative.parquet")
         if ofile.is_file():
             continue
-        da = ds[var].sel(lev=lev).rename(key)
-        interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
-        del da
+        das = [ds_eddies[source].sel(lev=lev) for source in sources]
+        interpd = create_jet_relative_dataset(
+            jets,
+            *das,
+            bias_correction=bias_correction,
+            align_2d=dest,
+            dn=1e5,
+            n_interp=30,
+        )
+        interpd = interpd.drop(*[f"{source}_interp" for source in sources])
+        interpd = interpd.rename({f"{dest}_interp": f"{dest}{lev}_interp"})
         interpd.write_parquet(ofile)
+    
+    
