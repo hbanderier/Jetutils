@@ -59,10 +59,10 @@ os.environ["RUST_BACKTRACE"] = "full"
 Basepath = Path(DATADIR, "ERA5/plev/uv/6H")
 
 # # block 1: compute eddy stuff
+n_days = 5
 izarr = Basepath.joinpath("full.zarr")
-ozarr = Basepath.joinpath("results/eddy_stuff_10days.zarr")
+ozarr = Basepath.joinpath(f"results/eddy_stuff_{n_days}days.zarr")
 if not ozarr.is_dir():
-    n_days = 10
     half_len = n_days * 2
     ds = xr.open_dataset(izarr, consolidated=False).chunk({"time": 1000, "lev": 1, "lat": -1, "lon": -1})
     ds["theta"] = ds["t"] * (1000 / ds["lev"]) ** KAPPA
@@ -89,8 +89,8 @@ if not ozarr.is_dir():
     
     
 izarr1 = Basepath.joinpath("full.zarr")
-izarr2 = Basepath.joinpath("results/eddy_stuff_10days.zarr")
-ozarr = Basepath.joinpath("results/eddy_forcing_10days.zarr")
+izarr2 = Basepath.joinpath(f"results/eddy_stuff_{n_days}days.zarr")
+ozarr = Basepath.joinpath(f"results/eddy_forcing_{n_days}days.zarr")
 if not ozarr.is_dir():
     ds = xr.open_dataset(izarr2, consolidated=False).chunk({"time": 100, "lev": -1, "lat": -1, "lon": -1})
     theta = xr.open_dataset(izarr1, consolidated=False).chunk({"time": 100, "lev": -1, "lat": -1, "lon": -1})["t"]
@@ -110,8 +110,8 @@ if not ozarr.is_dir():
     ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
 
     ## Additional from original EP:
-    ds["F13_extra"] = - ds["up"] * ds["omegap"]
-    ds["F23_extra"] = - ds["vp"] * ds["omegap"]
+    ds["F13_extra"] = - ds["up"] * ds["omegap"] / 100
+    ds["F23_extra"] = - ds["vp"] * ds["omegap"] / 100
 
     for v in ds.data_vars:
         if v[0] == "F":
@@ -139,8 +139,6 @@ if not ozarr.is_dir():
 izarr = Basepath.joinpath("full.zarr")
 ozarr = Basepath.joinpath("results/eady_growth.zarr")
 if not ozarr.is_dir():
-    n_days = 10
-    half_len = n_days * 2
     ds = xr.open_dataset(izarr, consolidated=False).chunk({"time": 200, "lev": -1, "lat": -1, "lon": -1})
     theta = ds["t"] * (1000 / ds["lev"]) ** KAPPA
     rho = (ds["lev"] * 100 / ds["t"] / R_SPECIFIC_AIR)
@@ -242,51 +240,51 @@ else:
 # opath = Path(DATADIR, "Henrik_data", run)
 # opath_rwb = Path(DATADIR, f"Henrik_data/{run}/rwb_index")
 # opath_rwb.mkdir(exist_ok=True)
-for year in trange(1959, 2025):
-    if True:
-        continue
-    ofile = opath_rwb.joinpath(f"overturnings_{year}.parquet")
+# for year in trange(1959, 2025):
+#     if True:
+#         continue
+    # ofile = opath_rwb.joinpath(f"overturnings_{year}.parquet")
 
-    if opath.joinpath(f"CAVO/6H/{year}.nc").is_file() and ofile.is_file():
-        continue
+    # if opath.joinpath(f"CAVO/6H/{year}.nc").is_file() and ofile.is_file():
+    #     continue
 
-    zeta = xr.open_dataarray(basepath_zeta.joinpath(f"{year}.nc")).sel(lev=30000)
-    zeta = zeta.rename("zeta") * 1e5
-    for potential in ["lev", "loni", "lati"]:
-        try:
-            zeta = zeta.reset_coords(potential, drop=True)
-        except ValueError:
-            continue
-    mflux = da_mflux.sel(time=zeta.time)
-    mflux = mflux.rename("mflux").reset_coords("lev", drop=True)
-    zeta = smooth(zeta, {"lon": ("win", 5), "lat": ("win", 5)})
-    zeta = compute(zeta)
-    # mflux = smooth(mflux, {"lon": ("win", 5), "lat": ("win", 5)})
-    mflux = compute(mflux)
-    if ofile.is_file():
-        overturnings = pl.read_parquet(ofile)
-        overturnings_on_grid = None
-    else:
-        contours = detect_contours_lonlat(zeta, levels, processes=N_WORKERS, ctx="fork")
-        overturnings = detect_overturnings(contours, max_difflon=3)
-        overturnings, overturnings_on_grid = event_props(overturnings, [zeta, mflux])
-        overturnings.write_parquet(ofile)
+    # zeta = xr.open_dataarray(basepath_zeta.joinpath(f"{year}.nc")).sel(lev=30000)
+    # zeta = zeta.rename("zeta") * 1e5
+    # for potential in ["lev", "loni", "lati"]:
+    #     try:
+    #         zeta = zeta.reset_coords(potential, drop=True)
+    #     except ValueError:
+    #         continue
+    # mflux = da_mflux.sel(time=zeta.time)
+    # mflux = mflux.rename("mflux").reset_coords("lev", drop=True)
+    # zeta = smooth(zeta, {"lon": ("win", 5), "lat": ("win", 5)})
+    # zeta = compute(zeta)
+    # # mflux = smooth(mflux, {"lon": ("win", 5), "lat": ("win", 5)})
+    # mflux = compute(mflux)
+    # if ofile.is_file():
+    #     overturnings = pl.read_parquet(ofile)
+    #     overturnings_on_grid = None
+    # else:
+    #     contours = detect_contours_lonlat(zeta, levels, processes=N_WORKERS, ctx="fork")
+    #     overturnings = detect_overturnings(contours, max_difflon=3)
+    #     overturnings, overturnings_on_grid = event_props(overturnings, [zeta, mflux])
+    #     overturnings.write_parquet(ofile)
 
-    for orientation in ["cyclonic", "anticyclonic"]:
-        name = f"{orientation[0].upper()}AVO"
-        odir = opath.joinpath(f"{name}/6H")
-        odir.mkdir(parents=True, exist_ok=True)
-        ofile = odir.joinpath(f"{year}.nc")
-        if ofile.is_file():
-            continue
-        df = overturnings.filter(pl.col("orientation") == orientation)
-        da = to_xarray_sjoin(zeta, events=df)
-        da.to_netcdf(ofile)
+    # for orientation in ["cyclonic", "anticyclonic"]:
+    #     name = f"{orientation[0].upper()}AVO"
+    #     odir = opath.joinpath(f"{name}/6H")
+    #     odir.mkdir(parents=True, exist_ok=True)
+    #     ofile = odir.joinpath(f"{year}.nc")
+    #     if ofile.is_file():
+    #         continue
+    #     df = overturnings.filter(pl.col("orientation") == orientation)
+    #     da = to_xarray_sjoin(zeta, events=df)
+    #     da.to_netcdf(ofile)
 
-        odir = opath.joinpath(f"{name}/dailyany")
-        odir.mkdir(parents=True, exist_ok=True)
-        da = da.any("level").resample(time="1D").any().astype(np.uint8)
-        da.to_netcdf(odir.joinpath(f"{year}.nc"))
+    #     odir = opath.joinpath(f"{name}/dailyany")
+    #     odir.mkdir(parents=True, exist_ok=True)
+    #     da = da.any("level").resample(time="1D").any().astype(np.uint8)
+    #     da.to_netcdf(odir.joinpath(f"{year}.nc"))
 
 # block 4.5: Streamers
 # levels = compute(xr.open_mfdataset(list(Path(DATADIR, "Henrik_data/ctrl/zeta/6H").glob("*0.nc")))["__xarray_dataarray_variable__"].quantile([0.5]), progress_flag=True).values
@@ -386,6 +384,8 @@ to_do = (
     ("CPVO", "thetalev", "CPVO_new", {}),
     ("theta", "surf", ("alot2pvu", "theta"), {}),
     ("t850", "plev", ("uv", "t"), {"levels": 850}),
+    ("t350", "plev", ("uv", "t"), {"levels": 350}),
+    ("t300", "plev", ("uv", "t"), {"levels": 300}),
     ("t250", "plev", ("uv", "t"), {"levels": 250}),
     ("t225", "plev", ("uv", "t"), {"levels": 225}),
     ("t200", "plev", ("uv", "t"), {"levels": 200}),
@@ -437,14 +437,12 @@ for lev, var in product([320, 330, 340, 350], ["PV"]):
     interpd.write_parquet(ofile)
     
 
-ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eddy_forcing_10days.zarr", consolidated=False)
-ds_eddies = xr.merge([ds_eddies, xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eady_growth.zarr", consolidated=False)])
+ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eddy_forcing_{n_days}days.zarr", consolidated=False)
 ds_eddies = ds_eddies.unify_chunks()
 ds_eddies = ds_eddies.sel(lat=slice(None, 85))
 
-
-for lev, var in product([850, 250, 225, 200], ["EKE", "eady_s"]):
-    key = f"{var}{lev}"
+for lev, var in product([850, 250, 225, 200], ["EKE"]):
+    key = f"{var}{lev}_{n_days}days"
     ofile = path.joinpath(f"{key}_relative.parquet")
     if ofile.is_file():
         continue
@@ -457,11 +455,10 @@ for lev, var in product([850, 250, 225, 200], ["EKE", "eady_s"]):
 to_do = {
     "hor": ("hor1", "hor2"),
     "vert": ("vert1", "vert2"),
-    "eady": ("eady_u", "eady_v"),
 }
 for lev in [850, 250, 225, 200]:
     for dest, sources in to_do.items():
-        ofile = path.joinpath(f"{dest}{lev}_relative.parquet")
+        ofile = path.joinpath(f"{dest}{lev}_{n_days}days_relative.parquet")
         if ofile.is_file():
             continue
         das = [ds_eddies[source].sel(lev=lev) for source in sources]
@@ -474,7 +471,38 @@ for lev in [850, 250, 225, 200]:
             n_interp=30,
         )
         interpd = interpd.drop(*[f"{source}_interp" for source in sources])
-        interpd = interpd.rename({f"{dest}_interp": f"{dest}{lev}_interp"})
+        interpd = interpd.rename({f"{dest}_interp": f"{dest}{lev}_{n_days}days_interp"})
         interpd.write_parquet(ofile)
     
     
+ds_eady = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eady_growth.zarr", consolidated=False)
+ds_eady = ds_eady.unify_chunks()
+ds_eady = ds_eady.sel(lat=slice(None, 85))
+
+var = "eady_s"
+ofile = path.joinpath(f"{var}_relative.parquet")
+if not ofile.is_file():
+    da = ds_eady[var]
+    interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+    del da
+    interpd.write_parquet(ofile)
+    
+    
+to_do = {
+    "eady": ("eady_u", "eady_v"),
+}
+for dest, sources in to_do.items():
+    ofile = path.joinpath(f"{dest}_relative.parquet")
+    if ofile.is_file():
+        continue
+    das = [ds_eady[source] for source in sources]
+    interpd = create_jet_relative_dataset(
+        jets,
+        *das,
+        bias_correction=bias_correction,
+        align_2d=dest,
+        dn=1e5,
+        n_interp=30,
+    )
+    interpd = interpd.drop(*[f"{source}_interp" for source in sources])
+    interpd.write_parquet(ofile)
