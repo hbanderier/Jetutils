@@ -2186,7 +2186,6 @@ def common_relative_plot(
     else:
         clim = compute_relative_clim(df, varname).collect()
         clim.write_parquet(clim_path)
-
     clim_sm = compute_relative_sm(clim, varname, season_doy)
     clim_sm = clim_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
     clim_sm = clim_sm.drop("jet", "dayofyear")
@@ -2198,7 +2197,7 @@ def common_relative_plot(
         group_by=["jet", "norm_index", "n"],
     ).agg(pl.col(varname_).mean())
     if not and_std:
-        return varname_, df, clim, clim_sm, props 
+        return df, clim, clim_sm, props 
     
     clim_std_path = clims_path.joinpath(
         f"{varname}_std_{season_doy[0]}-{season_doy[-1]}.parquet"
@@ -2217,11 +2216,10 @@ def common_relative_plot(
     else:
         clim_std = compute_relative_std(df, varname).collect()
         clim_std.write_parquet(clim_std_path)
-
     clim_std_sm = compute_relative_sm(clim_std, varname, season_doy)
     clim_std_sm = clim_std_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
     clim_std_sm = clim_std_sm.drop("jet", "dayofyear")
-    return varname_, df, clim, clim_sm, clim_std_sm, props 
+    return df, clim, clim_sm, clim_std_sm, props 
 
 
 def create_relative_plot(
@@ -2234,7 +2232,12 @@ def create_relative_plot(
     factor: float = 1.0,
     phat: bool = False,
 ):
-    varname_, df, clim, clim_sm, props = common_relative_plot(varname, basepath, jet, season, phat)
+    df, clim, clim_sm, props = common_relative_plot(varname, basepath, jet, season, phat)
+    if ":" in varname:
+        varname, mode = varname.split(":")
+    else:
+        mode = ""
+    varname_ = f"{varname}_interp"
     to_plot = compute_relative_anom(df, varname, clim.lazy())
     if phat:
         ts_bootstrapped = create_bootstrapped_times(spells, season, n_bootstraps).lazy()
