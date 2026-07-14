@@ -143,6 +143,9 @@ if "DATADIR" not in globals():
         "pers_catd": "Persistence",
         #
         "t2m": "2m temp.",
+        "t": "T",
+        "eady": "eady g.r. (u,v)" ,
+        "eady_s": "eady g.r. (U)",
         "tp": "6H-prec.",
         "PV": "PV",
         "EMFconv": "EMF conv.",
@@ -211,6 +214,7 @@ if "DATADIR" not in globals():
         "zeta": r"$\mathrm{AVU}$",
         "vort": r"$\mathrm{AVU}$",
         "t2m": r"$\mathrm{K}$",
+        "t": r"$\mathrm{K}$",
         "t_up": r"$\mathrm{K}$",
         "t_low": r"$\mathrm{K}$",
         "tp": r"$\mathrm{mm}$",
@@ -221,6 +225,8 @@ if "DATADIR" not in globals():
         "hor": r"$\mathrm{m}\mathrm{s}^{-2}$",
         "vert": r"$\mathrm{m}\mathrm{s}^{-2}$",
         "vert_extra": r"$\mathrm{m}\mathrm{s}^{-2}$",
+        "eady": r"$\mathrm{d}^{-1}$",
+        "eady_s": r"$\mathrm{d}^{-1}$",
         "u": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "v": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "s": r"$\mathrm{m}\mathrm{s}^{-1}$",
@@ -233,26 +239,6 @@ if "DATADIR" not in globals():
         "AAVO": r"\%",
         "CAVO": r"\%",
     }
-    for var, plev in product(["u", "v", "s", "EKE", "EMF", "EMFconv", "zeta", "vort", "z", "PTTEND", "DTCOND", "AAVO", "CAVO"], [200, 250, 300, 500]):
-        key = f"{var}{plev}"
-        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$"
-        UNITS[key] = UNITS.get(var, "")
-        
-    for var, thetalev in product(["PV", "APVO", "CPVO", "DPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"], [320, 330, 340, 350]):
-        key = f"{var}{thetalev}"
-        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$"
-        UNITS[key] = UNITS.get(var, "")
-        
-    for var, thetalev, days in product(["EKE", "EMFconv"], [320, 330, 340, 350], [10, 20, 30]):
-        key = f"{var}{thetalev}_{days}days"
-        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$" + f", {days}d"
-        UNITS[key] = UNITS.get(var, "")
-    
-    for var in ["PV", "APVO", "DPVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
-        key = f"{var}any"
-        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@320 to " + r"$350\,\mathrm{K}$"
-        UNITS[key] = UNITS.get(var, "")
-
 
     DEFAULT_VALUES = {
         "mean_lon": 0,
@@ -296,16 +282,16 @@ if "DATADIR" not in globals():
         "wavinessFV15": 1e-2,
         "slowness": 1e-2,
         "slowness_catd": 1e-2,
-        "pers": 1,
-        "pers_catd": 1,
     }
     
     FACTORS_UNITS = {
         "DTCOND": 86400,
         "PTTEND": 86400,
         "zeta": 1e5,
+        "eady": 86400, # 1/s -> 1/d
+        "eady_s": 86400, # 1/s -> 1/d
         # "PV": 1e6,
-        "tp": 24000,
+        "tp": 1000, # m/6h -> mm/6d
         "AAVO": 100,
         "CAVO": 100,
         "APVO": 100,
@@ -317,6 +303,36 @@ if "DATADIR" not in globals():
         "TCPVS": 100,
     }
 
+    for var, plev in product(["u", "v", "s", "t", "EMF", "EMFconv", "zeta", "vort", "z", "PTTEND", "DTCOND", "AAVO", "CAVO"], [200, 225, 250, 300, 350, 500, 850]):
+        key = f"{var}{plev}"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$"
+        UNITS[key] = UNITS.get(var, "")
+        FACTORS_UNITS[key] = FACTORS_UNITS.get(var, 1)
+        
+    for var, thetalev in product(["PV", "APVO", "CPVO", "DPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"], [320, 330, 340, 350]):
+        key = f"{var}{thetalev}"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$"
+        UNITS[key] = UNITS.get(var, "")
+        FACTORS_UNITS[key] = FACTORS_UNITS.get(var, 1)
+        
+    for var, thetalev, days in product(["EKE", "EMFconv"], [320, 330, 340, 350], [10, 20, 30]):
+        key = f"{var}{thetalev}_{days}days"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${thetalev}" + r"\,\mathrm{K}$" + f", {days}d"
+        UNITS[key] = UNITS.get(var, "")
+        FACTORS_UNITS[key] = FACTORS_UNITS.get(var, 1)
+        
+    for var, plev, days in product(["EKE", "hor", "vert"], [850, 300, 250, 225, 200], [5, 10, 20, 30]):
+        key = f"{var}{plev}_{days}days"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$" + f", {days}d"
+        UNITS[key] = UNITS.get(var, "")
+        FACTORS_UNITS[key] = FACTORS_UNITS.get(var, 1)
+    
+    for var in ["PV", "APVO", "DPVO", "CPVO", "SAPVS", "SCPVS", "TAPVS", "TCPVS"]:
+        key = f"{var}any"
+        PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@320 to " + r"$350\,\mathrm{K}$"
+        UNITS[key] = UNITS.get(var, "")
+        FACTORS_UNITS[key] = FACTORS_UNITS.get(var, 1)
+        
     LATEXY_VARNAME = {
         "mean_lon": r"$\overline{\lambda}$",
         "mean_lat": r"$\overline{\phi}$",

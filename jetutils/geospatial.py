@@ -2181,10 +2181,10 @@ def common_relative_plot(
             .agg((pl.col(varname_) * pl.col("int")).sum() / pl.col("int").sum())
             .sort("time", "jet", "n", "norm_index")
         )
-        clim: pl.DataFrame = compute_relative_clim(df_cat, varname).collect()
+        clim: pl.DataFrame = compute_relative_clim(df_cat, varname).collect(engine="streaming")
         clim.write_parquet(clim_path)
     else:
-        clim = compute_relative_clim(df, varname).collect()
+        clim = compute_relative_clim(df, varname).collect(engine="streaming")
         clim.write_parquet(clim_path)
     clim_sm = compute_relative_sm(clim, varname, season_doy)
     clim_sm = clim_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
@@ -2211,10 +2211,10 @@ def common_relative_plot(
             .agg((pl.col(varname_) * pl.col("int")).sum() / pl.col("int").sum())
             .sort("time", "jet", "n", "norm_index")
         )
-        clim_std: pl.DataFrame = compute_relative_std(df_cat, varname).collect()
+        clim_std: pl.DataFrame = compute_relative_std(df_cat, varname).collect(engine="streaming")
         clim_std.write_parquet(clim_std_path)
     else:
-        clim_std = compute_relative_std(df, varname).collect()
+        clim_std = compute_relative_std(df, varname).collect(engine="streaming")
         clim_std.write_parquet(clim_std_path)
     clim_std_sm = compute_relative_sm(clim_std, varname, season_doy)
     clim_std_sm = clim_std_sm.filter(pl.col("dayofyear") == season_doy[0], pl.col("jet") == jet)
@@ -2270,9 +2270,9 @@ def create_relative_plot(
         .sort("norm_index", "n")
     )
     to_plot = to_plot.with_columns(pl.col(varname_) * factor)
-    to_plot = to_plot.collect()
+    to_plot = to_plot.collect(engine="streaming")
     to_plot = polars_to_xarray(to_plot, ["n", "norm_index"])
-    pvals = pvals.collect()
+    pvals = pvals.collect(engine="streaming")
     pvals = polars_to_xarray(pvals, ["n", "norm_index"])
     clim_sm = polars_to_xarray(clim_sm, ["n", "norm_index"]) * factor
     return to_plot, pvals, clim_sm
@@ -2331,7 +2331,10 @@ def create_relative_diff_plot(
     clims_std_sm = []
     anom_diff = []
     for run, spells in spells_list.items():
-        varname_, df, clim, clim_sm, clim_std_sm, props = common_relative_plot(varname, basepath.joinpath(run), jet, season, phat, and_std=True)
+        df, _, clim_sm, clim_std_sm, _ = common_relative_plot(varname, basepath.joinpath(run), jet, season, phat, and_std=True)
+        if ":" in varname:
+            varname, _ = varname.split(":")
+        varname_ = f"{varname}_interp"
         clims_sm.append(clim_sm)
         clims_std_sm.append(clim_std_sm)
         if phat:
@@ -2476,12 +2479,22 @@ def prepare_last_step_1(
             if varname_no_number_ in df.collect_schema().names():
                 df = df.rename({varname_no_number_: varname_})
                 print(varname_no_number, "->", varname_)
+        # memory-intensive? : https://github.com/pola-rs/polars/issues/24393
+        # df = df.with_columns(
+        #     pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
+        #     * factor
+        # )
         df = df.with_columns(
-            pl.col(varname_).replace([float("-inf"), float("inf"), float("nan")], None)
-            * factor
+            pl.when(pl.col(varname_) == float("-inf"))
+            .then(None)
+            .when(pl.col(varname_) == float("inf"))
+            .then(None)
+            .when(pl.col(varname_) == float("nan"))
+            .then(None)
+            .otherwise(pl.col(varname_))
+            .alias(varname_)
         )
         if mode is not None and mode == "grad":
-            df = df.with_columns()
             grad_expr = (
                 (
                     central_diff(pl.col(varname_).sort_by("n"))
@@ -2496,10 +2509,10 @@ def prepare_last_step_1(
         aggs = {
             f"{oname}-{filter_name}": reduce_func(
                 pl.col(varname_).filter(*all_region_filters[filter_name])
-            )
+            ) * factor
             for filter_name in filter_list
         }
-        this_df = df.group_by(index_columns, maintain_order=True).agg(**aggs).collect()
+        this_df = df.group_by(index_columns, maintain_order=True).agg(**aggs).collect(engine="streaming")
         props = props.join(this_df, on=index_columns)
 
     props = props.with_columns(
@@ -2571,7 +2584,7 @@ def prepare_last_step_2(
         name = f"{varname}.{name_tf}{suffix}"
         aggs[name] = pl.col(f"{varname}{suffix}").filter(
             time_filter
-        ).mean() * FACTORS_UNITS.get(varname, 1)
+        ).mean()
         data_vars_.append(name)
     masked = masked.group_by("sample_index", "spell", maintain_order=True).agg(**aggs)
     means = masked.clone()

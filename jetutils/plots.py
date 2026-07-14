@@ -1589,7 +1589,7 @@ def props_vs_quantiles_bw(
     )
     huh = bs_times.join(props_as_df, on=["time", "jet ID"])
     huh = huh.with_columns(
-        cs.contains("APVO", "CPVO", "SAPVS", "TAPVS", "TCPVS", "SCPVS", "AAVO", "CAVO").mean().over("spell", "sample_index")
+        cs.contains("APVO", "CPVO", "SAPVS", "TAPVS", "TCPVS", "SCPVS", "AAVO", "CAVO", "DPVO").mean().over("spell", "sample_index")
     )        
     keep = ["sample_index", "jet ID", "jet", "spell", "slowness_sum", "relative_index"]
     aggs = {
@@ -1644,7 +1644,7 @@ def props_vs_quantiles_bw(
     total_height = row_height * n_row
 
     fig, axes = plt.subplots(
-        n_row * 2, n_col, sharex="all", sharey="row", constrained_layout=True, figsize=(total_width, total_height)
+        n_row * 2, n_col, sharex="all", sharey="all", constrained_layout=True, figsize=(total_width, total_height)
     )
 
     for j, jet in enumerate(["STJ", "EDJ"]):
@@ -1679,6 +1679,7 @@ def props_vs_quantiles_bw(
             ax.bar(np.where(f, x, np.nan), np.where(f, y - mean_pers, np.nan), bottom=mean_pers, facecolor=color, edgecolor="white", linewidth=1, width=dq, alpha=0.9)
             ax.axhline(mean_pers, color=COLORS[3], ls="dashed", lw=1)
     fig.supylabel("Persistence [s/m]")
+    axes[0, 0].set_ylim(0, 0.8)
     if save:
         if folder is None:
             folder = "jet_props_misc"
@@ -1744,7 +1745,8 @@ def plot_relative_time(
     row_height: float = 1.7,
     min_alive: int = 10,
     show_alive: bool = False,
-    plume: bool = False,
+    spaghetti: bool = False,
+    one_ax_each: bool = False,
 ) -> Figure:
     spell_ofs = spells["spell_of"].unique().sort(descending=True).to_list()
     if n_row is None:
@@ -1753,9 +1755,13 @@ def plot_relative_time(
     total_height = row_height * n_row
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs = bigfig.subfigures(1, n_figs)
+    all_axes = [subfigs[n_fig].subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all") for n_fig in range(n_figs)]
+    for ia, ja in product(range(all_axes[0].shape[0]), range(all_axes[0].shape[1])):
+        for n_fig in range(1, n_figs):
+            all_axes[0][ia, ja].sharey(all_axes[n_fig][ia, ja])
     if not isinstance(subfigs, Iterable):
         subfigs = [subfigs]
-    for n_fig, (spell_of, fig) in enumerate(zip(spell_ofs, subfigs)):
+    for n_fig, (spell_of, fig, axes) in enumerate(zip(spell_ofs, subfigs, all_axes)):
         letters = (n_fig % n_figs) * n_row * n_col
         letters = ascii_lowercase[letters:]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
@@ -1781,8 +1787,6 @@ def plot_relative_time(
         q75 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
             **aggs_
         )
-        axes = fig.subplots(n_row, n_col, sharex="all")
-        axes: Sequence[Axes] = axes.ravel()
         means = props.group_by("jet", maintain_order=True).agg(**aggs)
         if show_alive:
             alive_spells = (
@@ -1796,7 +1800,10 @@ def plot_relative_time(
             q25_ = q25.filter(pl.col("jet") == jet)
             q75_ = q75.filter(pl.col("jet") == jet)
             x = to_plot["relative_index"].unique().to_numpy() / 4
-            for ax, data_var, letter in zip(axes, data_vars, letters):
+            for i, letter, data_var in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars):
+                row_index = i % n_col
+                col_index = (i // n_col) * 2 + j if one_ax_each else i // n_col
+                ax = axes[col_index, row_index]
                 if "-" in data_var:
                     varname, where = data_var.split("-")
                     where = f", {where}"
@@ -1804,7 +1811,7 @@ def plot_relative_time(
                     varname = data_var
                     where = ""
                 factor = FACTORS.get(varname, 1)
-                if plume:
+                if spaghetti:
                     for _, this_one in props_masked.group_by("spell"):
                         this_one = this_one.filter(pl.col("jet") == jet)
                         x_ = this_one["relative_index"].to_numpy() / 4
@@ -1833,10 +1840,12 @@ def plot_relative_time(
                         rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
                     )
                 ax.yaxis.set_major_locator(MaxNLocator(4, integer=True))
-        for i, ax in enumerate(axes):
-            ax.axvline(0, zorder=1, color="black", lw=2)
-            if i >= (n_row - 1) * n_col:
-                ax.set_xlabel("Relative time around onset [days]", color="black")
+                ax.axvline(0, zorder=1, color="black", lw=2)
+                if one_ax_each:
+                    if spell_of == jet:
+                        ax.spines[["left", "right", "top", "bottom"]].set_color(COLORS[2 - j])
+                        ax.spines[["left", "right", "top", "bottom"]].set_linewidth(2)
+        for i, ax in enumerate(axes.ravel()):
             if show_alive:
                 xlim = ax.get_xlim()
                 ylim = ax.get_ylim()
@@ -1858,6 +1867,7 @@ def plot_relative_time(
         fig.suptitle(
             f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of[:3]}"
         )
+        fig.supxlabel("Relative time around onset [days]")
     return bigfig
 
 
