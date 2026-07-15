@@ -1980,6 +1980,7 @@ def plot_interp(
                     edgecolor="black",
                     hatch_linewidth=2.0,
                     linewidth=0,
+                    rasterized=True,
                 )
         else:
             norm = BoundaryNorm(levels, cmap.N)
