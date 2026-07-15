@@ -4,9 +4,10 @@
 #------------------------
 #SBATCH --qos="job_gratis"
 #SBATCH --job-name="exp9"
-#SBATCH --time=08:00:00
+#SBATCH --time=04:00:00
 #SBATCH --partition="epyc2"
-#SBATCH --mem-per-cpu=37G
+#SBATCH --mem=100G
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 
