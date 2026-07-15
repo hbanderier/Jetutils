@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import xarray as xr
 from zarr.codecs.numcodecs import Blosc
-from jetutils.data import open_da, smooth, extract, standardize, standardize_polars_dtypes
+from jetutils.data import open_da, smooth, extract, standardize, standardize_polars_dtypes, compute_all_smoothed_anomalies
 from jetutils.definitions import (
     DATADIR,
     YEARS,
@@ -57,6 +57,8 @@ from tqdm import tqdm, trange
 
 os.environ["RUST_BACKTRACE"] = "full"
 Basepath = Path(DATADIR, "ERA5/plev/uv/6H")
+
+compute_all_smoothed_anomalies("ERA5", "surf", "tp", "6H", "dayofyear", {"dayofyear": ("win", 15)})
 
 # # block 1: compute eddy stuff
 for n_days in [5, 10, 20, 30]:
@@ -427,16 +429,16 @@ for huh in to_do:
         _do_one(path, rename, levtype, name, args, kwargs)
     
     
-ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/full.zarr", consolidated=False)
-for lev, var in product([320, 330, 340, 350], ["PV"]):
-    key = f"{var}{lev}"
-    ofile = path.joinpath(f"{key}_relative.parquet")
-    if ofile.is_file():
-        continue
-    da = ds[var].sel(lev=lev).rename(key)
-    interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
-    del da
-    interpd.write_parquet(ofile)
+# ds = xr.open_dataset(f"{DATADIR}/ERA5/thetalev/PV_and_wind/6H/full.zarr", consolidated=False)
+# for lev, var in product([320, 330, 340, 350], ["PV"]):
+#     key = f"{var}{lev}"
+#     ofile = path.joinpath(f"{key}_relative.parquet")
+#     if ofile.is_file():
+#         continue
+#     da = ds[var].sel(lev=lev).rename(key)
+#     interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+#     del da
+#     interpd.write_parquet(ofile)
     
 for n_days in [5, 10, 20, 30]:
     ds_eddies = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eddy_forcing_{n_days}days.zarr", consolidated=False)
@@ -475,6 +477,21 @@ for n_days in [5, 10, 20, 30]:
             interpd = interpd.drop(*[f"{source}_interp" for source in sources])
             interpd = interpd.rename({f"{dest}_interp": f"{dest}{lev}_{n_days}days_interp"})
             interpd.write_parquet(ofile)
+            
+    del ds_eddies
+    ds_eddies = xr.open_dataset(Basepath.joinpath(f"results/eddy_stuff_{n_days}days.zarr"), consolidated=False)
+    ds_eddies = ds_eddies.unify_chunks()
+    ds_eddies = ds_eddies.sel(lat=slice(None, 85))
+
+    for lev, var in product([300, 250], ["up", "vp"]):
+        key = f"{var}{lev}_{n_days}days"
+        ofile = path.joinpath(f"{key}_relative.parquet")
+        if ofile.is_file():
+            continue
+        da = ds_eddies[var].sel(lev=lev).rename(key)
+        interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
+        del da
+        interpd.write_parquet(ofile)
     
     
 ds_eady = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eady_growth.zarr", consolidated=False)
