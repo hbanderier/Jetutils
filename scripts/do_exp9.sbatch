@@ -4,7 +4,7 @@
 #------------------------
 #SBATCH --qos="job_gratis"
 #SBATCH --job-name="exp9"
-#SBATCH --time=04:00:00
+#SBATCH --time=05:00:00
 #SBATCH --partition="epyc2"
 #SBATCH --mem=100G
 #SBATCH --nodes=1

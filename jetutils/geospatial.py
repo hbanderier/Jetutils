@@ -2025,7 +2025,7 @@ def create_jet_relative_dataset(
             jets_with_interp = jets_with_interp.filter(pl.col("n").abs() <= half_length)
         if len(das) == 2 and align_2d is not None:
             angle = pl.col("angle") - pl.lit(np.pi / 2)
-            agg = angle.cos() * pl.col(varnames[0]) + angle.sin() * pl.col(varnames[1])
+            agg = angle.cos() * to_expr(varnames[0], maybe_signed=True) + angle.sin() * to_expr(varnames[1], maybe_signed=True)
             agg = agg.cast(pl.Float32())
             agg = {f"{align_2d}_interp": agg}
             jets_with_interp = jets_with_interp.with_columns(**agg)

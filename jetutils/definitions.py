@@ -450,7 +450,7 @@ def maybe_circular_mean(x: float) -> float:
     return np.atan2(np.mean(np.sin(x)), np.mean(np.cos(x)))
 
 
-def to_expr(expr: Expr | str) -> Expr:
+def to_expr(expr: Expr | str, maybe_signed: bool = False) -> Expr:
     """
     Make sure it's an `Expr`.
 
@@ -465,7 +465,10 @@ def to_expr(expr: Expr | str) -> Expr:
         Same as input or `pl.col(expr)`
     """
     if isinstance(expr, str):
-        expr = pl.col(expr)
+        if maybe_signed and expr[0] == "-":
+            expr = - pl.col(expr[1:])
+        else:
+            expr = pl.col(expr)
     return expr
 
 

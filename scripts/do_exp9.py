@@ -393,6 +393,10 @@ to_do = (
     ("t250", "plev", ("uv", "t"), {"levels": 250}),
     ("t225", "plev", ("uv", "t"), {"levels": 225}),
     ("t200", "plev", ("uv", "t"), {"levels": 200}),
+    ("u250", "plev", ("uv", "u"), {"levels": 250}),
+    ("v250", "plev", ("uv", "v"), {"levels": 250}),
+    ("u300", "plev", ("uv", "u"), {"levels": 300}),
+    ("v300", "plev", ("uv", "v"), {"levels": 300}),
 )
 
 jets = pl.read_parquet(path.joinpath("jets.parquet"))
@@ -492,6 +496,29 @@ for n_days in [5, 10, 20, 30]:
         interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
         del da
         interpd.write_parquet(ofile)
+    if n_days > 5:
+        continue
+    to_do = {
+        "ujp": ("up", "vp"),
+        "vjp": ("vp", "-up"),
+    }
+    for lev in [300, 250]:
+        for dest, sources in to_do.items():
+            ofile = path.joinpath(f"{dest}{lev}_{n_days}days_relative.parquet")
+            if ofile.is_file():
+                continue
+            das = [ds_eddies[source.lstrip("-")].sel(lev=lev) for source in sources]
+            interpd = create_jet_relative_dataset(
+                jets,
+                *das,
+                bias_correction=bias_correction,
+                align_2d=dest,
+                dn=1e5,
+                n_interp=30,
+            )
+            # interpd = interpd.drop(*[f"{source.lstrip("-")}_interp" for source in sources])
+            interpd = interpd.rename({f"{dest}_interp": f"{dest}{lev}_{n_days}days_interp"})
+            interpd.write_parquet(ofile)
     
     
 ds_eady = xr.open_dataset(f"{DATADIR}/ERA5/plev/uv/6H/results/eady_growth.zarr", consolidated=False)
@@ -505,7 +532,6 @@ if not ofile.is_file():
     interpd = create_jet_relative_dataset(jets, da, bias_correction=bias_correction, dn=1e5, n_interp=30)
     del da
     interpd.write_parquet(ofile)
-    
     
 to_do = {
     "eady": ("eady_u", "eady_v"),
