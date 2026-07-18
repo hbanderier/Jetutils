@@ -958,9 +958,11 @@ dependencies = [
     { name = "polars" },
     { name = "polars-ds" },
     { name = "polars-st" },
+    { name = "polars-statistics" },
     { name = "rustworkx" },
     { name = "scikit-learn" },
     { name = "scipy" },
+    { name = "scoringrules" },
     { name = "seaborn" },
     { name = "simpsom-dask" },
     { name = "tqdm" },
@@ -988,9 +990,11 @@ requires-dist = [
     { name = "polars", specifier = "==1.42.1" },
     { name = "polars-ds", specifier = ">=0.12.0" },
     { name = "polars-st", specifier = ">=0.7.0" },
+    { name = "polars-statistics", specifier = ">=0.5.0" },
     { name = "rustworkx", specifier = ">=0.17.1" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "scipy", specifier = ">=1.17.1" },
+    { name = "scoringrules", specifier = ">=0.11.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "simpsom-dask", specifier = ">=1.0.3" },
     { name = "tqdm", specifier = ">=4.67.3" },
@@ -1999,6 +2003,22 @@ wheels = [
 ]
 
 [[package]]
+name = "polars-statistics"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "polars" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/8b/6206e15575b4394bb04fa4e61d578ffc94b031b594f65d5e279c6600a3b9/polars_statistics-0.5.0.tar.gz", hash = "sha256:5adf297f0167f498d0e752b6167d5d08a8ade8ed7cc07d2666c49e18ec6c4c8b", size = 2213892, upload-time = "2026-05-28T14:55:05.879Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/fa/3aaf2d36baf732ed6a8041517e0435735902c1d4d8a852c26d3fe115d657/polars_statistics-0.5.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:20646a0fe2670f273ab643140f82fc8f7de0b5d68c6bc6025f341d25a829366e", size = 6600745, upload-time = "2026-05-28T14:54:55.797Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/8b/e270180e04773cc4ec2bae99155cf5bf5b444ab07edfbd854634d6024609/polars_statistics-0.5.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:57a96078d9b7f32df45f6f933989a40240704b25fd5e5af766c1e965fc43acdc", size = 5990471, upload-time = "2026-05-28T14:54:57.784Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/e3/4b00fc3be930f979030bd52de13ece64b980c2b695eae4a8236269dc3c2f/polars_statistics-0.5.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:94df01d666a390925d1fd0229d88e5ce12c0cc49e66dd4ae1dd6ec3154f3d40e", size = 6165845, upload-time = "2026-05-28T14:54:59.931Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/18/a25ad362a178a73719edf4a06987bdff3a1c281fbbde4cfe2076df3c7411/polars_statistics-0.5.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bf435381fc1cbbe44ca04110bcd584508f543ba44726f4de0a83ec4def8e7c9b", size = 7029390, upload-time = "2026-05-28T14:55:01.927Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/c6/ef8867275b7f83831d967d1ce0ac625dfa3837e7a3c238797c59ce3984be/polars_statistics-0.5.0-cp39-abi3-win_amd64.whl", hash = "sha256:ee75a24574563d0cd6e183d22f6a08da45c753a8495b2ec893c35aad3b3173e6", size = 7685970, upload-time = "2026-05-28T14:55:04.166Z" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2551,6 +2571,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/52/52/e57eceff0e342a1f50e274264ed47497b59e6a4e3118808ee58ddda7b74a/scipy-1.17.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a77cbd07b940d326d39a1d1b37817e2ee4d79cb30e7338f3d0cddffae70fcaa2", size = 37682317, upload-time = "2026-02-23T00:22:18.513Z" },
     { url = "https://files.pythonhosted.org/packages/11/2f/b29eafe4a3fbc3d6de9662b36e028d5f039e72d345e05c250e121a230dd4/scipy-1.17.1-cp314-cp314t-win_amd64.whl", hash = "sha256:eb092099205ef62cd1782b006658db09e2fed75bffcae7cc0d44052d8aa0f484", size = 37345327, upload-time = "2026-02-23T00:22:24.442Z" },
     { url = "https://files.pythonhosted.org/packages/07/39/338d9219c4e87f3e708f18857ecd24d22a0c3094752393319553096b98af/scipy-1.17.1-cp314-cp314t-win_arm64.whl", hash = "sha256:200e1050faffacc162be6a486a984a0497866ec54149a01270adc8a59b7c7d21", size = 25489165, upload-time = "2026-02-23T00:22:29.563Z" },
+]
+
+[[package]]
+name = "scoringrules"
+version = "0.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/2c/645ef0174c26c2eccffc65596a29f2b3eb61daf441ac1ba79dd71611cc14/scoringrules-0.11.0.tar.gz", hash = "sha256:434d53c292bc319d080657dfdda99a3f6a5ceac45687d0f1218f8180e02a259d", size = 194532, upload-time = "2026-06-06T21:56:02.547Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/c2/646ebbc8a8b9df9244a76c8a523f7e768857ce3abd1c6bd4740470fd6b86/scoringrules-0.11.0-py3-none-any.whl", hash = "sha256:6371a36c856a8055b6751dc401a7e20000f0fd2886d602c90ee35ee0bc8ebb4e", size = 96450, upload-time = "2026-06-06T21:56:01.178Z" },
 ]
 
 [[package]]

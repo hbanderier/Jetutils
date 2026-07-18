@@ -610,7 +610,6 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
     nlo_down = pl.col("normallon").gather(stop_down)
     nla_down = pl.col("normallat").gather(stop_down)
 
-    agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
 
     half_width_down = haversine(
         nlo_down, nla_down, pl.col("lon").first(), pl.col("lat").first()
@@ -623,6 +622,8 @@ def compute_widths(jets: DataFrame, da: xr.DataArray):
         .otherwise(pl.col("half_width_up"))
         .list.first()
     )
+    
+    agg_out = {ic: pl.col(ic).first() for ic in ["lon", "lat", "s"]}
 
     first_agg_out = agg_out | {
         "half_width_up": half_width_up,

@@ -1755,7 +1755,10 @@ def plot_relative_time(
     total_height = row_height * n_row
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs = bigfig.subfigures(1, n_figs)
-    all_axes = [subfigs[n_fig].subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all") for n_fig in range(n_figs)]
+    if n_figs > 1:
+        all_axes = [subfigs[n_fig].subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all") for n_fig in range(n_figs)]
+    else:
+        all_axes = [subfigs.subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all")]
     for ia, ja in product(range(all_axes[0].shape[0]), range(all_axes[0].shape[1])):
         for n_fig in range(1, n_figs):
             all_axes[0][ia, ja].sharey(all_axes[n_fig][ia, ja])
@@ -1766,7 +1769,7 @@ def plot_relative_time(
         letters = ascii_lowercase[letters:]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
         spells_from_jet = extend_spells(
-            spells_from_jet, time_before=datetime.timedelta(days=4)
+            spells_from_jet, time_before=datetime.timedelta(days=4), time_after=datetime.timedelta(days=60)
         )
         props_masked = spells_from_jet.join(props, on="time").sort(
             "jet", "spell", "relative_index"
@@ -1865,7 +1868,7 @@ def plot_relative_time(
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
         fig.suptitle(
-            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of[:3]}"
+            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of}"
         )
         fig.supxlabel("Relative time around onset [days]")
     return bigfig
@@ -1883,7 +1886,10 @@ def plot_interp(
     alpha: float = 0.05,
     transpose: bool = False,
     handle_pvals: Literal["hide", "hatch"] = "hide",
+    quivers: dict | None = None
 ) -> Figure:
+    if quivers is None:
+        quivers = {}
     cbar_kwargs = dict(pad=pad, fraction=fraction, spacing="proportional")
     if transpose:
         n_row = n_col
@@ -1980,6 +1986,7 @@ def plot_interp(
                     edgecolor="black",
                     hatch_linewidth=2.0,
                     linewidth=0,
+                    rasterized=True,
                 )
         else:
             norm = BoundaryNorm(levels, cmap.N)
@@ -1993,6 +2000,13 @@ def plot_interp(
             )
         ax.plot([-0.5, 1.5], [0, 0], lw=2, color=COLORS[2 - int(is_polar)])
         ax.set_xlim(0, 1)
+        quiver_ = quivers.get(varname_full, None)
+        if quiver_ is not None:
+            u, v, kwargs_quiv = quiver_
+            u = xr.load_dataarray(ipath.joinpath(f"{prefix}{jet}_{u}.nc"))[::2, ::2]
+            v = xr.load_dataarray(ipath.joinpath(f"{prefix}{jet}_{v}.nc"))[::2, ::2]
+            print(u.shape, v.shape)
+            ax.quiver(u.norm_index, u.n / 1e6, u.values, v.values, **kwargs_quiv)
         if factor == 1:
             factor_str = ""
         else:
