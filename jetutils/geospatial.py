@@ -1711,6 +1711,7 @@ def interp_jets_to_zero_one(
     if isinstance(varnames, str):
         varnames = [varnames]
     index_columns = get_index_columns(jets)
+    n = ["n"] if "n" in jets.columns else []
     if "relative_index" in index_columns and "time" in index_columns:
         index_columns.remove("time")
         varnames.append("time")
@@ -1720,7 +1721,7 @@ def interp_jets_to_zero_one(
         .explode()
     )
     jets = jets.group_by(
-        [*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, "n"],
+        [*index_columns, ((pl.col("norm_index") * n_interp) // 1) / n_interp, *n],
         maintain_order=True,
     ).agg([pl.col(varname).mean() for varname in varnames])
     return standardize_polars_dtypes(jets)
