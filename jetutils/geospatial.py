@@ -2529,6 +2529,7 @@ def prepare_last_step_2(
     spells: pl.DataFrame,
     season: pl.Series,
     grams_wr: pl.DataFrame | None = None,
+    mjo: pl.DataFrame | None = None,
     n_bootstraps: int = 400,
 ):
     thejet = spells["spell_of"].mode().item()
@@ -2624,26 +2625,6 @@ def prepare_last_step_2(
             aggs[col] = pl.col(col).std().cast(pl.Float32())
     std_over_season = means.select(**aggs)
     masked = pl.concat([std_over_season, mean_over_season, mean_over_spells, masked])
-    if grams_wr is None:
-        return masked
-
-    grams_wr = grams_wr.cast({"time": pl.Datetime("ms")})
-    regime_stuff = (
-        spells.join(grams_wr, on="time")
-        .group_by("spell")
-        .agg(
-            **{
-                f"regime.{when}": pl.col("winner")
-                .filter(time_filter_, pl.col("winner") != 0)
-                .mode()
-                .first()
-                .fill_null(0)
-                for when, time_filter_ in time_filters.items()
-            }
-        )
-    )
-    masked = masked.join(regime_stuff, on="spell", how="left")
-
     early = season.dt.ordinal_day().unique().head(10)
     early = pl.col("time").dt.ordinal_day().is_in(early.implode())
     late = season.dt.ordinal_day().unique().tail(10)
@@ -2654,4 +2635,40 @@ def prepare_last_step_2(
         .agg(is_early_or_late=(early.mean() > 0.5) | (late.mean() > 0.5))
     )
     masked = masked.join(is_early_or_late, on="spell", how="left")
+    
+    if grams_wr is not None:
+        grams_wr = grams_wr.cast({"time": pl.Datetime("ms")})
+        regime_stuff = (
+            spells.join(grams_wr, on="time")
+            .group_by("spell")
+            .agg(
+                **{
+                    f"regime.{when}": pl.col("winner")
+                    .filter(time_filter_, pl.col("winner") != 0)
+                    .mode()
+                    .first()
+                    .fill_null(0)
+                    for when, time_filter_ in time_filters.items()
+                }
+            )
+        )
+        masked = masked.join(regime_stuff, on="spell", how="left")
+        
+    if mjo is not None:
+        mjo_stuff = (
+            spells.join(mjo, on="time")
+            .group_by("spell")
+            .agg(
+                **{
+                    f"mjo.{when}": pl.col("phase")
+                    .filter(time_filter_)
+                    .mode()
+                    .first()
+                    .fill_null(0)
+                    for when, time_filter_ in time_filters.items()
+                }
+            )
+        )
+        masked = masked.join(mjo_stuff, on="spell", how="left")
+
     return masked
