@@ -2326,18 +2326,23 @@ def create_relative_diff_plot(
     season: pl.Series,
     factor: float,
     phat: bool = False,
+    abs_diff: bool = False,
 ):
     season_doy = season.dt.ordinal_day().unique()
     clims_sm = []
     clims_std_sm = []
     anom_diff = []
     for run, spells in spells_list.items():
-        df, _, clim_sm, clim_std_sm, _ = common_relative_plot(varname, basepath.joinpath(run), jet, season, phat, and_std=True)
+        df, clim, clim_sm, clim_std_sm, _ = common_relative_plot(varname, basepath.joinpath(run), jet, season, phat, and_std=True)
         if ":" in varname:
-            varname, _ = varname.split(":")
-        varname_ = f"{varname}_interp"
+            varname_, _ = varname.split(":")
+        else:
+            varname_ = varname
+        varname_ = f"{varname_}_interp"
         clims_sm.append(clim_sm)
         clims_std_sm.append(clim_std_sm)
+        if not abs_diff:
+            df = compute_relative_anom(df, varname_.replace("_interp", ""), clim.lazy())
         if phat:
             during_ = (
                 spells
@@ -2406,7 +2411,12 @@ def create_all_relative_diff_plots(
     basepath: Path,
     odir: Path,
     season: pl.DataFrame | None = None,
+    abs_diff: bool = False,
 ) -> None:
+    if abs_diff:
+        anom_name = "abs"
+    else:
+        anom_name = "anom"
     for jet in ["STJ", "EDJ"]:
         sub_spells_list = {run: spells_list[f"{run}_{jet}"] for run in runs}
         for varname in tqdm(data_vars):
@@ -2422,12 +2432,12 @@ def create_all_relative_diff_plots(
             factor = FACTORS_UNITS.get(varname_.replace("any", "").rstrip("0123456789"), 1)
             ofile_clim_diff = Path(odir, f"{jet}_{varname_}:clim{suffix2}.nc")
             ofile_clim_diff_pvals = Path(odir, f"{jet}_{varname_}:clim{suffix2}_pvals.nc")
-            ofile = Path(odir, f"{jet}_{varname_}:anom{suffix2}.nc")
-            ofile_pvals = Path(odir, f"{jet}_{varname_}:anom{suffix2}_pvals.nc")
+            ofile = Path(odir, f"{jet}_{varname_}:{anom_name}{suffix2}.nc")
+            ofile_pvals = Path(odir, f"{jet}_{varname_}:{anom_name}{suffix2}_pvals.nc")
             if ofile.is_file():
                 continue
             clim_diff, pvals_clim, anom_diff, pvals = create_relative_diff_plot(
-                varname, basepath, jet, sub_spells_list, season, factor
+                varname, basepath, jet, sub_spells_list, season, factor, abs_diff=abs_diff
             )
             clim_diff.to_netcdf(ofile_clim_diff)
             pvals_clim.to_netcdf(ofile_clim_diff_pvals)
@@ -2477,7 +2487,8 @@ def prepare_last_step_1(
         if varname == "hor":
             df = df.drop("hor1_interp", "hor2_interp")
         if varname_ not in df.collect_schema().names():
-            if varname_no_number_ in df.collect_schema().names():
+            if varname_no_number_ in df.collect_schema().names(): 
+                # keep as is for now because there might other options in the future for the second level
                 df = df.rename({varname_no_number_: varname_})
                 print(varname_no_number, "->", varname_)
         # memory-intensive? : https://github.com/pola-rs/polars/issues/24393
@@ -2545,11 +2556,12 @@ def prepare_last_step_2(
             spells, props_with_extras, time_before=datetime.timedelta(days=4)
         )
         times = bs_times_with_jet_ID(spells, season, n_bootstraps, props_with_extras)
-        props_with_extras = props_with_extras.with_columns(
-            jet=pl.when(pl.col("is_polar") < 0.5)
-            .then(pl.lit("STJ"))
-            .otherwise(pl.lit("EDJ"))
-        )
+        if "jet" not in props_with_extras:
+            props_with_extras = props_with_extras.with_columns(
+                jet=pl.when(pl.col("is_polar") < 0.5)
+                .then(pl.lit("STJ"))
+                .otherwise(pl.lit("EDJ"))
+            )
     else:
         spells = extend_spells(spells, time_before=datetime.timedelta(days=4))
         times = create_bootstrapped_times(spells, season, n_bootstraps)

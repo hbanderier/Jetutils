@@ -24,7 +24,7 @@ from .definitions import (
     save_pickle,
     load_pickle,
     compute,
-    get_index_columns,
+    get_index_columns, squarify,
 )
 
 
@@ -1443,8 +1443,9 @@ def compute_anomalies_ds(
 def periodic_rolling_pl(
     df: pl.DataFrame,
     winsize: int,
-    data_vars: list,
+    aggs: list,
     dim: str = "dayofyear",
+    gb: list | None = None,
     other_columns: list | None = None,
 ):
     """
@@ -1466,19 +1467,18 @@ def periodic_rolling_pl(
     df: pl.DataFrame
         smoothed `df` along `dim`
     """
+    if gb is None:
+        gb = []
+    if other_columns is None:
+        other_columns = []
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
-    if other_columns is None:
-        other_columns = get_index_columns(
-            df,
-            ("member", "jet", "is_polar", "norm_index", "n", "dummy", "start", "level"),
-        )  # needs a better solution!
-    descending = [False, *[col == "jet" for col in other_columns]]
-    len_ = [df.select(col).n_unique() for col in other_columns]
+    descending = [False, *[col == "jet" for col in gb]]
+    len_ = [df.select(col).n_unique() for col in gb + other_columns]
     len_ = int(np.prod(len_))
     min_doy = df.select(dim).min().item()
     max_doy = df.select(dim).max().item()
-    df = df.sort([dim, *other_columns], descending=descending)
+    df = df.sort([dim, *gb], descending=descending)
     if min_doy == 1 and max_doy >= 365:
         df = pl.concat(
             [
@@ -1495,38 +1495,19 @@ def periodic_rolling_pl(
         pl.col(dim),
         period=f"{winsize}i",
         offset=f"-{halfwinsize + 1}i",
-        group_by=other_columns,
-    ).agg(*[pl.col(col).mean() for col in data_vars])
-    df = df.sort([dim, *other_columns], descending=descending)
+        group_by=gb,
+    ).agg(*aggs)
+    df = df.sort([dim, *gb], descending=descending)
     if min_doy == 1 and max_doy >= 365:
         df = df.slice(halfwinsize * len_, (max_doy - min_doy + 1) * len_)
     return df
 
 
-def average_jet_categories(
+def categorise_props(
     props_as_df: pl.DataFrame,
     polar_cutoff: float | None = None,
     allow_hybrid: bool = False,
-):
-    """
-    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
-
-    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
-
-    Parameters
-    ----------
-    props_as_df : DataFrame
-        Uncategorized jet properties, that contain at least the `jet ID` column.
-    polar_cutoff : float | None, optional
-        Cutoff, by default None
-    allow_hybrid : bool, optional
-        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
-
-    Returns
-    -------
-    props_as_df
-        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
-    """
+) -> pl.DataFrame:
     if allow_hybrid and polar_cutoff is None:
         polar_cutoff = 0.15
     elif polar_cutoff is None:
@@ -1547,75 +1528,77 @@ def average_jet_categories(
             .otherwise(pl.lit("STJ"))
             .alias("jet")
         )
+    return props_as_df
+
+
+def average_jet_categories(
+    props_as_df: pl.DataFrame,
+    polar_cutoff: float | None = None,
+    allow_hybrid: bool = False,
+) -> pl.DataFrame:
+    """
+    For every timestep, member and / or cluster (whichever applicable), aggregates each jet property (with a different rule for each property but usually a mean) into a single number for each category: subtropical, eddy driven jet and potentially hybrid, summarizing this property fo all the jets in this snapshot that fit this category, based on their mean `is_polar` value and a threshold given by `polar_cutoff`.
+
+    E.g. on the 1st of January 1999, there are two jets with `is_polar < polar_cutoff` and one with `is_polar > polar_cutoff`. We pass `allow_hybrid=False` to the function. In the output, for the row corresponding to this date and `jet=STJ`, the value for the `"mean_lat"` column will be the mean of the `"mean_lat"` values of two jets that had `is_polar < polar_cutoff`.
+
+    Parameters
+    ----------
+    props_as_df : DataFrame
+        Uncategorized jet properties, that contain at least the `jet ID` column.
+    polar_cutoff : float | None, optional
+        Cutoff, by default None
+    allow_hybrid : bool, optional
+        Whether to output two or three jet categories (hybrid jet between EDJ and STJ), by default False
+
+    Returns
+    -------
+    props_as_df
+        Categorizes jet properties. The columns `jet ID` does not exist anymore, and a new column `jet` with two or three possible values has been added. Two possible values if `allow_hybrid=False`: "STJ" or "EDJ". If `allow_hybrid=True`, the third `hybrid` category can also be found in the output `props_as_df`.
+    """
+    if "jet" not in props_as_df.columns:
+        props_as_df = categorise_props(props_as_df, polar_cutoff, allow_hybrid)
     index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
     )
     other_columns = [
         col for col in props_as_df.columns if col not in [*index_columns, "jet"]
     ]
+    
+    def special_to_expr(col):
+        return pl.col(col).replace([float("nan"), float("-inf"), float("inf")], None)
+    
+    special_ = {
+        "int": special_to_expr("int").mean(),
+        "is_polar": special_to_expr("is_polar").mean(),
+        "s_star": special_to_expr("s_star").max(),
+        "lon_ext": special_to_expr("lon_ext").max(),
+        "lat_ext": special_to_expr("lat_ext").max(),
+    }
+    def func_mean(col):
+        if "int" in props_as_df.columns:
+            return (special_to_expr(col) * special_to_expr("int")).sum() / special_to_expr("int").sum()
+        else:
+            return special_to_expr(col).mean()
     agg = {
-        col: (pl.col(col) * pl.col("int")).sum() / pl.col("int").sum()
+        col: special_.get(col, func_mean(col))
         for col in other_columns
     }
-    agg["int"] = pl.col("int").mean()
-    agg["is_polar"] = pl.col("is_polar").mean()
-    agg["s_star"] = pl.col("s_star").max()
-    agg["lon_ext"] = pl.col("lon_ext").max()
-    agg["lat_ext"] = pl.col("lat_ext").max()
     agg["njets"] = pl.len().cast(pl.UInt8())
 
-    gb_columns = get_index_columns(
+    new_index_columns = get_index_columns(
         props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
     )
     props_as_df_cat = (
-        props_as_df.group_by(gb_columns, maintain_order=True)
+        props_as_df.group_by(new_index_columns, maintain_order=True)
         .agg(**agg)
-        .sort(gb_columns)
+        .sort(new_index_columns)
     )
-
-    if "member" in index_columns:
-        dummy_indexer = (
-            props_as_df_cat["member"]
-            .unique(maintain_order=True)
-            .to_frame()
-            .join(
-                props_as_df_cat["time"].unique(maintain_order=True).to_frame(),
-                how="cross",
-            )
-            .join(
-                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
-                how="cross",
-            )
-        )
-    elif "cluster" in index_columns:
-        dummy_indexer = (
-            props_as_df_cat["cluster"]
-            .unique(maintain_order=True)
-            .to_frame()
-            .join(
-                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
-                how="cross",
-            )
-        )
-    else:
-        dummy_indexer = (
-            props_as_df_cat["time"]
-            .unique(maintain_order=True)
-            .to_frame()
-            .join(
-                props_as_df_cat["jet"].unique(maintain_order=True).to_frame(),
-                how="cross",
-            )
-        )
-    new_index_columns = get_index_columns(
-        props_as_df_cat, ("member", "time", "cluster", "jet", "spell", "relative_index")
-    )
+    
+    props_as_df_cat = squarify(props_as_df_cat, new_index_columns)
 
     sort_descending = [False] * len(new_index_columns)
     sort_descending[-1] = True
-    props_as_df_cat = dummy_indexer.join(
-        props_as_df_cat, on=[pl.col(col) for col in new_index_columns], how="left"
-    ).sort(new_index_columns, descending=sort_descending)
+    props_as_df_cat = props_as_df_cat.sort(new_index_columns, descending=sort_descending)
     props_as_df_cat = props_as_df_cat.with_columns(pl.col("njets").fill_null(0))
     return props_as_df_cat
 
