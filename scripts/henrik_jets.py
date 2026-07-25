@@ -400,7 +400,7 @@ for run in ["ctrl", "dobl"]:
                 f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results/Eddy_NH_10days.zarr", consolidated=False
             ).sel(lev=30000)
             ds = extract(ds, *args)
-            da_ = 0.5 * np.sqrt(ds["up"] ** 2 + ds["vp"] ** 2)
+            da_ = 0.5 * (ds["up"] ** 2 + ds["vp"] ** 2)
             da_ = da_.rename(rename)
         if rename in ["AAVO", "CAVO"] and "lev" in da_.dims:
             da_ = da_.any("lev")
