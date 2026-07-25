@@ -139,6 +139,7 @@ if "DATADIR" not in globals():
         "mean_s_var": "Rolling speed var.",
         "slowness": "Slowness",
         "slowness_catd": "Slowness",
+        "slowness_sum": "Persistence",
         "pers": "Persistence",
         "pers_catd": "Persistence",
         #
@@ -150,7 +151,9 @@ if "DATADIR" not in globals():
         "PV": "PV",
         "EMFconv": "EMF conv.",
         "u": "$u$",
-        "v": "$u$",
+        "usq": "$u**2$",
+        "v": "$v$",
+        "vsq": "$v**2$",
         "s": "$U$",
         "vort": r"$\zeta",
         "zeta": r"$\zeta$",
@@ -160,7 +163,7 @@ if "DATADIR" not in globals():
         "z": "$z$",
         "t_low": r"Air Temp. at $1000\,\mathrm{hPa}$",
         "DTCOND": r"Latent T. tend.",
-        "PTTEND": r"T. tend. from physics$",
+        "PTTEND": r"T. tend. from physics",
         "AAVO": "AWB",
         "CAVO": "CWB",
         "APVO": "AWB",
@@ -205,6 +208,7 @@ if "DATADIR" not in globals():
         "mean_lat_var": r"$~^{\circ} \mathrm{E} ^2$",
         "mean_s_var": r"$\mathrm{m^2\cdot s^{-2}}$",
         "slowness": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
+        "slowness_sum": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
         "slowness_catd": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
         "pers": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
         "pers_catd": r"$\mathrm{s}\cdot \mathrm{m}^{-1}$",
@@ -228,7 +232,9 @@ if "DATADIR" not in globals():
         "eady": r"$\mathrm{d}^{-1}$",
         "eady_s": r"$\mathrm{d}^{-1}$",
         "u": r"$\mathrm{m}\mathrm{s}^{-1}$",
+        "usq": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
         "v": r"$\mathrm{m}\mathrm{s}^{-1}$",
+        "vsq": r"$\mathrm{m}^{2}\mathrm{s}^{-2}$",
         "s": r"$\mathrm{m}\mathrm{s}^{-1}$",
         "z": r"$\mathrm{m}$",
         "DTCOND": r"$\mathrm{K}\mathrm{d}^{-1}$",
@@ -303,7 +309,7 @@ if "DATADIR" not in globals():
         "TCPVS": 100,
     }
 
-    for var, plev in product(["u", "v", "s", "t", "EMF", "EMFconv", "zeta", "vort", "z", "PTTEND", "DTCOND", "AAVO", "CAVO"], [200, 225, 250, 300, 350, 500, 850]):
+    for var, plev in product(["u", "usq", "v", "vsq", "s", "t", "EMF", "EMFconv", "zeta", "vort", "z", "PTTEND", "DTCOND", "AAVO", "CAVO"], [200, 225, 250, 300, 350, 500, 850]):
         key = f"{var}{plev}"
         PRETTIER_VARNAME[key] = f"{PRETTIER_VARNAME.get(var, var)}@${plev}" + r"\,\mathrm{hPa}$"
         UNITS[key] = UNITS.get(var, "")
@@ -445,7 +451,7 @@ def maybe_circular_mean(x: float) -> float:
     """
     dx = np.unique(x)
     dx = dx[1] - dx[0]
-    if np.all(np.diff(x) < 2 * dx):
+    if np.all(np.abs(np.diff(x)) < 2 * dx):
         return np.mean(x)
     return np.atan2(np.mean(np.sin(x)), np.mean(np.cos(x)))
 

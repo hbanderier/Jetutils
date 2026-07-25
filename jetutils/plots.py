@@ -391,19 +391,7 @@ def setup_lon_lat(
         except AttributeError:
             print("Either provide lon / lat or make to_plot items dataArrays")
             raise
-    lon = np.sort(lon)
-    lon_ = np.unique(lon)
-    dl = lon_[1] - lon_[0]
-    if np.all(np.diff(lon) < 2 * dl):
-        return to_plot, lon - maybe_circular_mean(to_plot[0].lon.values), lat
-    to_plot_ = []
-    for tplt in to_plot:
-        to_plot_.append(tplt.assign_coords(lon=tplt.lon.values % 360))
-    return (
-        to_plot_,
-        to_plot_[0].lon.values - maybe_circular_mean(to_plot_[0].lon.values),
-        lat,
-    )
+    return to_plot, lon, lat 
 
 
 def to_prettier_order(n: int | np.ndarray, width: int = 6, height: int = 4):
@@ -424,6 +412,7 @@ class Clusterplot:
         nrow: int,
         ncol: int,
         region: np.ndarray | list | tuple | None = None,
+        backwards: bool = False,
         lambert_projection: bool = False,
         honeycomb: bool = False,
         numbering: bool | Callable | Sequence = False,
@@ -438,12 +427,10 @@ class Clusterplot:
             region = (-80, 20, 15, 80)  # Default region ?
         self.region = region
         self.minlon, self.maxlon, self.minlat, self.maxlat = region
-        if self.maxlon > self.minlon:
-            lon = np.linspace(self.minlon, self.maxlon)
+        if backwards:
+            self.central_longitude = 180
         else:
-            lon = (180 + np.linspace(self.maxlon % 360, self.minlon % 360)) % 360 - 180
-        self.central_longitude = np.degrees(maybe_circular_mean(np.radians(lon)))
-        self.central_longitude = np.round(self.central_longitude)
+            self.central_longitude = 0
         if self.lambert_projection:
             projection = ccrs.LambertConformal(central_longitude=self.central_longitude)
             ratio = 0.6 * self.nrow / (self.ncol + (0.5 if honeycomb else 0))
@@ -452,7 +439,7 @@ class Clusterplot:
             projection = ccrs.PlateCarree(central_longitude=self.central_longitude)
             ratio = (
                 (self.maxlat - self.minlat)
-                / np.abs(self.maxlon - self.minlon)
+                / np.abs(self.minlon - self.maxlon)
                 * self.nrow
                 / (self.ncol + (0.5 if honeycomb else 0))
                 * (0.8 if honeycomb else 1)
@@ -486,16 +473,11 @@ class Clusterplot:
             if coastline:
                 ax.add_feature(COASTLINE)
             ax.set_extent(
-                [self.minlon, self.maxlon, self.minlat, self.maxlat],
-            )
-            ax.set_xlim(
-                self.minlon - self.central_longitude,
-                self.maxlon - self.central_longitude,
+                [self.minlon, self.maxlon, self.minlat, self.maxlat]
             )
             ax.set_ylim(self.minlat, self.maxlat)
             if self.lambert_projection:
                 ax.set_boundary(self.boundary)
-            # ax.add_feature(BORDERS, transform=ccrs.PlateCarree())
         if numbering:
             plt.draw()
             for i, ax in enumerate(self.axes):
@@ -606,7 +588,7 @@ class Clusterplot:
                 lon,
                 lat,
                 toplt,
-                transform=ccrs.PlateCarree(),
+                transform=ccrs.PlateCarree(self.central_longitude),
                 levels=levelscf,
                 colors=colors,
                 linestyles=linestyles,
@@ -679,7 +661,7 @@ class Clusterplot:
 
         return (
             dict(
-                transform=ccrs.PlateCarree(central_longitude=self.central_longitude),
+                transform=ccrs.PlateCarree(self.central_longitude),
                 levels=levelscf,
                 cmap=cmap,
                 norm=norm,
@@ -737,7 +719,7 @@ class Clusterplot:
                 ax.set_boundary(
                     self.boundary,
                     transform=ccrs.PlateCarree(
-                        central_longitude=self.central_longitude
+                        central_longitude=0
                     ),
                 )
 
@@ -768,7 +750,6 @@ class Clusterplot:
     ) -> None:
         lon = da.lon.values
         lat = da.lat.values
-        lon = lon - self.central_longitude
 
         if mask is not None:
             to_test = []
@@ -802,6 +783,7 @@ class Clusterplot:
                 edgecolor=color,
                 hatch_linewidth=linewidth,
                 linewidth=0.0,
+                transform=ccrs.PlateCarree(self.central_longitude)
             )
 
             # cs.set_edgecolor(color)
@@ -1745,10 +1727,13 @@ def plot_relative_time(
     row_height: float = 1.7,
     min_alive: int = 10,
     show_alive: bool = False,
-    spaghetti: bool = False,
+    mode: Literal["spaghetti", "shading"] = "shading",
     one_ax_each: bool = False,
+    colors: dict | None = None,
 ) -> Figure:
-    spell_ofs = spells["spell_of"].unique().sort(descending=True).to_list()
+    spells_of = spells["spell_of"].unique(maintain_order=True).to_list()
+    if colors is None:
+        colors = {spell_of: [COLORS[2], COLORS[1]] for spell_of in spells_of}
     if n_row is None:
         n_row = int(ceil(len(data_vars) / n_col))
     total_width = col_width * n_col * n_figs
@@ -1764,14 +1749,22 @@ def plot_relative_time(
             all_axes[0][ia, ja].sharey(all_axes[n_fig][ia, ja])
     if not isinstance(subfigs, Iterable):
         subfigs = [subfigs]
-    for n_fig, (spell_of, fig, axes) in enumerate(zip(spell_ofs, subfigs, all_axes)):
-        letters = (n_fig % n_figs) * n_row * n_col
-        letters = ascii_lowercase[letters:]
+    for n_fig, spell_of, in enumerate(spells_of):
+        if "_" in spell_of:
+            spell_of_jet, exp = spell_of.split("_")
+            props_ = props.filter(pl.col("exp") == exp)
+        else:
+            spell_of_jet = spell_of
+            props_ = props
+        colors_ = colors[spell_of]
+        n_fig_ = n_fig % n_figs
+        fig = subfigs[n_fig_]
+        axes = all_axes[n_fig_]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
         spells_from_jet = extend_spells(
-            spells_from_jet, time_before=datetime.timedelta(days=4), time_after=datetime.timedelta(days=60)
+            spells_from_jet, time_before=datetime.timedelta(days=4), # time_after=datetime.timedelta(days=60)
         )
-        props_masked = spells_from_jet.join(props, on="time").sort(
+        props_masked = spells_from_jet.join(props_, on="time").sort(
             "jet", "spell", "relative_index"
         )
         props_masked = props_masked.filter(
@@ -1790,7 +1783,7 @@ def plot_relative_time(
         q75 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
             **aggs_
         )
-        means = props.group_by("jet", maintain_order=True).agg(**aggs)
+        means = props_.group_by("jet", maintain_order=True).agg(**aggs)
         if show_alive:
             alive_spells = (
                 props_masked.group_by("relative_index")
@@ -1814,24 +1807,24 @@ def plot_relative_time(
                     varname = data_var
                     where = ""
                 factor = FACTORS.get(varname, 1)
-                if spaghetti:
+                if mode == "spaghetti":
                     for _, this_one in props_masked.group_by("spell"):
                         this_one = this_one.filter(pl.col("jet") == jet)
                         x_ = this_one["relative_index"].to_numpy() / 4
                         y = this_one[data_var] / factor
-                        ax.plot(x_, y, color=COLORS[2 - j], lw=0.5, alpha=0.5)
-                else:
+                        ax.plot(x_, y, color=colors_[j], lw=0.5, alpha=0.5)
+                elif mode == "shading":
                     ax.fill_between(
                         x,
                         q25_[data_var] / factor,
                         q75_[data_var] / factor,
-                        color=COLORS[2 - j],
+                        color=colors_[j],
                         alpha=0.4,
                     )
-                ax.plot(x, to_plot[data_var] / factor, color=COLORS[2 - j], lw=2.5)
+                ax.plot(x, to_plot[data_var] / factor, color=colors_[j], lw=2.5)
                 mean = means.filter(pl.col("jet") == jet)[data_var].item() / factor
                 ax.plot(
-                    [x[0], x[-1]], [mean, mean], color=COLORS[2 - j], ls="dashed", lw=2
+                    [x[0], x[-1]], [mean, mean], color=colors_[j], ls="dashed", lw=2
                 )
                 if j == 0:
                     factor_str = (
@@ -1839,13 +1832,14 @@ def plot_relative_time(
                         if factor == 1
                         else rf"${int(np.sign(factor))} \times 10^{int(np.log10(np.abs(factor)))} \times $"
                     )
+                    full_title = rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
                     ax.set_title(
-                        rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
+                        full_title
                     )
                 ax.yaxis.set_major_locator(MaxNLocator(4, integer=True))
                 ax.axvline(0, zorder=1, color="black", lw=2)
                 if one_ax_each:
-                    if spell_of == jet:
+                    if spell_of_jet == jet:
                         ax.spines[["left", "right", "top", "bottom"]].set_color(COLORS[2 - j])
                         ax.spines[["left", "right", "top", "bottom"]].set_linewidth(2)
         for i, ax in enumerate(axes.ravel()):
@@ -1868,7 +1862,7 @@ def plot_relative_time(
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
         fig.suptitle(
-            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of}"
+            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of_jet}"
         )
         fig.supxlabel("Relative time around onset [days]")
     return bigfig
@@ -1950,7 +1944,7 @@ def plot_interp(
         ofile_pvals = ipath.joinpath(f"{prefix}{jet}_{varname_full}_pvals.nc")
         if ofile_pvals.is_file():
             if handle_pvals != "hide":
-                levels = np.delete(levels, np.where(np.abs(levels) < 1e-7)[0])
+                levels = np.delete(levels, np.where(np.abs(levels) < 1e-3)[0])
             norm = BoundaryNorm(levels, cmap.N)
             pvals = xr.open_dataarray(ofile_pvals)
             pvals_ = pvals.values.ravel()
