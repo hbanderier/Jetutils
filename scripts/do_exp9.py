@@ -58,8 +58,6 @@ from tqdm import tqdm, trange
 os.environ["RUST_BACKTRACE"] = "full"
 Basepath = Path(DATADIR, "ERA5/plev/uv/6H")
 
-compute_all_smoothed_anomalies("ERA5", "surf", "tp", "6H", "dayofyear", {"dayofyear": ("win", 15)})
-
 # # block 1: compute eddy stuff
 for n_days in [5, 10, 20, 30]:
     izarr = Basepath.joinpath("full.zarr")

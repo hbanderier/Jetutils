@@ -1,3 +1,4 @@
+from zarr.codecs.numcodecs import Blosc
 from functools import partial
 import os
 from pathlib import Path
@@ -44,6 +45,8 @@ for run in ["ctrl", "dobl"]:
         ofile = basepath_zeta.joinpath(oname)
         if not ofile.is_file():
             ds = xr.open_dataset(f)
+            ds2 = xr.open_dataset(Path(DATADIR, f"Henrik_data/{run}/high_wind/6H/{oname}"))
+            ds = xr.concat([ds, ds2], "lev")
             ds = ds[["u", "v"]]
             ds = ds.transpose("time", "lev", "lat", "lon")
             zeta = compute_absolute_vorticity(ds)
@@ -51,14 +54,15 @@ for run in ["ctrl", "dobl"]:
             print("zeta", oname, run)
 
 # block 2: compute eddy stuff
+n_days = 5
 for run in ["ctrl", "dobl"]:
     opath = Path(
         f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results",
-        "Eddy_NH_10days.zarr",
+        f"Eddy_NH_{n_days}days.zarr",
     )
     if opath.is_dir():
         continue
-    half_len = 20
+    half_len = 2 * n_days
     ds = (
         xr.open_mfdataset(
             f"{DATADIR}/Henrik_data/{run}/high_wind/6H/*.nc",
@@ -87,7 +91,7 @@ for run in ["ctrl", "dobl"]:
     )
     l_win = lanczos(2 * half_len + 1)[:, None, None, None]
     dims = ds.dims
-    for var in ds.data_vars:
+    for var in ["u", "v", "theta", "omega"]:
         ds[f"{var}bar"] = (
             dims,
             (convolve_dask(ds[var].data, l_win)[half_len:-half_len] / l_win.sum()).astype(
@@ -97,80 +101,81 @@ for run in ["ctrl", "dobl"]:
         ds[f"{var}p"] = ds[var] - ds[f"{var}bar"]
         del ds[f"{var}bar"]
         del ds[var]
+    
+    encoding = {}
+    compressor = Blosc(cname="zstd", clevel=3, shuffle=2)
+    for data_var in ds.data_vars:
+        encoding[data_var] = {"compressors": compressor}
+                
     ds = ds.chunk({"time": 1390, "lat": 72, "lon": 161})
-    res = ds.to_zarr(opath, compute=False)
+    res = ds.to_zarr(opath, compute=False, consolidated=False, encoding=encoding)
     compute(res, progress=True)
     
     
 # block 3: EP Flux
-for run in ["ctrl", "dobl"]:
-    ipath = Path(
-        f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results",
-        "Eddy_NH_10days.zarr",
-    )
-    odir = Path(f"{DATADIR}/Henrik_data/{run}/EPF/6H")
-    odir.mkdir(parents=True, exist_ok=True)
-    ozarr = odir.joinpath("full.zarr")
-    if ozarr.is_dir():
-        continue
-    bigds = xr.open_dataset(ipath).sel(lev=[20000, 30000]).chunk("auto")
-    for year in trange(1969, 2021):
-        ofile = odir.joinpath(f"{year}.nc")
-        if ofile.is_file():
-            continue
-        ds = bigds.sel(time=bigds.time.dt.year == year)
-        other = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/vertical/6H/{year}.nc").sel(lat=slice(0, None))
-        ds = xr.merge([ds, other])
-        ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
+# for run in ["ctrl", "dobl"]:
+#     ipath = Path(
+#         f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results",
+#         "Eddy_NH_10days.zarr",
+#     )
+#     odir = Path(f"{DATADIR}/Henrik_data/{run}/EPF/6H")
+#     odir.mkdir(parents=True, exist_ok=True)
+#     ozarr = odir.joinpath("full.zarr")
+#     if ozarr.is_dir():
+#         continue
+#     bigds = xr.open_dataset(ipath).sel(lev=[20000, 30000]).chunk("auto")
+#     for year in trange(1969, 2021):
+#         ofile = odir.joinpath(f"{year}.nc")
+#         if ofile.is_file():
+#             continue
+#         ds = bigds.sel(time=bigds.time.dt.year == year)
+#         other = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/vertical/6H/{year}.nc").sel(lat=slice(0, None))
+#         ds = xr.merge([ds, other])
+#         ds["u"] = xr.open_dataset(f"{DATADIR}/Henrik_data/{run}/high_wind/6H/{year}.nc")["u"].sel(lat=slice(0, None))
         
-        gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
-        EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
-        S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
-        f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
+#         gamma = (-KAPPA / ds.lev * (100000 / ds.lev) ** KAPPA * ds["dthetadp"].mean(["time", "lon", "lat"])).astype(np.float32)
+#         EAPE = (C_P_AIR * 0.5 * (ds.lev * 1e-5) ** (2 * KAPPA) * gamma * ds["thetap"] ** 2).astype(np.float32)
+#         S = (0.5 * (ds["up"] ** 2 + ds["vp"] ** 2 - EAPE)).astype(np.float32)
+#         f = (2 * OMEGA * degsin(ds.lat)).astype(np.float32)
 
-        ## Base 2 * 3
-        ds["F11"] = S - ds["up"] ** 2
-        ds["F12"] = - ds["up"] * ds["vp"]
-        ds["F13"] = ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
-        ds["F22"] = S - ds["vp"] ** 2
-        ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
+#         ## Base 2 * 3
+#         ds["F11"] = S - ds["up"] ** 2
+#         ds["F12"] = - ds["up"] * ds["vp"]
+#         ds["F13"] = ds["vp"] * ds["thetap"] * f / ds["dthetadp"]
+#         ds["F22"] = S - ds["vp"] ** 2
+#         ds["F23"] = ds["up"] * ds["thetap"] * f / ds["dthetadp"]
 
-        ## Additional from original EP:
-        ds["F13_extra"] = - ds["up"] * ds["omegap"]
-        ds["F23_extra"] = - ds["vp"] * ds["omegap"]
-        ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] != "F"])
+#         ## Additional from original EP:
+#         ds["F13_extra"] = - ds["up"] * ds["omegap"]
+#         ds["F23_extra"] = - ds["vp"] * ds["omegap"]
+#         ds = ds.drop_vars([var for var in list(ds.data_vars) if var[0] != "F"])
         
-        # scaling! from Jucker 2021, or simply Edmon et al. 1980
-        for g in ds.data_vars:
-            ds[g] = ds[g] * RADIUS * degcos(ds.lat)
+#         # scaling! from Jucker 2021, or simply Edmon et al. 1980
+#         for g in ds.data_vars:
+#             ds[g] = ds[g] * RADIUS * degcos(ds.lat)
             
-        # derivatives, what actually affects the "jet"
-        ds["vert1"] = ds["F13"].differentiate("lev")
-        ds["vert2"] = ds["F23"].differentiate("lev")
-        ds["vert_extra1"] = ds["F13_extra"].differentiate("lev")
-        ds["vert_extra2"] = ds["F23_extra"].differentiate("lev")
-        ds = ds.sel(lev=30000)
-        ds["hor1"] = ds.map_blocks(compute_2d_div, ["F11", "F12"], template=ds["F12"])
-        ds["hor2"] = ds.map_blocks(compute_2d_div, ["F12", "F22"], template=ds["F12"])
+#         # derivatives, what actually affects the "jet"
+#         ds["vert1"] = ds["F13"].differentiate("lev")
+#         ds["vert2"] = ds["F23"].differentiate("lev")
+#         ds["vert_extra1"] = ds["F13_extra"].differentiate("lev")
+#         ds["vert_extra2"] = ds["F23_extra"].differentiate("lev")
+#         ds = ds.sel(lev=30000)
+#         ds["hor1"] = ds.map_blocks(compute_2d_div, ["F11", "F12"], template=ds["F12"])
+#         ds["hor2"] = ds.map_blocks(compute_2d_div, ["F12", "F22"], template=ds["F12"])
         
-        ds = compute(ds, progress_flag=False)
-        if ozarr.is_dir():
-            kwargs = {"mode": "a", "append_dim": "time"}
-        else:
-            kwargs = {"mode": "w"}
-        kwargs = kwargs | {"align_chunks": True, "consolidated": False}
-        ds.to_zarr(ozarr, **kwargs)
+#         ds = compute(ds, progress_flag=False)
+#         if ozarr.is_dir():
+#             kwargs = {"mode": "a", "append_dim": "time"}
+#         else:
+#             kwargs = {"mode": "w"}
+#         kwargs = kwargs | {"align_chunks": True, "consolidated": False}
+#         ds.to_zarr(ozarr, **kwargs)
     
 
 # block 4: WB
-levels = compute(xr.open_mfdataset(list(Path(DATADIR, "Henrik_data/ctrl/zeta/6H").glob("*0.nc")))[DEFAULT_VARNAME].quantile([0.5]), progress_flag=True).values
-levels = (levels * 1e5).round(1).tolist()
+levels = [9.4]
 for run in ["ctrl", "dobl"]:
     basepath_zeta = Path(DATADIR, f"Henrik_data/{run}/zeta/6H")
-    da_mflux = xr.open_dataset(
-        f"{DATADIR}/Henrik_data/{run}/high_wind/6H/results/Eddy_NH_10days.zarr"
-    ).sel(lev=30000)
-    da_mflux = (da_mflux["up"] * da_mflux["vp"]).rename("EMF")
     opath = Path(DATADIR, "Henrik_data", run) 
     opath_rwb = Path(DATADIR, f"Henrik_data/{run}/rwb_index")
     opath_rwb.mkdir(exist_ok=True)
@@ -180,26 +185,23 @@ for run in ["ctrl", "dobl"]:
         if opath.joinpath(f"CAVO/6H/{year}.nc").is_file() and ofile.is_file():
             continue
             
-        zeta = xr.open_dataarray(basepath_zeta.joinpath(f"{year}.nc")).sel(lev=30000)
+        zeta = xr.open_dataarray(basepath_zeta.joinpath(f"{year}.nc"))
         zeta = zeta.rename("zeta") * 1e5
         for potential in ["lev", "loni", "lati"]:
             try:
                 zeta = zeta.reset_coords(potential, drop=True)
             except ValueError:
                 continue
-        mflux = da_mflux.sel(time=zeta.time)
-        mflux = mflux.rename("mflux").reset_coords("lev", drop=True)
         zeta = smooth(zeta, {"lon": ("win", 5), "lat": ("win", 5)})
         zeta = compute(zeta)
         # mflux = smooth(mflux, {"lon": ("win", 5), "lat": ("win", 5)})
-        mflux = compute(mflux)
         if ofile.is_file():
             overturnings = pl.read_parquet(ofile)
             overturnings_on_grid = None
         else:
             contours = detect_contours_lonlat(zeta, levels, processes=N_WORKERS, ctx="fork")
             overturnings = detect_overturnings(contours, max_difflon=3)
-            overturnings, overturnings_on_grid = event_props(overturnings, [zeta, mflux])
+            overturnings, overturnings_on_grid = event_props(overturnings, [zeta])
             overturnings.write_parquet(ofile)
             
         for orientation in ["cyclonic", "anticyclonic"]:
