@@ -195,7 +195,7 @@ def num2tex(x: float, force: bool = False, ncomma: int = 1) -> str:
     float_str = f"{x:.{ncomma}e}" if force else f"{x:.{ncomma}g}"
     if "e" in float_str:
         base, exponent = float_str.split("e")
-        return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
+        return r"{0} \cdot 10^{{{1}}}".format(base, int(exponent))
     else:
         return float_str
 
@@ -440,8 +440,6 @@ class Clusterplot:
             ratio = (
                 (self.maxlat - self.minlat)
                 / np.abs(self.minlon - self.maxlon)
-                * self.nrow
-                / (self.ncol + (0.5 if honeycomb else 0))
                 * (0.8 if honeycomb else 1)
             )
         if honeycomb:
@@ -458,11 +456,11 @@ class Clusterplot:
                 self.fig = fig
             else:
                 self.fig = plt.figure(
-                    figsize=(row_height * self.ncol, row_height * self.ncol * ratio)
+                    figsize=(row_height * self.ncol / ratio, row_height * self.nrow)
                 )
             if isinstance(self.fig, Figure):
                 self.fig.set_size_inches(
-                    row_height * self.ncol, row_height * self.ncol * ratio
+                    row_height * self.ncol / ratio, row_height * self.nrow
                 )
                 self.fig.set_constrained_layout(not lambert_projection)
             self.axes = self.fig.subplots(
@@ -984,8 +982,8 @@ def plot_trends(
             factor_str = ""
         else:
             factor_str = str(int(np.log10(factor)))
-            factor_str = r"$10^{" + factor_str + r"} \times $"
-        if varname in ["mean_lev", "mean_theta"]:
+            factor_str = r"$10^{" + factor_str + r"} \cdot $"
+        if varname in ["mean_lev"]:
             ax.invert_yaxis()
         if numbering:
             ax.set_title(
@@ -1090,14 +1088,14 @@ def plot_seasonal(
         ]
     ).sort("dayofyear", "jet", descending=[False, True])
     means = _squarify(means)
-    means = periodic_rolling_pl(means, 15, data_vars)
+    means = periodic_rolling_pl(means, 15, [pl.col(var).mean() for var in data_vars], gb=["jet"])
 
     x = means["dayofyear"].unique()
     medians = gb.agg([pl.col(col).median() for col in data_vars]).sort(
         "dayofyear", "jet", descending=[False, True]
     )
     medians = _squarify(medians)
-    medians = periodic_rolling_pl(medians, 15, data_vars)
+    medians = periodic_rolling_pl(medians, 15, [pl.col(var).mean() for var in data_vars], gb=["jet"])
     q025 = _squarify(
         gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True])
     )
@@ -1115,7 +1113,7 @@ def plot_seasonal(
             factor_str = ""
         else:
             factor_str = str(int(np.log10(factor)))
-            factor_str = r"$10^{" + factor_str + r"} \times $"
+            factor_str = r"$10^{" + factor_str + r"} \cdot $"
         if varname in ["mean_lev"]:
             ax.invert_yaxis()
         if numbering:
@@ -1182,8 +1180,11 @@ def plot_dayofyear_trends(
     save: bool = False,
     clear: bool = True,
 ):
-    index_columns = get_index_columns(props_as_df, ["member", "time", "jet"])
+    index_columns = get_index_columns(props_as_df, ["member", "jet", "time"])
+    member = ["member"] if "member" in index_columns else []
     props_as_df = squarify(props_as_df, index_columns)
+    if member:
+        n_bootstraps = 0
     n_years = props_as_df["time"].dt.year().n_unique()
     rng = np.random.default_rng()
     num_blocks = n_years // bootstrap_len
@@ -1223,10 +1224,10 @@ def plot_dayofyear_trends(
         aggs = {data_var: target(data_var).mean() for data_var in data_vars}
     props_as_df_smoothed = (
         props_as_df.rolling(
-            pl.col("time"), period=period, offset=offset, group_by=["jet"]
+            pl.col("time"), period=period, offset=offset, group_by=["jet", *member]
         )
         .agg(**aggs)
-        .sort("time", "jet")
+        .sort(index_columns)
         .filter(pl.col("time").dt.ordinal_day() <= 365)
         .with_columns(
             hourofyear=pl.col("time").dt.ordinal_day() * 24 + pl.col("time").dt.hour(),
@@ -1235,7 +1236,7 @@ def plot_dayofyear_trends(
     )
     ts_bootstrapped = (
         props_as_df_smoothed.group_by(
-            ["hourofyear", "jet"],
+            ["hourofyear", "jet", *member],
             maintain_order=True,
         )
         .agg(
@@ -1250,7 +1251,7 @@ def plot_dayofyear_trends(
         .explode([*data_vars, "year", "inside_index", "sample_index"])
     )
     slopes = ts_bootstrapped.group_by(
-        ["hourofyear", "sample_index", "jet"], maintain_order=True
+        ["hourofyear", "sample_index", "jet", *member], maintain_order=True
     ).agg(
         **{
             data_var: pds.lin_reg_report(
@@ -1264,18 +1265,27 @@ def plot_dayofyear_trends(
             for data_var in data_vars
         }
     )
-    pvals = slopes.group_by(["hourofyear", "jet"], maintain_order=True).agg(
-        **{
-            data_var: pl.col(data_var)
-            .head(n_bootstraps)
-            .sort()
-            .search_sorted(pl.col(data_var).get(-1))
-            .item()
-            / n_bootstraps
+    if member:
+        agg1 = [pl.col(data_var).mean() for data_var in data_vars]
+        agg2 = [
+            (0.1 - 0.1 * (pl.col(data_var).mean().abs() > (1 * pl.col(data_var).std())).cast(pl.Float32())).alias(data_var)
             for data_var in data_vars
-        }
-    )
-    ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
+        ]
+        pvals = slopes.group_by(["hourofyear", "jet"], maintain_order=True).agg(*agg2)
+        ys = slopes.group_by(["hourofyear", "jet"], maintain_order=True).agg(*agg1)
+    else:
+        pvals = slopes.group_by(["hourofyear", "jet"], maintain_order=True).agg(
+            **{
+                data_var: pl.col(data_var)
+                .head(n_bootstraps)
+                .sort()
+                .search_sorted(pl.col(data_var).get(-1))
+                .item()
+                / n_bootstraps
+                for data_var in data_vars
+            }
+        )
+        ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
 
     fig, axes = plt.subplots(
         nrows,
@@ -1294,7 +1304,7 @@ def plot_dayofyear_trends(
             factor_str = ""
         else:
             factor_str = str(int(np.log10(factor)))
-            factor_str = r"$10^{" + factor_str + r"} \times $"
+            factor_str = r"$10^{" + factor_str + r"} \cdot $"
         if numbering:
             ax.set_title(
                 f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
@@ -1303,7 +1313,7 @@ def plot_dayofyear_trends(
             ax.set_title(
                 f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
             )
-        if varname in ["mean_lev", "mean_theta"]:
+        if varname in ["mean_lev"]:
             ax.invert_yaxis()
         for i, jet in enumerate(["STJ", "EDJ"]):
             color = "black" if dji else COLORS[2 - i]
@@ -1339,6 +1349,111 @@ def plot_dayofyear_trends(
         if folder is None:
             folder = "jet_props_misc"
         plt.savefig(f"{FIGURES}/{folder}/doy_trends{suffix}_{win_size=}.pdf")
+    return fig
+
+
+@clear
+def plot_seasonal_diff(
+    props1: pl.DataFrame,
+    props2: pl.DataFrame,
+    data_vars: list,
+    init_factor: float = 1,
+    nrows: int = 3,
+    ncols: int = 4,
+    folder: str | None = None,
+    suffix: str = "",
+    numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
+):
+    index_columns = get_index_columns(props1, ["member", "jet", "time"])
+    index_columns_no_time = get_index_columns(props1, ["member", "jet"])
+    p1 = (
+        props1
+        .group_by(*index_columns_no_time, dayofyear=pl.col("time").dt.ordinal_day())
+        .agg(cs.numeric().mean().cast(pl.Float32()))
+    )
+    p2 = (
+        props2
+        .group_by(*index_columns_no_time, dayofyear=pl.col("time").dt.ordinal_day())
+        .agg(cs.numeric().mean().cast(pl.Float32()))
+    )
+    aggs = [
+        (pl.col(f"{col}_other") - pl.col(col)).alias(col) / init_factor 
+        for col in props1.columns if col not in [*index_columns, "jet ID"]
+    ]
+    diffs = (
+        p1
+        .join(p2, on=["dayofyear", "jet"], suffix="_other")
+        .select("jet", "dayofyear", *aggs)
+    )
+    member = ["member", "member_right"] if "member" in index_columns else []
+    
+    means = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).mean()).sort("jet", "dayofyear")
+    q1 = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).quantile(0.2)).sort("jet", "dayofyear")
+    q2 = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).quantile(0.8)).sort("jet", "dayofyear")
+    
+    means = periodic_rolling_pl(means, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
+    q1 = periodic_rolling_pl(q1, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
+    q2 = periodic_rolling_pl(q2, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
+    
+    init_factor_rounded = 10 ** np.round(np.log10(init_factor))
+    
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(ncols * 3.5, nrows * 2.4),
+        constrained_layout=True,
+        sharex="all",
+    )
+    axes = axes.flatten()
+
+    for letter, varname, ax in zip(ascii_lowercase, data_vars, axes.ravel()):
+        dji = varname == "double_jet_index"
+        factor = FACTORS.get(varname, 1)
+        factor = factor / init_factor_rounded
+        if factor == 1:
+            factor_str = ""
+        else:
+            factor_str = str(int(np.log10(factor)))
+            factor_str = r"$10^{" + factor_str + r"} \cdot $"
+        if numbering:
+            ax.set_title(
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+            )
+        else:
+            ax.set_title(
+                f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+            )
+        if varname in ["mean_lev"]:
+            ax.invert_yaxis()
+        for i, jet in enumerate(["STJ", "EDJ"]):
+            color = "black" if dji else COLORS[2 - i]
+            means_ = means.filter(pl.col("jet") == jet)[varname] / factor
+            q1_ = q1.filter(pl.col("jet") == jet)[varname] / factor
+            q2_ = q2.filter(pl.col("jet") == jet)[varname] / factor
+            x = means.filter(pl.col("jet") == jet)["dayofyear"]
+            ax.plot(x, means_, lw=2, color=color, label=jet, zorder=11)
+            ax.fill_between(x, q1_, q2_, alpha=0.2, color=color)
+            if dji:
+                break
+        ax.xaxis.set_major_locator(MonthLocator(range(0, 13, 3)))
+        ax.xaxis.set_major_formatter(DateFormatter("%b"))
+        ax.set_xlim(min(x), max(x))
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        ax.plot(xlim, [0, 0], lw=1.5, color="black", zorder=10, alpha=1)
+        # wherex = np.isin(x, JJADOYS)
+        # ax.fill_between(x, *ylim, where=wherex, alpha=0.1, color="black", zorder=-10)
+        ax.set_ylim(xlim)
+        ax.set_ylim(ylim)
+        ax.grid(True)
+
+    if save:
+        if folder is None:
+            folder = "jet_props_misc"
+        plt.savefig(f"{FIGURES}/{folder}/seasonal_diff{suffix}.pdf")
     return fig
 
 
@@ -1830,7 +1945,7 @@ def plot_relative_time(
                     factor_str = (
                         ""
                         if factor == 1
-                        else rf"${int(np.sign(factor))} \times 10^{int(np.log10(np.abs(factor)))} \times $"
+                        else rf"${int(np.sign(factor))} \cdot 10^{int(np.log10(np.abs(factor)))} \cdot $"
                     )
                     full_title = rf"{letter}) {PRETTIER_VARNAME.get(varname, varname)}{where} [{factor_str}{UNITS.get(varname, '~')}]"
                     ax.set_title(
@@ -2005,7 +2120,7 @@ def plot_interp(
             factor_str = ""
         else:
             factor_str = str(int(np.log10(np.abs(factor))))
-            factor_str = r"$10^{" + factor_str + r"} \times $"
+            factor_str = r"$10^{" + factor_str + r"} \cdot $"
         unit = UNITS.get(varname_no_number, UNITS.get(varname, "$~$"))
         unit = factor_str + unit
         unit = unit + r"$/1000\,\mathrm{km}$" if grad else unit

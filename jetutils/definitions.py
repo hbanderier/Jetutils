@@ -1071,8 +1071,8 @@ def get_full_time(df):
     dt = df["time"].unique().diff().mode()[0]
     doys = df["time"].dt.ordinal_day().unique()
     time_unit = df["time"].dtype.time_unit
-    t1 = datetime.datetime(df["time"].dt.year().min(), 1, 1)
-    t2 = datetime.datetime(df["time"].dt.year().max() + 1, 1, 1)
+    t1 = datetime.datetime(df["time"].dt.year().min(), 1, 1, hour=df["time"].dt.hour().min())
+    t2 = datetime.datetime(df["time"].dt.year().max() + 1, 1, 1, hour=df["time"].dt.hour().min())
     full_time = pl.datetime_range(t1, t2, interval=dt, eager=True, closed="left", time_unit=time_unit).rename("time").to_frame()
     return full_time.filter(pl.col("time").dt.ordinal_day().is_in(doys.implode()))
 

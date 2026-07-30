@@ -1492,7 +1492,7 @@ def periodic_rolling_pl(
             ]
         )
     df = df.rolling(
-        pl.col(dim),
+        dim,
         period=f"{winsize}i",
         offset=f"-{halfwinsize + 1}i",
         group_by=gb,
