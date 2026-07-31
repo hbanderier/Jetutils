@@ -1163,23 +1163,14 @@ def plot_seasonal(
     return fig
 
 
-@clear
-def plot_dayofyear_trends(
+def dayofyear_trends(
     props_as_df: pl.DataFrame,
     data_vars: list,
     bootstrap_len: int = 4,
     n_bootstraps: int = 500,
     win_size: int = 15,
-    nrows: int = 3,
-    ncols: int = 4,
     std: bool = False,
-    folder: str | None = None,
-    suffix: str = "",
-    numbering: bool = False,
-    *,
-    save: bool = False,
-    clear: bool = True,
-):
+) -> Tuple[pl.DataFrame, pl.DataFrame]:
     index_columns = get_index_columns(props_as_df, ["member", "jet", "time"])
     member = ["member"] if "member" in index_columns else []
     props_as_df = squarify(props_as_df, index_columns)
@@ -1286,6 +1277,34 @@ def plot_dayofyear_trends(
             }
         )
         ys = slopes.filter(pl.col("sample_index") == n_bootstraps)
+    return ys, pvals
+
+
+@clear
+def plot_dayofyear_trends(
+    props_as_df: pl.DataFrame,
+    data_vars: list,
+    bootstrap_len: int = 4,
+    n_bootstraps: int = 500,
+    win_size: int = 15,
+    nrows: int = 3,
+    ncols: int = 4,
+    std: bool = False,
+    folder: str | None = None,
+    suffix: str = "",
+    numbering: bool = False,
+    *,
+    save: bool = False,
+    clear: bool = True,
+):
+    ys, pvals = dayofyear_trends(
+        props_as_df=props_as_df,
+        data_vars=data_vars,
+        bootstrap_len=bootstrap_len,
+        n_bootstraps=n_bootstraps,
+        win_size=win_size,
+        std=std,
+    )
 
     fig, axes = plt.subplots(
         nrows,
@@ -1361,34 +1380,40 @@ def plot_seasonal_diff(
     nrows: int = 3,
     ncols: int = 4,
     folder: str | None = None,
+    unit_suffix: str = "/year",
     suffix: str = "",
     numbering: bool = False,
     *,
     save: bool = False,
     clear: bool = True,
 ):
-    index_columns = get_index_columns(props1, ["member", "jet", "time"])
-    index_columns_no_time = get_index_columns(props1, ["member", "jet"])
+    index_columns_1 = get_index_columns(props1, ["member", "jet", "time"])
+    index_columns_no_time_1 = get_index_columns(props1, ["member", "jet"])
+    index_columns_2 = get_index_columns(props2, ["member", "jet", "time"])
+    index_columns_no_time_2 = get_index_columns(props2, ["member", "jet"])
+    index_columns_both = list(set(index_columns_1).union(index_columns_2))
     p1 = (
         props1
-        .group_by(*index_columns_no_time, dayofyear=pl.col("time").dt.ordinal_day())
+        .group_by(*index_columns_no_time_1, dayofyear=pl.col("time").dt.ordinal_day())
         .agg(cs.numeric().mean().cast(pl.Float32()))
     )
     p2 = (
         props2
-        .group_by(*index_columns_no_time, dayofyear=pl.col("time").dt.ordinal_day())
+        .group_by(*index_columns_no_time_2, dayofyear=pl.col("time").dt.ordinal_day())
         .agg(cs.numeric().mean().cast(pl.Float32()))
     )
     aggs = [
         (pl.col(f"{col}_other") - pl.col(col)).alias(col) / init_factor 
-        for col in props1.columns if col not in [*index_columns, "jet ID"]
+        for col in props1.columns if col not in [*index_columns_both, "jet ID"]
     ]
     diffs = (
         p1
         .join(p2, on=["dayofyear", "jet"], suffix="_other")
         .select("jet", "dayofyear", *aggs)
     )
-    member = ["member", "member_right"] if "member" in index_columns else []
+    member = ["member"] if "member" in index_columns_1 else []
+    if "member" in index_columns_2:
+        member.append("member_other")
     
     means = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).mean()).sort("jet", "dayofyear")
     q1 = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).quantile(0.2)).sort("jet", "dayofyear")
@@ -1420,11 +1445,11 @@ def plot_seasonal_diff(
             factor_str = r"$10^{" + factor_str + r"} \cdot $"
         if numbering:
             ax.set_title(
-                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+                f"{letter}) {PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}{unit_suffix}]"
             )
         else:
             ax.set_title(
-                f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}/year]"
+                f"{PRETTIER_VARNAME.get(varname, varname)}, [{factor_str}{UNITS.get(varname, '1')}{unit_suffix}]"
             )
         if varname in ["mean_lev"]:
             ax.invert_yaxis()
