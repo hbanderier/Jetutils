@@ -193,7 +193,7 @@ if "DATADIR" not in globals():
         "s_star": r"$\mathrm{m} \cdot \mathrm{s}^{-1}$",
         "lon_ext": r"$~^{\circ} \mathrm{E}$",
         "lat_ext": r"$~^{\circ} \mathrm{N}$",
-        "tilt": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
+        "tilt": r"$~^{\circ}$",
         "waviness1": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",
         "waviness2": r"$~^{\circ} \mathrm{N}$",
         "wavinessR16": r"$~^{\circ} \mathrm{N} / ~^{\circ} \mathrm{E}$",

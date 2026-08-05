@@ -1,61 +1,67 @@
 # coding: utf-8
-from polars.exceptions import ColumnNotFoundError
-from matplotlib.axes import Axes
+import datetime
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial, wraps
 from itertools import product
-from functools import partial
-from typing import Mapping, Sequence, Tuple, Literal, Iterable, Callable
-from math import log10, floor, ceil
-
-import numpy as np
-from scipy.stats import gaussian_kde, chi2, norm as normal_dist, t, ttest_ind_from_stats
-from scipy.interpolate import LinearNDInterpolator
-import xarray as xr
-from xarray import DataArray
-import polars as pl
-import polars_ds as pds
-import polars.selectors as cs
-from contourpy import contour_generator
-from tqdm import tqdm, trange
-from string import ascii_lowercase, ascii_uppercase
+from math import ceil, floor, log10
 from pathlib import Path
+from string import ascii_lowercase, ascii_uppercase
+from typing import Any, Literal, ParamSpec
 
+import cartopy.crs as ccrs
+import cartopy.feature as feat
+import colormaps
 import matplotlib as mpl
+import numpy as np
+import polars as pl
+import polars.selectors as cs
+import polars_ds as pds
+import xarray as xr
+from contourpy import contour_generator
+from IPython.display import clear_output
 from matplotlib import path as mpath
 from matplotlib import pyplot as plt
 from matplotlib import ticker as mticker
-from matplotlib.patches import PathPatch
-from matplotlib.figure import Figure, SubFigure
+from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import (
     BoundaryNorm,
     Colormap,
-    ListedColormap,
     LinearSegmentedColormap,
-    to_rgb,
-    to_hex,
-    rgb_to_hsv,
+    ListedColormap,
     hsv_to_rgb,
+    rgb_to_hsv,
+    to_hex,
+    to_rgb,
 )
+from matplotlib.dates import DateFormatter, MonthLocator
+from matplotlib.figure import Figure, SubFigure
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import MaxNLocator, FormatStrFormatter
-from matplotlib.dates import MonthLocator, DateFormatter
-import colormaps
-import cartopy.crs as ccrs
-import cartopy.feature as feat
-from IPython.display import clear_output
-import datetime
+from matplotlib.patches import PathPatch
+from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+from polars.exceptions import ColumnNotFoundError
+from scipy.interpolate import LinearNDInterpolator
+from scipy.stats import chi2, gaussian_kde, t, ttest_ind_from_stats
+from scipy.stats import norm as normal_dist
+from tqdm import tqdm, trange
+from xarray import DataArray
 
+import jetutils
+from jetutils.jet_finding import average_jet_categories
+
+from .anyspell import extend_spells, mask_from_spells_pl
+from .data import periodic_rolling_pl
 from .definitions import (
-    FIGURES,
-    PRETTIER_VARNAME,
-    UNITS,
-    FACTORS_UNITS,
-    SEASONS,
-    JJADOYS,
     FACTORS,
-    maybe_circular_mean,
+    FACTORS_UNITS,
+    FIGURES,
+    JJADOYS,
+    PRETTIER_VARNAME,
+    SEASONS,
+    UNITS,
     get_index_columns,
     infer_direction,
+    maybe_circular_mean,
     polars_to_xarray,
     squarify,
 )
@@ -66,11 +72,12 @@ from .geospatial import (
     compute_relative_sm,
     compute_relative_std,
 )
-from jetutils.jet_finding import average_jet_categories
-from .stats import create_bootstrapped_times, field_significance, trends_and_pvalues, bs_times_with_jet_ID
-from .data import periodic_rolling_pl
-from .anyspell import mask_from_spells_pl, extend_spells
-import jetutils
+from .stats import (
+    bs_times_with_jet_ID,
+    create_bootstrapped_times,
+    field_significance,
+    trends_and_pvalues,
+)
 
 TEXTWIDTH_IN = 0.0138889 * 503.61377
 STYLE_SHEET = Path(jetutils.__path__[0]).joinpath("matplotlibrc").as_posix()
@@ -275,7 +282,7 @@ def honeycomb_panel(
     row_height: float = 2.0,
     fig: Figure | SubFigure | None = None,
     **subplot_kw,
-) -> Tuple[Figure | SubFigure, np.ndarray]:
+) -> tuple[Figure | SubFigure, np.ndarray]:
     if fig is None:
         fig = plt.figure(figsize=(row_height * nrow, row_height * ratio * nrow))
     elif isinstance(fig, Figure):
@@ -324,7 +331,7 @@ def create_levels(
     levels: int | Sequence | None = None,
     q: float = 0.99,
     direction: int | None = None,
-) -> Tuple[np.ndarray, np.ndarray, str, int]:
+) -> tuple[np.ndarray, np.ndarray, str, int]:
     if to_plot[0].dtype == bool:
         if levels is None:
             return np.array([0, 0.5, 1]), np.array([0, 0.5, 1]), "neither", 1
@@ -620,7 +627,7 @@ class Clusterplot:
         q: float = 0.99,
         direction: int | None = None,
         **kwargs,
-    ) -> Tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
+    ) -> tuple[Mapping, Mapping, ScalarMappable, np.ndarray]:
         levelsc, levelscf, extend, direction = create_levels(
             to_plot, levels, q=q, direction=direction
         )
@@ -689,7 +696,7 @@ class Clusterplot:
         q: float = 0.99,
         direction: int | None = None,
         **kwargs,
-    ) -> Tuple[ScalarMappable, Mapping]:
+    ) -> tuple[ScalarMappable, Mapping]:
         to_plot, lon, lat = setup_lon_lat(to_plot, lon, lat)
 
         kwargs, cbar_kwargs, im, levelsc = self.setup_contourf(
@@ -922,11 +929,12 @@ class Clusterplot:
                 )
 
 
-def clear(func):
-    def wrapper(*args, **kwargs):
+P = ParamSpec("P")
+def clear(func: Callable[P, Figure]) -> Callable[P, None | Figure]:
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> None | Figure:
         clear = kwargs.get("clear", True)
         if clear:
-            plt.ion()
             plt.show()
             clear_output()
         fig = func(*args, **kwargs)
@@ -936,7 +944,6 @@ def clear(func):
             clear_output()
             return
         return fig
-
     return wrapper
 
 
@@ -956,7 +963,7 @@ def plot_trends(
     *,
     save: bool = False,
     clear: bool = True,
-):
+) -> Figure:
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -1002,7 +1009,7 @@ def plot_trends(
             p = pvals.filter(filter_[0])[varname].item()
             p = min(p, 1 - p) * 2
             this_da = y.filter(pl.col("jet") == jet)[varname]
-            color = "black" if dji else COLORS[2 - j]
+            color = "black" if dji else COLORS[2 - j_]
             ls = "dashed" if p < 0.05 else "dotted"
             label = f"{p_to_tex(c1, c0, True)}, $p={p:.2f}$"
             # if c1 is not None:
@@ -1088,14 +1095,14 @@ def plot_seasonal(
         ]
     ).sort("dayofyear", "jet", descending=[False, True])
     means = _squarify(means)
-    means = periodic_rolling_pl(means, 15, [pl.col(var).mean() for var in data_vars], gb=["jet"])
+    means = periodic_rolling_pl(means, 15, [pl.col(var).mean() for var in data_vars], group_by=["jet"])
 
     x = means["dayofyear"].unique()
     medians = gb.agg([pl.col(col).median() for col in data_vars]).sort(
         "dayofyear", "jet", descending=[False, True]
     )
     medians = _squarify(medians)
-    medians = periodic_rolling_pl(medians, 15, [pl.col(var).mean() for var in data_vars], gb=["jet"])
+    medians = periodic_rolling_pl(medians, 15, [pl.col(var).mean() for var in data_vars], group_by=["jet"])
     q025 = _squarify(
         gb.quantile(0.25).sort("dayofyear", "jet", descending=[False, True])
     )
@@ -1170,7 +1177,7 @@ def dayofyear_trends(
     n_bootstraps: int = 500,
     win_size: int = 15,
     std: bool = False,
-) -> Tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     index_columns = get_index_columns(props_as_df, ["member", "jet", "time"])
     member = ["member"] if "member" in index_columns else []
     props_as_df = squarify(props_as_df, index_columns)
@@ -1404,7 +1411,7 @@ def plot_seasonal_diff(
     )
     aggs = [
         (pl.col(f"{col}_other") - pl.col(col)).alias(col) / init_factor 
-        for col in props1.columns if col not in [*index_columns_both, "jet ID"]
+        for col in data_vars
     ]
     diffs = (
         p1
@@ -1419,9 +1426,9 @@ def plot_seasonal_diff(
     q1 = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).quantile(0.2)).sort("jet", "dayofyear")
     q2 = diffs.group_by("jet", "dayofyear").agg(cs.exclude(*member).quantile(0.8)).sort("jet", "dayofyear")
     
-    means = periodic_rolling_pl(means, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
-    q1 = periodic_rolling_pl(q1, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
-    q2 = periodic_rolling_pl(q2, 15, [pl.col(col).mean() for col in data_vars], gb=["jet"])
+    means = periodic_rolling_pl(means, 15, [pl.col(col).mean() for col in data_vars], group_by=["jet"])
+    q1 = periodic_rolling_pl(q1, 15, [pl.col(col).mean() for col in data_vars], group_by=["jet"])
+    q2 = periodic_rolling_pl(q2, 15, [pl.col(col).mean() for col in data_vars], group_by=["jet"])
     
     init_factor_rounded = 10 ** np.round(np.log10(init_factor))
     

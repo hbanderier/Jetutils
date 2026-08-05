@@ -868,7 +868,7 @@ def prepare_predictors(
     if anomalize:
         predictors = compute_anomalies_pl(
             predictors,
-            other_index_columns=index_columns_no_time,
+            group_by=index_columns_no_time,
             standardize=standardize,
         )
         if nan_method == "fill":

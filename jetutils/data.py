@@ -1,4 +1,5 @@
 # coding: utf-8
+from polars.testing.parametric.strategies.data import data
 import warnings
 from os.path import commonpath
 
@@ -1445,8 +1446,7 @@ def periodic_rolling_pl(
     winsize: int,
     aggs: list,
     dim: str = "dayofyear",
-    gb: list | None = None,
-    other_columns: list | None = None,
+    group_by: list | None = None,
 ):
     """
     Window smoothing for a polars DataFrame, for a dimension that is periodic like `"dayofyear"`.
@@ -1467,18 +1467,16 @@ def periodic_rolling_pl(
     df: pl.DataFrame
         smoothed `df` along `dim`
     """
-    if gb is None:
-        gb = []
-    if other_columns is None:
-        other_columns = []
+    if group_by is None:
+        group_by = []
     df = df.cast({dim: pl.Int32})
     halfwinsize = winsize // 2
-    descending = [False, *[col == "jet" for col in gb]]
-    len_ = [df.select(col).n_unique() for col in gb + other_columns]
+    descending = [False, *[col == "jet" for col in group_by]]
+    len_ = [df.select(col).n_unique() for col in group_by]
     len_ = int(np.prod(len_))
     min_doy = df.select(dim).min().item()
     max_doy = df.select(dim).max().item()
-    df = df.sort([dim, *gb], descending=descending)
+    df = df.sort([dim, *group_by], descending=descending)
     if min_doy == 1 and max_doy >= 365:
         df = pl.concat(
             [
@@ -1495,9 +1493,9 @@ def periodic_rolling_pl(
         dim,
         period=f"{winsize}i",
         offset=f"-{halfwinsize + 1}i",
-        group_by=gb,
+        group_by=group_by,
     ).agg(*aggs)
-    df = df.sort([dim, *gb], descending=descending)
+    df = df.sort([dim, *group_by], descending=descending)
     if min_doy == 1 and max_doy >= 365:
         df = df.slice(halfwinsize * len_, (max_doy - min_doy + 1) * len_)
     return df
@@ -1558,7 +1556,7 @@ def average_jet_categories(
     if "jet" not in props_as_df.columns:
         props_as_df = categorise_props(props_as_df, polar_cutoff, allow_hybrid)
     index_columns = get_index_columns(
-        props_as_df, ("member", "time", "cluster", "jet ID", "spell", "relative_index")
+        props_as_df, ("number", "forecast_init", "forecast_init_doy", "member", "time", "cluster", "jet ID", "spell", "relative_index")
     )
     other_columns = [
         col for col in props_as_df.columns if col not in [*index_columns, "jet"]
@@ -1586,7 +1584,7 @@ def average_jet_categories(
     agg["njets"] = pl.len().cast(pl.UInt8())
 
     new_index_columns = get_index_columns(
-        props_as_df, ("member", "time", "cluster", "jet", "spell", "relative_index")
+        props_as_df, ("number", "forecast_init", "forecast_init_doy", "member", "time", "cluster", "jet", "spell", "relative_index")
     )
     props_as_df_cat = (
         props_as_df.group_by(new_index_columns, maintain_order=True)
@@ -1605,7 +1603,7 @@ def average_jet_categories(
 
 def compute_anomalies_pl(
     df: pl.DataFrame,
-    other_index_columns: list | str = "jet",
+    group_by: list | str = "jet",
     smooth_clim: int = 0,
     standardize: bool = False,
     detrend: bool = False,
@@ -1630,10 +1628,10 @@ def compute_anomalies_pl(
         Anomalized `df` with the same column names and size.
     """
 
-    if isinstance(other_index_columns, str):
-        other_index_columns = [other_index_columns]
+    if isinstance(group_by, str):
+        group_by = [group_by]
     data_columns = [
-        col for col in df.columns if col not in ["time", *other_index_columns]
+        col for col in df.columns if col not in ["time", *group_by]
     ]
     rename_kwargs = {
         hoh: hoh.replace(":", "-").replace("-", "_") for hoh in data_columns
@@ -1646,7 +1644,8 @@ def compute_anomalies_pl(
     if detrend:
         aggs_index = aggs_index | {"year": pl.col("time").dt.year()}
     df = df.with_columns(**aggs_index)
-    if "jet ID" in other_index_columns:
+    smooth_clim_aggs = [pl.col(col).mean() for col in data_columns]
+    if "jet ID" in group_by:
         df = df.with_columns(
             jet=pl.when(pl.col("is_polar") > 0.5)
             .then(pl.lit("STJ"))
@@ -1654,8 +1653,8 @@ def compute_anomalies_pl(
         )
         df_catd = average_jet_categories(df)
         df_catd = df_catd.with_columns(**aggs_index)
-        other_index_columns = [
-            col for col in other_index_columns if col != "jet ID"
+        group_by = [
+            col for col in group_by if col != "jet ID"
         ] + ["jet"]
         keep_extra = ["jet ID"]
     else:
@@ -1669,56 +1668,56 @@ def compute_anomalies_pl(
             for data_column in rename_kwargs_back
         }
         clim = (
-            df_catd.group_by(*other_index_columns, "year", "dayofyear")
+            df_catd.group_by(*group_by, "year", "dayofyear")
             .agg([pl.col(data_var).mean() for data_var in data_columns])
             .rename(rename_kwargs)
-            .group_by(*other_index_columns, "dayofyear")
+            .group_by(*group_by, "dayofyear")
             .agg(**aggs, year=pl.col("year"))
             .rename(rename_kwargs_back)
             .explode("year", *data_columns)
-            .sort(*other_index_columns, "year", "dayofyear")
+            .sort(*group_by, "year", "dayofyear")
         )
         if smooth_clim > 1:
             clim = periodic_rolling_pl(
                 clim,
                 smooth_clim,
-                data_columns,
+                smooth_clim_aggs,
                 "dayofyear",
-                other_columns=[*other_index_columns, "year"],
+                group_by=group_by + ["year"],
             )
         clim = clim.cast({"dayofyear": pl.Int32()})
-        join_on = ["year", "dayofyear", *other_index_columns]
+        join_on = ["year", "dayofyear", *group_by]
     else:
         clim = (
-            df_catd.group_by(pl.col("dayofyear"), *other_index_columns)
+            df_catd.group_by(pl.col("dayofyear"), *group_by)
             .mean()
             .drop("time")
         )
         if smooth_clim > 1:
             clim = periodic_rolling_pl(
-                clim, smooth_clim, data_columns, other_columns=other_index_columns
+                clim, smooth_clim, smooth_clim_aggs, group_by=group_by
             )
         clim = clim.cast({"dayofyear": pl.Int32()})
-        join_on = ["dayofyear", *other_index_columns]
+        join_on = ["dayofyear", *group_by]
     df = df.join(clim, on=join_on, suffix="_clim")
     if not standardize:
         df = df.select(
-            *["time", *other_index_columns, *keep_extra],
+            *["time", *group_by, *keep_extra],
             **{col: pl.col(col) - pl.col(f"{col}_clim") for col in data_columns},
         )
         return df
     # standardize assumes constant stds even with detrend=True, for now.
-    std = df_catd.group_by(pl.col("dayofyear"), *other_index_columns).agg(
+    std = df_catd.group_by(pl.col("dayofyear"), *group_by).agg(
         *[pl.col(col).std() for col in data_columns]
     )
     if smooth_clim > 1:
         std = periodic_rolling_pl(
-            std, smooth_clim, data_columns, other_columns=other_index_columns
+            std, smooth_clim, smooth_clim_aggs, group_by=group_by
         )
     std = std.cast({"dayofyear": pl.Int32()})
-    df = df.join(std, on=["dayofyear", *other_index_columns], suffix="_std")
+    df = df.join(std, on=["dayofyear", *group_by], suffix="_std")
     df = df.select(
-        *["time", *other_index_columns, *keep_extra],
+        *["time", *group_by, *keep_extra],
         **{
             col: (pl.col(col) - pl.col(f"{col}_clim")) / pl.col(f"{col}_std")
             for col in data_columns

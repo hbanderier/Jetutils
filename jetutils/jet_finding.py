@@ -727,12 +727,32 @@ def one_gmix(
     return 1 - model.predict_proba(X)[:, np.argmax(model.means_[:, 0])]
 
 
+def gmix_score(
+    X,
+    means,
+    covariances
+) -> np.Array:
+    scores = []
+    for mean, covar in zip(means,covariances):
+        covar = sqrtm(np.linalg.inv(covar))
+        x = X.to_numpy() - mean[None, :]
+        score = np.linalg.norm(np.einsum("jk,ik->ij", covar, x), axis=1)
+        scores.append(score)
+    if X.columns[1][:5] == "theta":
+        order = np.argsort(means[:, 1])
+    else:
+        order = np.argsort(means[:, 1])[::-1]
+    otherscores = np.sum([scores[k] for k in order[:-1]], axis=0)
+    score = 1 / (1 + otherscores / scores[order[-1]])
+    return score
+
 def one_gmix_v2(
     X,
     n_components=2,
     n_init=20,
     init_params="random_from_data",
-    previous: np.ndarray | None = None
+    previous: np.ndarray | None = None,
+    return_covariance: bool = False,
 ):
     """
     Trains one Gaussian Mixture model, and outputs the predicted probability of all data points on the component identified as the eddy-driven jet.
@@ -763,18 +783,11 @@ def one_gmix_v2(
     if "ratio" in X.columns:
         X = X.with_columns(ratio=pl.col("ratio").fill_null(1.0))
     model = model.fit(X)
-    scores = []
-    for mean, covar in zip(model.means_, model.covariances_):
-        covar = sqrtm(np.linalg.inv(covar))
-        x = X.to_numpy() - mean[None, :]
-        score = np.linalg.norm(np.einsum("jk,ik->ij", covar, x), axis=1)
-        scores.append(score)
-    if X.columns[1][:5] == "theta":
-        order = np.argsort(model.means_[:, 1])
-    else:
-        order = np.argsort(model.means_[:, 1])[::-1]
-    otherscores = np.sum([scores[k] for k in order[:-1]], axis=0)
-    return 1 / (1 + otherscores / scores[order[-1]]), previous
+    
+    score = gmix_score(X, model.means_, model.covariances_)
+    if not return_covariance:
+        return score, model.means_
+    return score, model.means_, model.covariances_
 
 
 def is_polar_gmix(
@@ -1148,12 +1161,9 @@ def connected_from_cross(
         pl.col("dis_polar") < dis_polar_thresh,
     )
     gb = ["time", "jet ID"]
-    mem = []
-    if "member" in jets.columns:
-        gb_ = ["member"]
-        gb_.extend(gb)
-        gb = gb_
-        mem = ["member"]
+    
+    mem = [p for p in ["member", "number", "forecast_init_doy"] if p in jets.columns]
+    gb = mem + gb
     summary = (
         jets.group_by(gb, maintain_order=True)
         .agg()
