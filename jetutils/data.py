@@ -458,11 +458,11 @@ def standardize(da, unify_dtypes: bool = True, do_chunk: bool = False):
             da = da.astype(np.int32)
     for coord in da.coords:
         if da[coord].dtype == np.float64:
-            da = da.assign_coords(**{coord: da[coord].values.astype(np.float32)})
+            da = da.assign_coords(**{coord: (da[coord].dims, da[coord].values.astype(np.float32))})
         elif da[coord].dtype == np.int64:
-            da = da.assign_coords(**{coord: da[coord].values.astype(np.int32)})
+            da = da.assign_coords(**{coord: (da[coord].dims, da[coord].values.astype(np.int32))})
         elif coord == "time":
-            da = da.assign_coords(**{coord: da[coord].values.astype("datetime64[ms]")})
+            da = da.assign_coords(**{coord: (da[coord].dims, da[coord].values.astype("datetime64[ms]"))})
     return da.unify_chunks()
 
 
