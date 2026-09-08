@@ -697,7 +697,7 @@ def event_geometry(
     )
     events = (
         events.group_by([*index_columns, "side"])
-        .agg(points=pl.concat_arr("lon", "lat"), *other_columns)
+        .agg(*other_columns, points=pl.concat_arr("lon", "lat"))
         .filter(pl.col("points").list.eval(pl.element().len() > 1).list.all())
         .with_columns(geometry=geometry)
         .group_by(index_columns)
@@ -2456,20 +2456,20 @@ def prepare_last_step_1(
     index_columns = get_index_columns(props)
     which_jet = "jet" if "jet" in props.columns else "jet ID"
 
-    cold = pl.col("n") >= 0
-    warm = pl.col("n") <= 0
+    left = pl.col("n") >= 0
+    right = pl.col("n") <= 0
     reduced = pl.col("n").abs() <= 1e6
     entrance = pl.col("norm_index") <= 0.5
     exit_ = pl.col("norm_index") >= 0.5
     all_region_filters = {
-        "cold": [cold, reduced],
-        "warm": [warm, reduced],
-        "cold_entrance": [cold, entrance, reduced],
-        "warm_entrance": [warm, entrance, reduced],
-        "cold_exit": [cold, exit_, reduced],
-        "warm_exit": [warm, exit_, reduced],
+        "left": [left, reduced],
+        "right": [right, reduced],
+        "left_entrance": [left, entrance, reduced],
+        "right_entrance": [right, entrance, reduced],
+        "left_exit": [left, exit_, reduced],
+        "right_exit": [right, exit_, reduced],
         "core": [pl.col("n").abs() <= 5e5],
-        "warm_far_entrance": [pl.col("n") <= -1e6, entrance],
+        "right_far_entrance": [pl.col("n") <= -1e6, entrance],
     }
 
     for varname, filter_list in tqdm(filters_for_variables.items()):
