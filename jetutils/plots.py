@@ -1877,6 +1877,7 @@ def plot_relative_time(
     mode: Literal["spaghetti", "shading"] = "shading",
     one_ax_each: bool = False,
     colors: dict | None = None,
+    title_base: str = "persistent lifecycles of the", 
 ) -> Figure:
     spells_of = spells["spell_of"].unique(maintain_order=True).to_list()
     if colors is None:
@@ -1885,6 +1886,7 @@ def plot_relative_time(
         n_row = int(ceil(len(data_vars) / n_col))
     total_width = col_width * n_col * n_figs
     total_height = row_height * n_row
+    all_letters = ascii_lowercase + ascii_uppercase
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs = bigfig.subfigures(1, n_figs)
     if n_figs > 1:
@@ -1908,9 +1910,16 @@ def plot_relative_time(
         fig = subfigs[n_fig_]
         axes = all_axes[n_fig_]
         spells_from_jet = spells.filter(pl.col("spell_of") == spell_of)
-        spells_from_jet = extend_spells(
-            spells_from_jet, time_before=datetime.timedelta(days=4), # time_after=datetime.timedelta(days=60)
-        )
+        if title_base == "persistent lifecycles of the":
+            # temporary bandaid
+            spells_from_jet = extend_spells(
+                spells_from_jet, time_before=datetime.timedelta(days=4)
+            )
+        else:
+            spells_from_jet = extend_spells(
+                spells_from_jet, time_before=datetime.timedelta(days=4)
+                , time_after=datetime.timedelta(days=40)
+            )
         props_masked = spells_from_jet.join(props_, on="time").sort(
             "jet", "spell", "relative_index"
         )
@@ -1943,7 +1952,7 @@ def plot_relative_time(
             q25_ = q25.filter(pl.col("jet") == jet)
             q75_ = q75.filter(pl.col("jet") == jet)
             x = to_plot["relative_index"].unique().to_numpy() / 4
-            for i, letter, data_var in zip(range(len(data_vars)), ascii_lowercase + ascii_uppercase, data_vars):
+            for i, data_var in zip(range(len(data_vars)), data_vars):
                 row_index = i % n_col
                 col_index = (i // n_col) * 2 + j if one_ax_each else i // n_col
                 ax = axes[col_index, row_index]
@@ -1973,6 +1982,10 @@ def plot_relative_time(
                 ax.plot(
                     [x[0], x[-1]], [mean, mean], color=colors_[j], ls="dashed", lw=2
                 )
+                i_letter = i
+                if one_ax_each:
+                    i_letter = i_letter + n_fig * len(data_vars)
+                letter = all_letters[i_letter]
                 if j == 0:
                     factor_str = (
                         ""
@@ -2009,7 +2022,7 @@ def plot_relative_time(
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)
         fig.suptitle(
-            f"{props_masked['spell'].n_unique()} persistent lifecycles of the {spell_of_jet}"
+            f"{props_masked['spell'].n_unique()} {title_base}  {spell_of_jet}"
         )
         fig.supxlabel("Relative time around onset [days]")
     return bigfig
