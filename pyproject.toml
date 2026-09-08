@@ -19,6 +19,7 @@ dependencies = [
     "hypothesis>=6.164.0",
     "ipython>=9.14.0",
     "jupyter>=1.1.1",
+    "line-profiler>=5.0.2",
     "matplotlib>=3.10.9",
     "mkdocstrings-python>=2.0.3",
     "nbstripout>=0.9.1",

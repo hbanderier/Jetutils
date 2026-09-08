@@ -16,7 +16,7 @@ def date_string(year: int, month: int, day: int):
 
 current_date = first_date
 dates = [date_string(2025, *current_date)]
-while not current_date == last_date:
+while current_date != last_date:
     month, day = current_date
     this_month_range = monthrange(2025, month)[1]
     next_day = day + 2
@@ -59,6 +59,6 @@ for date in dates:
         "type": "pf",
         "format": "netcdf",
         "grid": "1.5/1.5",
-        "area": "75/-15/30/42.5",
+        "area": "80/-80/20/42.5",
         "target": opath.as_posix(),
     })
