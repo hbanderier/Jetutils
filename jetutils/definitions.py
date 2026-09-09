@@ -749,7 +749,7 @@ def weighted_mean_pl(col: Expr | str, by: Expr | str | None = None):
     if by is None:
         return col.mean()
     by = to_expr(by)
-    return ((col * by).sum() / by.sum()).alias(col.meta.output_name())
+    return ((col * by).sum() / by.sum())
 
 
 def circular_mean(col: Expr | str, weights: Expr | str | None = None):
