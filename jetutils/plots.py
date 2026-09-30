@@ -202,7 +202,7 @@ def num2tex(x: float, force: bool = False, ncomma: int = 1) -> str:
     float_str = f"{x:.{ncomma}e}" if force else f"{x:.{ncomma}g}"
     if "e" in float_str:
         base, exponent = float_str.split("e")
-        return r"{0} \cdot 10^{{{1}}}".format(base, int(exponent))
+        return r"{0} \times 10^{{{1}}}".format(base, int(exponent))
     else:
         return float_str
 
@@ -1876,28 +1876,40 @@ def plot_relative_time(
     show_alive: bool = False,
     mode: Literal["spaghetti", "shading"] = "shading",
     one_ax_each: bool = False,
+    only_one: bool = False,
+    filter_stj: bool = False,
     colors: dict | None = None,
+    case_studies: dict[str, int] | None = None, 
+    days_before: int = 4,
     title_base: str = "persistent lifecycles of the", 
 ) -> Figure:
     spells_of = spells["spell_of"].unique(maintain_order=True).to_list()
+    if only_one:
+        one_ax_each = False
     if colors is None:
         colors = {spell_of: [COLORS[2], COLORS[1]] for spell_of in spells_of}
     if n_row is None:
         n_row = int(ceil(len(data_vars) / n_col))
+    if case_studies is None:
+        case_studies = {spell_of: None for spell_of in spells_of}
+    colors_cs = [COLORS_EXT[11], "darkviolet"]
     total_width = col_width * n_col * n_figs
     total_height = row_height * n_row
     all_letters = ascii_lowercase + ascii_uppercase
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs = bigfig.subfigures(1, n_figs)
     if n_figs > 1:
-        all_axes = [subfigs[n_fig].subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all") for n_fig in range(n_figs)]
+        all_axes = [subfigs[n_fig].subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all", squeeze=False) for n_fig in range(n_figs)]
     else:
-        all_axes = [subfigs.subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all")]
+        all_axes = [subfigs.subplots(n_row * (1 + int(one_ax_each)), n_col, sharex="all", squeeze=False)]
     for ia, ja in product(range(all_axes[0].shape[0]), range(all_axes[0].shape[1])):
         for n_fig in range(1, n_figs):
             all_axes[0][ia, ja].sharey(all_axes[n_fig][ia, ja])
     if not isinstance(subfigs, Iterable):
         subfigs = [subfigs]
+    
+    if filter_stj:
+        props = props.filter((pl.col("mean_lat") > 30) | (pl.col("jet") == "EDJ"))
     for n_fig, spell_of, in enumerate(spells_of):
         if "_" in spell_of:
             spell_of_jet, exp = spell_of.split("_")
@@ -1906,6 +1918,7 @@ def plot_relative_time(
             spell_of_jet = spell_of
             props_ = props
         colors_ = colors[spell_of]
+        case_studies_ = case_studies[spell_of]
         n_fig_ = n_fig % n_figs
         fig = subfigs[n_fig_]
         axes = all_axes[n_fig_]
@@ -1913,11 +1926,11 @@ def plot_relative_time(
         if title_base == "persistent lifecycles of the":
             # temporary bandaid
             spells_from_jet = extend_spells(
-                spells_from_jet, time_before=datetime.timedelta(days=4)
+                spells_from_jet, time_before=datetime.timedelta(days=days_before)
             )
         else:
             spells_from_jet = extend_spells(
-                spells_from_jet, time_before=datetime.timedelta(days=4)
+                spells_from_jet, time_before=datetime.timedelta(days=days_before)
                 , time_after=datetime.timedelta(days=40)
             )
         props_masked = spells_from_jet.join(props_, on="time").sort(
@@ -1928,16 +1941,25 @@ def plot_relative_time(
         )
         aggs = {col: func_mean(col) for col in data_vars}
         aggs = aggs | {"alive": pl.col("time").len()}
-        mean_ps = props_masked.group_by(
-            ["relative_index", "jet"], maintain_order=True
-        ).agg(**aggs)
+        mean_ps = (
+            props_masked
+            .group_by("relative_time", "jet")
+            .agg(**aggs)
+            .sort("relative_time", "jet")
+        )
         aggs_ = {col: func_q(col, 0.95) for col in data_vars}
-        q25 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
-            **aggs_
+        q25 = (
+            props_masked
+            .group_by("relative_time", "jet")
+            .agg(**aggs_)
+            .sort("relative_time", "jet")
         )
         aggs_ = {col: func_q(col, 0.05) for col in data_vars}
-        q75 = props_masked.group_by(["relative_index", "jet"], maintain_order=True).agg(
-            **aggs_
+        q75 = (
+            props_masked
+            .group_by("relative_time", "jet")
+            .agg(**aggs_)
+            .sort("relative_time", "jet")
         )
         means = props_.group_by("jet", maintain_order=True).agg(**aggs)
         if show_alive:
@@ -1948,10 +1970,17 @@ def plot_relative_time(
                 .to_numpy()
             )
         for j, jet in enumerate(["STJ", "EDJ"]):
+            if only_one and jet != spell_of_jet:
+                continue
             to_plot = mean_ps.filter(pl.col("jet") == jet)
+            if case_studies_ is not None:
+                to_plot_cs = props_masked.filter(pl.col("spell") == case_studies_, pl.col("jet") == jet)
+                x_cs = to_plot_cs["relative_time"].dt.total_hours().to_numpy() / 24
+            else:
+                to_plot_cs = None
             q25_ = q25.filter(pl.col("jet") == jet)
             q75_ = q75.filter(pl.col("jet") == jet)
-            x = to_plot["relative_index"].unique().to_numpy() / 4
+            x = to_plot["relative_time"].dt.total_hours().to_numpy() / 24
             for i, data_var in zip(range(len(data_vars)), data_vars):
                 row_index = i % n_col
                 col_index = (i // n_col) * 2 + j if one_ax_each else i // n_col
@@ -1966,7 +1995,7 @@ def plot_relative_time(
                 if mode == "spaghetti":
                     for _, this_one in props_masked.group_by("spell"):
                         this_one = this_one.filter(pl.col("jet") == jet)
-                        x_ = this_one["relative_index"].to_numpy() / 4
+                        x_ = this_one["relative_time"].dt.total_hours().to_numpy() / 24
                         y = this_one[data_var] / factor
                         ax.plot(x_, y, color=colors_[j], lw=0.5, alpha=0.5)
                 elif mode == "shading":
@@ -1982,11 +2011,13 @@ def plot_relative_time(
                 ax.plot(
                     [x[0], x[-1]], [mean, mean], color=colors_[j], ls="dashed", lw=2
                 )
+                if to_plot_cs is not None:
+                    ax.plot(x_cs, to_plot_cs[data_var] / factor, color=colors_cs[j], lw=1.5)
                 i_letter = i
                 if one_ax_each:
                     i_letter = i_letter + n_fig * len(data_vars)
                 letter = all_letters[i_letter]
-                if j == 0:
+                if j == 0 or only_one:
                     factor_str = (
                         ""
                         if factor == 1

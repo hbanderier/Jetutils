@@ -2541,6 +2541,7 @@ def prepare_last_step_2(
     season: pl.Series,
     grams_wr: pl.DataFrame | None = None,
     mjo: pl.DataFrame | None = None,
+    bsiso: pl.DataFrame | None = None,
     n_bootstraps: int = 400,
 ):
     thejet = spells["spell_of"].mode().item()
@@ -2683,4 +2684,20 @@ def prepare_last_step_2(
         )
         masked = masked.join(mjo_stuff, on="spell", how="left")
 
+    if bsiso is not None:
+        bsiso_stuff = (
+            spells.join(bsiso, on="time")
+            .group_by("spell")
+            .agg(
+                **{
+                    f"bsiso.{when}": pl.col("phase")
+                    .filter(time_filter_)
+                    .mode()
+                    .first()
+                    .fill_null(0)
+                    for when, time_filter_ in time_filters.items()
+                }
+            )
+        )
+        masked = masked.join(bsiso_stuff, on="spell", how="left")
     return masked
