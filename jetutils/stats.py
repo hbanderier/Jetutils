@@ -1,17 +1,17 @@
 # coding: utf-8
-from pathlib import Path
-from typing import Tuple
+import pickle as pkl
 from functools import partial
 from multiprocessing import Pool
-from typing import Union
-import pickle as pkl
+from pathlib import Path
+from typing import Tuple, Union
 
 import numpy as np
-import xarray as xr
 import polars as pl
-from scipy.stats import norm, rankdata
-from .definitions import N_WORKERS, SEASONS, infer_direction, polars_to_xarray
 import polars_ds as pds
+import xarray as xr
+from scipy.stats import norm, rankdata
+
+from .definitions import N_WORKERS, SEASONS, infer_direction, polars_to_xarray
 
 
 def create_bootstrapped_times(
