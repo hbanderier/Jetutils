@@ -1895,6 +1895,7 @@ def plot_relative_time(
     colors_cs = [COLORS_EXT[11], "darkviolet"]
     total_width = col_width * n_col * n_figs
     total_height = row_height * n_row
+    print(n_row)
     all_letters = ascii_lowercase + ascii_uppercase
     bigfig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     subfigs = bigfig.subfigures(1, n_figs)
