@@ -6,7 +6,7 @@ import xarray as xr
 from jetutils.definitions import DATADIR, N_WORKERS
 from jetutils.data import standardize
 
-basepath = Path(f"{DATADIR}/ERA5/plev/uv/6H")
+basepath = Path(f"{DATADIR}/ERA5/plev/z/6H")
 basepath.mkdir(parents=True, exist_ok=True)
 suffix = ""
 suffix = f"_{suffix}" if suffix != "" else ""
@@ -41,10 +41,7 @@ def main():
     request = {
         "product_type": ["reanalysis"],
         "variable": [
-            "temperature",
-            "u_component_of_wind",
-            "v_component_of_wind",
-            "vertical_velocity",
+            "geopotential",
         ],
         "year": "2023",
         "month": [
@@ -95,18 +92,19 @@ def main():
             "31",
         ],
         "time": ["00:00", "06:00", "12:00", "18:00"],
-        "pressure_level": ["175", "200", "225", "250", "300", "350", "850"],
+        "pressure_level": ["500"],
         "data_format": "netcdf",
         "download_format": "unarchived",
         "area": [80, -80, 15, 40],
         "grid": "0.5/0.5",
     }
     client = Client()
+    month = None
     with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [
             executor.submit(retrieve, client, request.copy(), year, month)
             for year in range(1959, 2025)
-            for month in range(1, 13)  # modify this if needed
+            # for month in range(1, 13)  # modify this if needed
         ]
         for f in as_completed(futures):
             try:

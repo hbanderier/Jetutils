@@ -359,6 +359,7 @@ def standardize(da, unify_dtypes: bool = True, do_chunk: bool = False):
         "lat_um_atmos_grid_uv": "lat",
         "plev": "lev",
         "pres": "lev",
+        "level": "lev", # problematic
         "pressure_level": "lev",
         "um_atmos_PLEV19": "lev",
         "member_id": "member",
