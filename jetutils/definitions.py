@@ -298,6 +298,7 @@ if "DATADIR" not in globals():
         "eady_s": 86400, # 1/s -> 1/d
         # "PV": 1e6,
         "tp": 1000, # m/6h -> mm/6d
+        "z": 1 / 9.8,
         "AAVO": 100,
         "CAVO": 100,
         "APVO": 100,
