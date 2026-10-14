@@ -103,8 +103,8 @@ def main():
     with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [
             executor.submit(retrieve, client, request.copy(), year, month)
-            for year in range(1959, 2025)
-            # for month in range(1, 13)  # modify this if needed
+            for year in range(1960, 2025)
+            for month in range(1, 13)  # modify this if needed
         ]
         for f in as_completed(futures):
             try:
