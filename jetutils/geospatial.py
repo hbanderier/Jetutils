@@ -2657,7 +2657,8 @@ def prepare_last_step_2(
             .agg(
                 **{
                     f"regime.{when}": pl.col("winner")
-                    .filter(time_filter_, pl.col("winner") != 0)
+                    .filter(time_filter_)
+                    # , pl.col("winner") != 0
                     .mode()
                     .first()
                     .fill_null(0)

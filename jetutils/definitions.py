@@ -299,6 +299,7 @@ if "DATADIR" not in globals():
         # "PV": 1e6,
         "tp": 1000, # m/6h -> mm/6d
         "z": 1 / 9.8,
+        "blocking_vm": 100,
         "AAVO": 100,
         "CAVO": 100,
         "APVO": 100,
@@ -394,6 +395,8 @@ if "DATADIR" not in globals():
         "East.",
         "N-E.",
     ]
+    
+    GRAMS_WR_NAMES = ["No", "AT", "ZO", "ScTr", "AR", "EuBL", "ScBL", "GL"]
 
     RADIUS = 6.371e6  # m
     OMEGA = 7.2921e-5  # rad.s-1

@@ -114,6 +114,19 @@ COLORS = np.asarray(
     ]
 )
 
+GRAMS_COLORS = [
+    (128,128,128),
+    (75,   0,130),
+    (255,  0,  0),
+    (255,140,  0),
+    (255,215,  0),
+    (154,205, 50),
+    (  0,100,  0),
+    (  0,  0,255),
+]
+GRAMS_COLORS = [np.asarray(color) / 255 for color in GRAMS_COLORS]
+
+
 COLORS_EXT = np.repeat(COLORS, 3, axis=0)
 for i in range(len(COLORS)):
     for sign in [1, -1]:
